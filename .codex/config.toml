@@ -1,0 +1,51 @@
+model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+
+[features]
+multi_agent = true
+hooks = true
+
+[[skills.config]]
+path = ".codex/skills/prism"
+enabled = true
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 8
+interrupt_message = true
+
+[mcp_servers.hierarchical_codex]
+command = "node"
+args = ["dist/cli.js"]
+cwd = "."
+required = true
+startup_timeout_sec = 15
+tool_timeout_sec = 60
+default_tools_approval_mode = "auto"
+enabled_tools = [
+  "mission_create",
+  "mission_get",
+  "mission_close",
+  "task_allocate",
+  "task_get",
+  "task_claim",
+  "task_start",
+  "task_heartbeat",
+  "task_release",
+  "task_block",
+  "task_fail",
+  "task_cancel",
+  "task_supersede",
+  "task_set_effort",
+  "artifact_put",
+  "artifact_get",
+  "result_submit_candidate",
+  "result_check",
+  "result_verify",
+  "task_commit",
+  "budget_report",
+  "recovery_snapshot",
+]
+
+[mcp_servers.hierarchical_codex.env]
+HIERARCHICAL_CODEX_HOME = ".hierarchical-codex"

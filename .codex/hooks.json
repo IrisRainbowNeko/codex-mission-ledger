@@ -1,0 +1,44 @@
+{
+  "description": "Policy gates for the hierarchical-codex native agent tree.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(spawn_agent|Agent)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .codex/hooks/pre_spawn_policy.py",
+            "timeout": 10,
+            "statusMessage": "Checking hierarchical spawn policy"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "^(terra-coordinator|luna-producer|luna-verifier|sol-advisor)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .codex/hooks/subagent_start.py",
+            "timeout": 10,
+            "statusMessage": "Injecting control-plane protocol"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "^(terra-coordinator|luna-producer|luna-verifier)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .codex/hooks/subagent_stop.py",
+            "timeout": 10,
+            "statusMessage": "Checking durable task handoff"
+          }
+        ]
+      }
+    ]
+  }
+}

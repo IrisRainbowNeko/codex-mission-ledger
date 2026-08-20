@@ -1,0 +1,59 @@
+{
+  "name": "hierarchical-codex",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic MCP control plane for native hierarchical Codex agents.",
+  "type": "module",
+  "bin": {
+    "hierarchical-codex-mcp": "./dist/cli.js",
+    "hierarchical-codex-doctor": "./dist/doctor.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    ".agents",
+    ".codex",
+    "docs",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx src/cli.ts",
+    "doctor": "tsx src/doctor.ts",
+    "start": "node dist/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings=0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build",
+    "install:user": "tsx src/install-user.ts",
+    "uninstall:user": "tsx src/install-user.ts --uninstall",
+    "doctor:user": "tsx src/doctor.ts --user"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.2.0",
+    "eslint": "^10.8.1",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.12",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.67.0",
+    "vitest": "^4.1.11"
+  }
+}
