@@ -13,7 +13,7 @@ from hook_utils import deny_pre_tool, read_payload, write_payload
 PROFILE_POLICY = {
     "terra-coordinator": {
         "model": "gpt-5.6-terra",
-        "efforts": {"xhigh", "max"},
+        "efforts": {"high", "xhigh", "max"},
         "parent_tiers": {"sol"},
     },
     "luna-producer": {

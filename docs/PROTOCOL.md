@@ -132,6 +132,11 @@ complete and verify the task.
 
 The PreToolUse hook rejects spawns that violate these conditions.
 
+A second PreToolUse hook (`pre_coordinator_tools.py`) denies Terra
+`wait` / `list_agents` / `send_message` / `followup_task` and Terra
+`wait_agent` with `timeout_ms` below 1800000. Sol is not denied (it is the root
+chat). Missing `model` fails open.
+
 ## Lease lifecycle
 
 Before execution:
@@ -142,8 +147,12 @@ Before execution:
 
 All lease-bound mutations use the current worker ID, token, and task version.
 
-Use `task_heartbeat` during long operations. A heartbeat is a mutation and
-increments the task version.
+Terra claim/start/pre-wait heartbeat must pass `leaseSeconds=14400` (the default
+maximum). A blocking `wait_agent` cannot heartbeat; a 15-minute default lease
+will expire mid-wait.
+
+Use `task_heartbeat` immediately before `wait_agent`. A heartbeat is a mutation
+and increments the task version.
 
 If blocked:
 
@@ -170,8 +179,11 @@ Call `artifact_put` with UTF-8 or canonical base64 content. The server:
 4. records task-scoped metadata;
 5. returns an artifact ID.
 
-Messages should contain artifact IDs and concise summaries. `artifact_get`
-returns a bounded prefix and a `truncated` flag.
+Messages must be a compact `TASK_RESULT` block: artifact IDs and a summary of
+at most 500 characters. Do not paste reports into `wait_agent`; parents re-bill
+that prefix on every later turn. `artifact_get` returns a bounded prefix and a
+`truncated` flag. Sol and Terra must not fetch full artifacts; a Luna
+synthesizer reads child refs and writes the user-facing file.
 
 The MVP does not register arbitrary filesystem paths, preventing path traversal
 and host-file exfiltration through this API.
@@ -180,7 +192,7 @@ and host-file exfiltration through this API.
 
 The active producer calls `result_submit_candidate` with:
 
-- summary;
+- summary (max 500 characters);
 - artifact references owned by the task;
 - claims and evidence references;
 - unresolved items;
@@ -221,7 +233,10 @@ The direct parent calls `task_commit`.
 - The task becomes `committed`.
 - Proposed dependent tasks whose dependencies are now satisfied become `ready`.
 
-No single operation skips candidate/check/verify gates.
+No single MCP round-trip is required for high/critical work. For `low` or
+`medium` risk, Terra may call `results_gate_and_commit` after `children_status`.
+That tool still writes check and verify reviews and then commits; it does not
+skip the producer≠reviewer rule.
 
 ## Verifier native threads
 
@@ -233,10 +248,12 @@ review through `result_check`. Terra then calls `result_verify` and
 
 ## Direct-parent lifecycle
 
-- Sol waits for and accepts Terra.
-- Terra waits for and accepts its own Luna children.
-- Sol may observe or send a hint to Luna, but does not perform Luna follow-up or
-  wait lifecycle.
+- Sol waits for and accepts Terra with one long `wait_agent`. It must not poll
+  with `list_agents`, `wait`, or `send_message`.
+- Terra waits for and accepts its own Luna children with one long `wait_agent`
+  then `children_status`. It must not `send_message` or `followup_task`.
+- Sol may observe Luna in the UI, but does not perform Luna follow-up or wait
+  lifecycle.
 - Cross-cell data moves through committed artifacts and dependencies.
 
 This avoids completion routing ambiguity in deep native trees.

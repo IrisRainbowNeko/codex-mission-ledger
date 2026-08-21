@@ -5,6 +5,7 @@ import type {
   BudgetReportInput,
   ClaimTaskInput,
   CommitTaskInput,
+  GateAndCommitInput,
   LeaseActionInput,
   MissionCloseInput,
   MissionCreateInput,
@@ -232,6 +233,17 @@ export function createMcpServer(controlPlane: ControlPlane): McpServer {
   );
 
   server.registerTool(
+    "children_status",
+    {
+      title: "List compact child status",
+      description:
+        "Read direct children of a coordinator task as compact status rows (ids, status, version, summary). Call once after wait_agent. Do not poll with task_get.",
+      inputSchema: z.object({ parentTaskId: id }).strict(),
+    },
+    async ({ parentTaskId }) => run(() => controlPlane.childrenStatus(parentTaskId)),
+  );
+
+  server.registerTool(
     "task_claim",
     {
       title: "Claim task",
@@ -425,11 +437,11 @@ export function createMcpServer(controlPlane: ControlPlane): McpServer {
     {
       title: "Submit candidate result",
       description:
-        "Submit a worker result as candidate only. This closes the producer lease; a different reviewer must check it. artifactRefs must belong to this taskId — call artifact_put on the same task first, and do not attach child-task artifacts. Include actual usage when known.",
+        "Submit a worker result as candidate only. This closes the producer lease; a different reviewer must check it. artifactRefs must belong to this taskId — call artifact_put on the same task first, and do not attach child-task artifacts. Include actual usage when known. summary max 500 characters.",
       inputSchema: z
         .object({
           ...leaseFields,
-          summary: text,
+          summary: shortText,
           artifactRefs: z.array(id).max(500),
           claims: z
             .array(
@@ -489,6 +501,37 @@ export function createMcpServer(controlPlane: ControlPlane): McpServer {
         .strict(),
     },
     async (input) => run(() => controlPlane.commitTask(input as CommitTaskInput)),
+  );
+
+  server.registerTool(
+    "results_gate_and_commit",
+    {
+      title: "Gate and commit low-risk children",
+      description:
+        "For low or medium risk only, record check and verify reviews then commit in one call. Does not skip gates. High or critical work must use luna-verifier plus result_check, result_verify, and task_commit. Children must already be candidate.",
+      inputSchema: z
+        .object({
+          reviewerId: id,
+          parentTaskId: id.optional(),
+          decisions: z
+            .array(
+              z
+                .object({
+                  taskId: id,
+                  expectedVersion: z.number().int().positive(),
+                  approved: z.boolean(),
+                  evidenceRefs: z.array(id).max(500).optional(),
+                  notes: text,
+                })
+                .strict(),
+            )
+            .min(1)
+            .max(500),
+          idempotencyKey,
+        })
+        .strict(),
+    },
+    async (input) => run(() => controlPlane.gateAndCommitResults(input as GateAndCommitInput)),
   );
 
   server.registerTool(

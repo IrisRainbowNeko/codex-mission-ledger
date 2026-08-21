@@ -48,7 +48,7 @@ Replaying a key with a different canonical request hash is a conflict.
 Supported combinations:
 
 - Sol: high/xhigh/max
-- Terra: xhigh/max
+- Terra: high/xhigh/max (default spawn `high`)
 - Luna: high/xhigh/max
 
 ### Budget
@@ -151,7 +151,21 @@ allocating actor must own that lease.
 
 Input: `taskId`.
 
-Read this immediately before versioned mutations.
+Read this immediately before versioned mutations on **this** task. Coordinators
+must not poll children with `task_get`; use `children_status` once after
+`wait_agent`.
+
+### `children_status`
+
+Input: `parentTaskId`.
+
+Returns compact direct-child rows only:
+
+- `id`, `status`, `version`, `risk`, `summary`, `unresolved`, `artifactRefs` (ids), `producerId`
+- `allTerminal`
+
+No artifact bodies, claim text, or event pages. Do not use `recovery_snapshot`
+as a wait-loop substitute.
 
 ### `task_claim`
 
@@ -224,6 +238,25 @@ Required:
 - `idempotencyKey`
 
 Requires verified status and no non-terminal direct child.
+
+### `results_gate_and_commit`
+
+Low/medium risk only. One call records the check review, the verify review, and
+commit. Gates are not skipped: the producer still cannot approve itself, and
+high/critical work must use `luna-verifier` plus `result_check` /
+`result_verify` / `task_commit`.
+
+Required:
+
+- `reviewerId`
+- `decisions[]` with `taskId`, `expectedVersion`, `approved`, `notes`, and
+  optional `evidenceRefs[]`
+- `idempotencyKey`
+
+Optional `parentTaskId` asserts every decision is a direct child.
+
+Children must already be `candidate` (or already gated). Non-terminal children
+return `invalid_state`. Idempotent on the batch key.
 
 ## Artifact tools
 

@@ -62,10 +62,11 @@ check("Node runtime", () => {
 check("Project layout", () => {
   const required = [
     "AGENTS.md",
-    ".agents/skills/prism/SKILL.md",
-    ".codex/skills/prism/SKILL.md",
+    ".agents/skills/agent-trio/SKILL.md",
+    ".codex/skills/agent-trio/SKILL.md",
     ".codex/config.toml",
     ".codex/hooks.json",
+    ".codex/hooks/pre_coordinator_tools.py",
     ".codex/agents/terra-coordinator.toml",
     ".codex/agents/luna-producer.toml",
     ".codex/agents/luna-verifier.toml",

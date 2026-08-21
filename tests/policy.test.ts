@@ -9,6 +9,7 @@ import {
 describe("hierarchy policy", () => {
   it.each([
     ["director", "sol", "high", "max"],
+    ["coordinator", "terra", "high", "max"],
     ["coordinator", "terra", "xhigh", "max"],
     ["operator", "luna", "high", "xhigh"],
     ["verifier", "luna", "max", "max"],
@@ -18,7 +19,6 @@ describe("hierarchy policy", () => {
   });
 
   it.each([
-    ["coordinator", "terra", "high", "xhigh"],
     ["operator", "terra", "xhigh", "max"],
     ["coordinator", "luna", "high", "max"],
     ["advisor", "sol", "max", "xhigh"],

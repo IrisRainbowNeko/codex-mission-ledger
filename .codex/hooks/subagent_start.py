@@ -9,24 +9,31 @@ from hook_utils import read_payload, write_payload
 
 CONTEXT_BY_PROFILE = {
     "terra-coordinator": (
-        "You are a direct Terra child. Extract task_id from the parent envelope, "
-        "then call task_get, task_claim, and task_start before work. Allocate "
-        "operator tasks only for luna-producer children. Spawn luna-verifier "
-        "with review_target_task_id; do not allocate a verifier task."
+        "You are a cheap Terra coordinator. Extract task_id, then task_get, "
+        "task_claim, and task_start with leaseSeconds=14400. Fan-out only: "
+        "allocate+spawn luna-producer leaves, heartbeat, one wait_agent at "
+        "timeout_ms=3600000, then children_status. Never list_agents, wait, "
+        "send_message, or followup_task. Stay read-only. A synthesizer writes "
+        "any user-facing file. results_gate_and_commit for low/medium; skip "
+        "luna-verifier unless risk is high/critical or evidence is "
+        "non-deterministic. End with TASK_RESULT only; never paste reports."
     ),
     "luna-producer": (
         "You are a Luna leaf. Extract task_id, claim and start it before work, "
         "heartbeat long operations, artifact_put on this task, submit candidate "
-        "evidence with usage, and never spawn."
+        "evidence with usage and a <=500 char summary, and never spawn. The "
+        "entire final message is TASK_RESULT only."
     ),
     "luna-verifier": (
         "You are an independent Luna leaf. Review review_target_task_id. Never "
-        "claim or start any task. Record one result_check and never verify, "
-        "submit_candidate, or commit."
+        "claim or start any task. Use truncated artifacts and claims. Record "
+        "one result_check and never verify, submit_candidate, or commit. "
+        "TASK_RESULT only."
     ),
     "sol-advisor": (
         "You are a sparse read-only advisor. Use compressed evidence, do not "
-        "spawn, and do not take over another agent's task lifecycle."
+        "spawn, do not artifact_get full reports, and do not take over another "
+        "agent's task lifecycle."
     ),
 }
 

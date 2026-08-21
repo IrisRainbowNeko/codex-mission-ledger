@@ -40,7 +40,7 @@ describe("ControlPlane", () => {
       status: "ready",
       role: "coordinator",
       model: "terra",
-      reasoningEffort: "xhigh",
+      reasoningEffort: "high",
       maxEffort: "max",
     });
     expect(() =>
@@ -80,16 +80,14 @@ describe("ControlPlane", () => {
       }),
     );
 
-    expect(() =>
-      controlPlane.allocateTask({
-        ...terraTaskInput(mission.id, "task:bad-effort:1"),
-        reasoningEffort: "high",
-      }),
-    ).toThrowError(
-      expect.objectContaining<Partial<ControlPlaneError>>({
-        code: "policy_violation",
-      }),
-    );
+    const cheapTerra = controlPlane.allocateTask({
+      ...terraTaskInput(mission.id, "task:terra-high:1"),
+      reasoningEffort: "high",
+      maxEffort: "high",
+      budget: { tokens: 500, costUsd: 5, wallClockSeconds: 500, toolCalls: 50 },
+    });
+    expect(cheapTerra.reasoningEffort).toBe("high");
+    expect(cheapTerra.maxEffort).toBe("high");
   });
 
   it("uses optimistic versions, expiring leases, and stable idempotent lease replay", () => {
@@ -238,6 +236,23 @@ describe("ControlPlane", () => {
       idempotencyKey: "candidate:luna:1",
     });
     expect(candidate.task.status).toBe("candidate");
+
+    expect(() =>
+      controlPlane.submitCandidate({
+        taskId: luna.id,
+        workerId: "luna-producer-a",
+        leaseToken: running.leaseToken!,
+        expectedVersion: running.version,
+        summary: "x".repeat(501),
+        artifactRefs: [artifact.id],
+        claims: [],
+        idempotencyKey: "candidate:luna:too-long:1",
+      }),
+    ).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({
+        code: "validation_error",
+      }),
+    );
 
     expect(() =>
       controlPlane.checkResult({
@@ -580,4 +595,299 @@ describe("ControlPlane", () => {
     });
     expect(cancelled.status).toBe("cancelled");
   });
+
+  it("returns compact children_status and gates low-risk candidates in one call", () => {
+    harness = createTestHarness();
+    const { controlPlane, repository } = harness;
+    const mission = controlPlane.createMission(baseMissionInput());
+    const terra = controlPlane.allocateTask(terraTaskInput(mission.id));
+    const terraClaim = controlPlane.claimTask({
+      taskId: terra.id,
+      workerId: "terra-1",
+      expectedVersion: terra.version,
+      leaseSeconds: 300,
+      idempotencyKey: "claim:terra:gate:1",
+    });
+    const terraRunning = controlPlane.startTask({
+      taskId: terra.id,
+      workerId: "terra-1",
+      leaseToken: terraClaim.leaseToken!,
+      expectedVersion: terraClaim.version,
+      idempotencyKey: "start:terra:gate:1",
+    });
+
+    const first = produceLunaCandidate(
+      controlPlane,
+      mission.id,
+      terra.id,
+      terraRunning.version,
+      terraRunning.leaseToken!,
+      "one",
+    );
+    const second = produceLunaCandidate(
+      controlPlane,
+      mission.id,
+      terra.id,
+      terraRunning.version,
+      terraRunning.leaseToken!,
+      "two",
+    );
+    const status = controlPlane.childrenStatus(terra.id);
+    expect(status.parentTaskId).toBe(terra.id);
+    expect(status.allTerminal).toBe(false);
+    expect(status.children).toHaveLength(2);
+    expect(status.children[0]).toEqual(
+      expect.objectContaining({
+        id: first.task.id,
+        status: "candidate",
+        summary: "Produced the bounded artifact.",
+        producerId: "luna-producer-one",
+      }),
+    );
+    expect(status.children[0]?.artifactRefs).toEqual([first.artifactId]);
+    expect(JSON.stringify(status)).not.toContain("verified candidate payload");
+
+    const gated = controlPlane.gateAndCommitResults({
+      reviewerId: "terra-1",
+      parentTaskId: terra.id,
+      decisions: [
+        {
+          taskId: first.task.id,
+          expectedVersion: first.task.version,
+          approved: true,
+          evidenceRefs: [first.artifactId],
+          notes: "Summary, claims, and hashes match done criteria.",
+        },
+        {
+          taskId: second.task.id,
+          expectedVersion: second.task.version,
+          approved: true,
+          evidenceRefs: [second.artifactId],
+          notes: "Summary, claims, and hashes match done criteria.",
+        },
+      ],
+      idempotencyKey: "gate:batch:1",
+    });
+    expect(gated.tasks.map((task) => task.status)).toEqual(["committed", "committed"]);
+    expect(repository.listReviews(mission.id).filter((review) => review.stage === "check")).toHaveLength(
+      2,
+    );
+    expect(repository.listReviews(mission.id).filter((review) => review.stage === "verify")).toHaveLength(
+      2,
+    );
+
+    const replayed = controlPlane.gateAndCommitResults({
+      reviewerId: "terra-1",
+      parentTaskId: terra.id,
+      decisions: [
+        {
+          taskId: first.task.id,
+          expectedVersion: first.task.version,
+          approved: true,
+          evidenceRefs: [first.artifactId],
+          notes: "Summary, claims, and hashes match done criteria.",
+        },
+        {
+          taskId: second.task.id,
+          expectedVersion: second.task.version,
+          approved: true,
+          evidenceRefs: [second.artifactId],
+          notes: "Summary, claims, and hashes match done criteria.",
+        },
+      ],
+      idempotencyKey: "gate:batch:1",
+    });
+    expect(replayed.tasks.map((task) => task.id)).toEqual(gated.tasks.map((task) => task.id));
+    expect(controlPlane.childrenStatus(terra.id).allTerminal).toBe(true);
+  });
+
+  it("rejects results_gate_and_commit for producers, high risk, and non-terminal children", () => {
+    harness = createTestHarness();
+    const { controlPlane } = harness;
+    const mission = controlPlane.createMission(baseMissionInput());
+    const terra = controlPlane.allocateTask(terraTaskInput(mission.id));
+    const terraClaim = controlPlane.claimTask({
+      taskId: terra.id,
+      workerId: "terra-1",
+      expectedVersion: terra.version,
+      idempotencyKey: "claim:terra:gate-deny:1",
+    });
+    const terraRunning = controlPlane.startTask({
+      taskId: terra.id,
+      workerId: "terra-1",
+      leaseToken: terraClaim.leaseToken!,
+      expectedVersion: terraClaim.version,
+      idempotencyKey: "start:terra:gate-deny:1",
+    });
+    const candidate = produceLunaCandidate(
+      controlPlane,
+      mission.id,
+      terra.id,
+      terraRunning.version,
+      terraRunning.leaseToken!,
+      "deny",
+    );
+
+    expect(() =>
+      controlPlane.gateAndCommitResults({
+        reviewerId: "luna-producer-deny",
+        parentTaskId: terra.id,
+        decisions: [
+          {
+            taskId: candidate.task.id,
+            expectedVersion: candidate.task.version,
+            approved: true,
+            evidenceRefs: [candidate.artifactId],
+            notes: "Producer self-approval.",
+          },
+        ],
+        idempotencyKey: "gate:producer:1",
+      }),
+    ).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({
+        code: "forbidden",
+      }),
+    );
+
+    const highMission = controlPlane.createMission({
+      ...baseMissionInput("mission:create:high:1"),
+      risk: "high",
+    });
+    const highTerra = controlPlane.allocateTask(terraTaskInput(highMission.id, "task:terra:high:1"));
+    const highClaim = controlPlane.claimTask({
+      taskId: highTerra.id,
+      workerId: "terra-high",
+      expectedVersion: highTerra.version,
+      idempotencyKey: "claim:terra:high:1",
+    });
+    const highRunning = controlPlane.startTask({
+      taskId: highTerra.id,
+      workerId: "terra-high",
+      leaseToken: highClaim.leaseToken!,
+      expectedVersion: highClaim.version,
+      idempotencyKey: "start:terra:high:1",
+    });
+    const highChild = produceLunaCandidate(
+      controlPlane,
+      highMission.id,
+      highTerra.id,
+      highRunning.version,
+      highRunning.leaseToken!,
+      "high",
+      "terra-high",
+    );
+    expect(() =>
+      controlPlane.gateAndCommitResults({
+        reviewerId: "terra-high",
+        parentTaskId: highTerra.id,
+        decisions: [
+          {
+            taskId: highChild.task.id,
+            expectedVersion: highChild.task.version,
+            approved: true,
+            evidenceRefs: [highChild.artifactId],
+            notes: "High-risk must use separate gates.",
+          },
+        ],
+        idempotencyKey: "gate:high:1",
+      }),
+    ).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({
+        code: "policy_violation",
+      }),
+    );
+
+    const runningChild = controlPlane.allocateTask({
+      ...lunaTaskInput(
+        mission.id,
+        terra.id,
+        terraRunning.version,
+        terraRunning.leaseToken!,
+        "task:luna:still-running:1",
+      ),
+      budget: { tokens: 400, costUsd: 4, wallClockSeconds: 400, toolCalls: 40 },
+    });
+    expect(() =>
+      controlPlane.gateAndCommitResults({
+        reviewerId: "terra-1",
+        parentTaskId: terra.id,
+        decisions: [
+          {
+            taskId: runningChild.id,
+            expectedVersion: runningChild.version,
+            approved: true,
+            notes: "Still running.",
+          },
+        ],
+        idempotencyKey: "gate:running:1",
+      }),
+    ).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({
+        code: "invalid_state",
+      }),
+    );
+  });
 });
+
+function produceLunaCandidate(
+  controlPlane: TestHarness["controlPlane"],
+  missionId: string,
+  parentTaskId: string,
+  expectedParentVersion: number,
+  parentLeaseToken: string,
+  label: string,
+  parentActorId = "terra-1",
+) {
+  const luna = controlPlane.allocateTask({
+    ...lunaTaskInput(
+      missionId,
+      parentTaskId,
+      expectedParentVersion,
+      parentLeaseToken,
+      `task:luna:${label}:1`,
+    ),
+    actorId: parentActorId,
+    budget: { tokens: 400, costUsd: 4, wallClockSeconds: 400, toolCalls: 40 },
+  });
+  const claimed = controlPlane.claimTask({
+    taskId: luna.id,
+    workerId: `luna-producer-${label}`,
+    expectedVersion: luna.version,
+    idempotencyKey: `claim:luna:${label}:1`,
+  });
+  const running = controlPlane.startTask({
+    taskId: luna.id,
+    workerId: `luna-producer-${label}`,
+    leaseToken: claimed.leaseToken!,
+    expectedVersion: claimed.version,
+    idempotencyKey: `start:luna:${label}:1`,
+  });
+  const artifact = controlPlane.putArtifact({
+    taskId: luna.id,
+    actorId: `luna-producer-${label}`,
+    kind: "report",
+    mimeType: "text/plain",
+    content: "verified candidate payload",
+    encoding: "utf8",
+    idempotencyKey: `artifact:luna:${label}:1`,
+  });
+  const candidate = controlPlane.submitCandidate({
+    taskId: luna.id,
+    workerId: `luna-producer-${label}`,
+    leaseToken: running.leaseToken!,
+    expectedVersion: running.version,
+    summary: "Produced the bounded artifact.",
+    artifactRefs: [artifact.id],
+    claims: [
+      {
+        statement: "The payload was produced.",
+        confidence: 0.9,
+        evidenceRefs: [artifact.id],
+        artifactId: artifact.id,
+      },
+    ],
+    usage: { tokens: 20, costUsd: 0.02, toolCalls: 1, wallClockSeconds: 1 },
+    idempotencyKey: `candidate:luna:${label}:1`,
+  });
+  return { task: candidate.task, artifactId: artifact.id };
+}

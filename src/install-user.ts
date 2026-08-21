@@ -44,6 +44,6 @@ if (!uninstall) {
   } else {
     process.stdout.write("Verification passed for files and TOML.\n");
     process.stdout.write("Restart VS Code, start a new Codex chat, run /hooks and trust the\n");
-    process.stdout.write("hierarchical-codex commands, then /mcp and $prism <mission>.\n");
+    process.stdout.write("hierarchical-codex commands, then /mcp and $agent-trio <mission>.\n");
   }
 }

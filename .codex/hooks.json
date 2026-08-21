@@ -12,6 +12,28 @@
             "statusMessage": "Checking hierarchical spawn policy"
           }
         ]
+      },
+      {
+        "matcher": "^(wait|Wait|list_agents|send_message|followup_task)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .codex/hooks/pre_coordinator_tools.py",
+            "timeout": 10,
+            "statusMessage": "Blocking Terra coordinator babysitting"
+          }
+        ]
+      },
+      {
+        "matcher": "^wait_agent$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .codex/hooks/pre_coordinator_tools.py",
+            "timeout": 10,
+            "statusMessage": "Requiring a long Terra wait_agent"
+          }
+        ]
       }
     ],
     "SubagentStart": [

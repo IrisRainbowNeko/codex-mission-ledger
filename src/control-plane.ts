@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { assertCondition } from "./domain/errors.js";
 import {
+  CANDIDATE_SUMMARY_MAX_CHARS,
+  COLLAPSIBLE_GATE_RISKS,
   addBudgets,
   addUsage,
   assertAssignmentPolicy,
@@ -18,6 +20,8 @@ import {
   type AgentRole,
   type Artifact,
   type BudgetLimits,
+  type ChildStatus,
+  type ChildrenStatus,
   type Claim,
   type JsonObject,
   type Mission,
@@ -171,6 +175,21 @@ export interface CommitTaskInput {
   taskId: string;
   actorId: string;
   expectedVersion: number;
+  idempotencyKey: string;
+}
+
+export interface GateDecisionInput {
+  taskId: string;
+  expectedVersion: number;
+  approved: boolean;
+  evidenceRefs?: string[];
+  notes: string;
+}
+
+export interface GateAndCommitInput {
+  reviewerId: string;
+  parentTaskId?: string | null;
+  decisions: GateDecisionInput[];
   idempotencyKey: string;
 }
 
@@ -856,6 +875,16 @@ export class ControlPlane {
 
   submitCandidate(input: SubmitCandidateInput): CandidateResult {
     this.assertText(input.summary, "summary");
+    assertCondition(
+      input.summary.trim().length <= CANDIDATE_SUMMARY_MAX_CHARS,
+      "validation_error",
+      `'summary' must be at most ${CANDIDATE_SUMMARY_MAX_CHARS} characters so parents stay summary-only.`,
+      {
+        field: "summary",
+        length: input.summary.trim().length,
+        maxChars: CANDIDATE_SUMMARY_MAX_CHARS,
+      },
+    );
     this.assertStringArray(input.artifactRefs, "artifactRefs");
     this.assertStringArray(input.unresolved ?? [], "unresolved");
     const usageDelta = normalizeUsage(input.usage);
@@ -956,33 +985,163 @@ export class ControlPlane {
   }
 
   commitTask(input: CommitTaskInput): Task {
-    return this.idempotent("task_commit", input.idempotencyKey, input, () => {
-      const task = this.requireTask(input.taskId);
-      this.assertVersion(task.version, input.expectedVersion, "Task");
-      assertTransition(task.status, "committed");
-      const activeChildren = this.repository
-        .listChildren(task.id)
-        .filter((child) => !isTerminalTaskStatus(child.status));
-      assertCondition(
-        activeChildren.length === 0,
-        "invalid_state",
-        "Task still owns non-terminal child tasks.",
-        { taskId: task.id, activeChildIds: activeChildren.map((child) => child.id) },
-      );
+    return this.idempotent("task_commit", input.idempotencyKey, input, () =>
+      this.commitTaskMutation(input),
+    );
+  }
 
-      const updated = this.transitionTask(task, "committed");
-      this.repository.updateTask(updated, task.version);
-      this.event(
-        task.missionId,
-        task.id,
-        "task.committed",
-        input.actorId,
-        {},
-        input.idempotencyKey,
-      );
-      this.promoteReadyDependents(task.missionId, input.actorId);
-      return updated;
+  childrenStatus(parentTaskId: string): ChildrenStatus {
+    const parent = this.requireTask(parentTaskId);
+    const children = this.repository.listChildren(parent.id);
+    return {
+      parentTaskId: parent.id,
+      children: children.map((child) => this.toChildStatus(child)),
+      allTerminal: children.every((child) => isTerminalTaskStatus(child.status)),
+    };
+  }
+
+  gateAndCommitResults(input: GateAndCommitInput): { tasks: Task[] } {
+    this.assertText(input.reviewerId, "reviewerId");
+    assertCondition(
+      input.decisions.length > 0,
+      "validation_error",
+      "results_gate_and_commit requires at least one decision.",
+    );
+    const decisionTaskIds = input.decisions.map((decision) => decision.taskId);
+    assertCondition(
+      new Set(decisionTaskIds).size === decisionTaskIds.length,
+      "validation_error",
+      "results_gate_and_commit decisions must use distinct taskIds.",
+    );
+    return this.idempotent("results_gate_and_commit", input.idempotencyKey, input, () => {
+      const parent =
+        input.parentTaskId !== undefined && input.parentTaskId !== null
+          ? this.requireTask(input.parentTaskId)
+          : null;
+      const tasks: Task[] = [];
+      for (const decision of input.decisions) {
+        this.assertText(decision.notes, "notes");
+        let task = this.requireTask(decision.taskId);
+        this.assertVersion(task.version, decision.expectedVersion, "Task");
+        if (parent !== null) {
+          assertCondition(
+            task.parentTaskId === parent.id,
+            "validation_error",
+            "Gated task is not a direct child of parentTaskId.",
+            { parentTaskId: parent.id, taskId: task.id, actualParentTaskId: task.parentTaskId },
+          );
+        }
+        const mission = this.requireMission(task.missionId);
+        assertCondition(
+          COLLAPSIBLE_GATE_RISKS.includes(task.risk) &&
+            COLLAPSIBLE_GATE_RISKS.includes(mission.risk),
+          "policy_violation",
+          "results_gate_and_commit is only for low or medium risk. Use result_check, result_verify, and task_commit for high or critical work.",
+          { taskId: task.id, taskRisk: task.risk, missionRisk: mission.risk },
+        );
+
+        if (task.status === "committed" && decision.approved) {
+          tasks.push(task);
+          continue;
+        }
+
+        assertCondition(
+          isTerminalTaskStatus(task.status) === false || task.status === "verified",
+          "invalid_state",
+          "Wait until the child is candidate before gating; failed or cancelled children need a replacement spawn.",
+          { taskId: task.id, status: task.status },
+        );
+
+        const reviewInput = (
+          stage: "check" | "verify",
+          expectedVersion: number,
+        ): ReviewInput => {
+          const review: ReviewInput = {
+            taskId: task.id,
+            reviewerId: input.reviewerId,
+            expectedVersion,
+            approved: decision.approved,
+            notes: decision.notes,
+            idempotencyKey: this.derivedIdempotencyKey(input.idempotencyKey, stage, task.id),
+          };
+          if (decision.evidenceRefs !== undefined) {
+            review.evidenceRefs = decision.evidenceRefs;
+          }
+          return review;
+        };
+
+        if (!decision.approved) {
+          assertCondition(
+            task.status === "candidate",
+            "invalid_state",
+            "Rejection through results_gate_and_commit requires candidate status.",
+            { taskId: task.id, status: task.status },
+          );
+          tasks.push(this.reviewResult("check", reviewInput("check", task.version)));
+          continue;
+        }
+
+        assertCondition(
+          task.status === "candidate" || task.status === "checked" || task.status === "verified",
+          "invalid_state",
+          "Wait first: results_gate_and_commit requires candidate (or already gated) children.",
+          { taskId: task.id, status: task.status },
+        );
+
+        if (task.status === "candidate") {
+          task = this.reviewResult("check", reviewInput("check", task.version));
+        }
+        if (task.status === "checked") {
+          task = this.reviewResult("verify", reviewInput("verify", task.version));
+        }
+        if (task.status === "verified") {
+          task = this.commitTaskMutation({
+            taskId: task.id,
+            actorId: input.reviewerId,
+            expectedVersion: task.version,
+            idempotencyKey: this.derivedIdempotencyKey(input.idempotencyKey, "commit", task.id),
+          });
+        }
+        tasks.push(task);
+      }
+      return { tasks };
     });
+  }
+
+  private commitTaskMutation(input: CommitTaskInput): Task {
+    const task = this.requireTask(input.taskId);
+    this.assertVersion(task.version, input.expectedVersion, "Task");
+    assertTransition(task.status, "committed");
+    const activeChildren = this.repository
+      .listChildren(task.id)
+      .filter((child) => !isTerminalTaskStatus(child.status));
+    assertCondition(
+      activeChildren.length === 0,
+      "invalid_state",
+      "Task still owns non-terminal child tasks.",
+      { taskId: task.id, activeChildIds: activeChildren.map((child) => child.id) },
+    );
+
+    const updated = this.transitionTask(task, "committed");
+    this.repository.updateTask(updated, task.version);
+    this.event(task.missionId, task.id, "task.committed", input.actorId, {}, input.idempotencyKey);
+    this.promoteReadyDependents(task.missionId, input.actorId);
+    return updated;
+  }
+
+  private toChildStatus(child: Task): ChildStatus {
+    return {
+      id: child.id,
+      status: child.status,
+      version: child.version,
+      risk: child.risk,
+      summary: child.summary,
+      unresolved: child.unresolved,
+      artifactRefs: this.repository
+        .listArtifacts(child.missionId, child.id)
+        .map((artifact) => artifact.id),
+      producerId: child.producerId,
+    };
   }
 
   reportBudget(input: BudgetReportInput): MissionDetails {
@@ -1364,6 +1523,14 @@ export class ControlPlane {
       );
       return response;
     });
+  }
+
+  private derivedIdempotencyKey(base: string, part: string, taskId: string): string {
+    const key = `${base}:${part}:${taskId}`;
+    if (key.length <= 200) {
+      return key;
+    }
+    return createHash("sha256").update(key).digest("hex");
   }
 
   private canonicalJson(value: unknown): string {

@@ -19,8 +19,9 @@ export const MANAGED_END = "# <<< hierarchical-codex";
 export const AGENTS_BEGIN = "<!-- hierarchical-codex -->";
 export const AGENTS_END = "<!-- /hierarchical-codex -->";
 export const HOOK_MARKER = "hierarchical-codex/pre_spawn_policy.py";
+export const COORDINATOR_HOOK_MARKER = "hierarchical-codex/pre_coordinator_tools.py";
 export const MANIFEST_NAME = "install-manifest.json";
-export const SKILL_NAME = "prism";
+export const SKILL_NAME = "agent-trio";
 
 const AGENT_FILES = [
   "terra-coordinator.toml",
@@ -32,6 +33,7 @@ const AGENT_FILES = [
 const HOOK_FILES = [
   "hook_utils.py",
   "pre_spawn_policy.py",
+  "pre_coordinator_tools.py",
   "subagent_start.py",
   "subagent_stop.py",
 ] as const;
@@ -66,6 +68,8 @@ const MCP_TOOLS = [
   "task_commit",
   "budget_report",
   "recovery_snapshot",
+  "children_status",
+  "results_gate_and_commit",
 ] as const;
 
 export interface UserInstallPaths {
@@ -337,10 +341,11 @@ export function mergeUserHooks(
 export function mergeUserAgentsMd(source: string): string {
   const stripped = stripManagedBlock(source, AGENTS_BEGIN, AGENTS_END).trimEnd();
   const section = `${AGENTS_BEGIN}
-When the user invokes \`$prism\` or asks for hierarchical Sol/Terra/Luna
-agents, follow the prism skill. Use native spawn_agent and the
+When the user invokes \`$agent-trio\` or asks for hierarchical Sol/Terra/Luna
+agents, follow the agent-trio skill. Use native spawn_agent and the
 \`hierarchical_codex\` MCP tools. Do not spawn Luna from Sol. Allocate a control-plane
-task before spawning Terra or Luna.
+task before spawning Terra or Luna. Coordinators must not poll with list_agents,
+wait, send_message, or followup_task; use one long wait_agent.
 ${AGENTS_END}
 `;
   return stripped.length === 0 ? `${section}\n` : `${stripped}\n\n${section}\n`;
@@ -432,6 +437,9 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
     }
     if (!hooks.includes(HOOK_MARKER)) {
       problems.push("user hooks.json is missing hierarchical-codex hook commands");
+    }
+    if (!hooks.includes(COORDINATOR_HOOK_MARKER)) {
+      problems.push("user hooks.json is missing coordinator babysit policy");
     }
   }
 
@@ -597,6 +605,28 @@ function userHookDefinitions(
             command: py("pre_spawn_policy.py", "--opt-in"),
             timeout: 10,
             statusMessage: "Checking hierarchical spawn policy",
+          },
+        ],
+      },
+      {
+        matcher: "^(wait|Wait|list_agents|send_message|followup_task)$",
+        hooks: [
+          {
+            type: "command",
+            command: py("pre_coordinator_tools.py"),
+            timeout: 10,
+            statusMessage: "Blocking Terra coordinator babysitting",
+          },
+        ],
+      },
+      {
+        matcher: "^wait_agent$",
+        hooks: [
+          {
+            type: "command",
+            command: py("pre_coordinator_tools.py"),
+            timeout: 10,
+            statusMessage: "Requiring a long Terra wait_agent",
           },
         ],
       },

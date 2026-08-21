@@ -124,7 +124,7 @@ printf '%s' '{
   "tool_input":{
     "agent_type":"terra-coordinator",
     "model":"gpt-5.6-terra",
-    "reasoning_effort":"xhigh",
+    "reasoning_effort":"high",
     "fork_turns":"none",
     "prompt":"task_id: tsk_example"
   }

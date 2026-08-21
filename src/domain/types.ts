@@ -169,6 +169,23 @@ export interface RecoverySnapshot {
   events: AuditEvent[];
 }
 
+export interface ChildStatus {
+  id: string;
+  status: TaskStatus;
+  version: number;
+  risk: RiskLevel;
+  summary: string | null;
+  unresolved: string[];
+  artifactRefs: string[];
+  producerId: string | null;
+}
+
+export interface ChildrenStatus {
+  parentTaskId: string;
+  children: ChildStatus[];
+  allTerminal: boolean;
+}
+
 export const ZERO_USAGE: Usage = {
   tokens: 0,
   costUsd: 0,

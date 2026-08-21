@@ -97,16 +97,17 @@ Do not use ordinary stdout logging while testing stdio transport.
 Perform this after every Codex App/CLI/IDE update:
 
 1. Start a new Sol root thread.
-2. Invoke `$prism`.
-3. Create a Terra child at `xhigh`.
-4. Have Terra create Luna children at `high`, `xhigh`, and `max`.
-5. Confirm all children are visible in the native UI.
+2. Invoke `$agent-trio`.
+3. Create a Terra child at `high`.
+4. Have Terra create Luna children at `high`, `xhigh`, and `max`, including a synthesizer that writes the deliverable.
+5. Confirm Sol and Terra do not write the user-facing file.
 6. Confirm Luna cannot spawn.
-7. Confirm invalid effort and non-`none` fork are blocked.
-8. Complete one producer candidate.
-9. Complete an independent verifier check.
-10. Verify and commit through the direct parent.
-11. Restart the client and recover from MCP state.
+7. Confirm invalid effort (`medium`) and non-`none` fork are blocked.
+8. Confirm a verbose child final (report plus `TASK_RESULT`) is blocked once by SubagentStop.
+9. Complete one producer candidate with a ≤500 character summary.
+10. Skip verifier on low-risk deterministic work; complete check/verify/commit through Terra from claims/hashes.
+11. Sol `mission_close` from Terra summary without `artifact_get`.
+12. Restart the client and recover from MCP state.
 
 Record:
 

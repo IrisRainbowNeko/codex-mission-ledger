@@ -64,10 +64,10 @@ export function baseMissionInput(idempotencyKey = "mission:create:1") {
 export function terraTaskInput(missionId: string, idempotencyKey = "task:terra:1") {
   return {
     missionId,
-    objective: "Own and integrate one coherent workstream",
+    objective: "Fan out one coherent workstream to Luna leaves",
     role: "coordinator" as const,
     model: "terra" as const,
-    reasoningEffort: "xhigh" as const,
+    reasoningEffort: "high" as const,
     maxEffort: "max" as const,
     capabilityPack: "software",
     doneCriteria: ["Integrated output is verified"],

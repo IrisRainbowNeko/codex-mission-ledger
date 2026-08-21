@@ -20,8 +20,8 @@ stateful constraints in code.
 
 ```text
 AGENTS.md
-.agents/skills/prism/SKILL.md
-.codex/skills/prism/SKILL.md
+.agents/skills/agent-trio/SKILL.md
+.codex/skills/agent-trio/SKILL.md
 .codex/config.toml
 .codex/agents/terra-coordinator.toml
 .codex/agents/luna-producer.toml
@@ -69,9 +69,10 @@ This allows the direct parent to choose effort per spawn.
 ### `terra-coordinator`
 
 - Model: `gpt-5.6-terra`
-- Effort: explicit `xhigh` or `max`
-- Sandbox: workspace write
+- Effort: explicit `high` default; `xhigh` or `max` only when the cell is unusually coupled
+- Sandbox: read-only
 - May spawn only Luna profiles
+- Must not write the user-facing deliverable; spawn a Luna synthesizer instead
 
 ### `luna-producer`
 
@@ -83,9 +84,10 @@ This allows the direct parent to choose effort per spawn.
 ### `luna-verifier`
 
 - Model: `gpt-5.6-luna`
-- Effort: explicit `high`, `xhigh`, or `max`
+- Effort: explicit `high` preferred; `xhigh` or `max` when the evidence is heavy
 - Sandbox: read-only for workspace files
 - Strict leaf; records `result_check` on `review_target_task_id`; never claims a task
+- Spawn only for high/critical or non-deterministic evidence
 
 ### `sol-advisor`
 
@@ -107,11 +109,11 @@ Codex discovers project skills from more than one layout:
 - `AGENTS.md` is always injected when this folder is the workspace, even if
   the `$` picker is empty
 
-`npm run doctor` only proves local files exist. The App shows `$prism`
+`npm run doctor` only proves local files exist. The App shows `$agent-trio`
 only after it has **this repository as the workspace**, the project is
 **trusted**, and a **new** conversation is started.
 
-If `$prism` is missing:
+If `$agent-trio` is missing:
 
 1. In Codex App / VS Code, Open Folder on
    `/mnt/tools/others/codes/web project/hierarchical-codex` (the repo root, not a
@@ -134,7 +136,7 @@ If `$prism` is missing:
 Start a new Sol root conversation and invoke:
 
 ```text
-$prism <mission>
+$agent-trio <mission>
 ```
 
 If the picker is still empty, paste the mission and rely on `AGENTS.md`; the
@@ -170,7 +172,13 @@ The Skill instructs Sol/Terra to:
 - mixed V1/V2 fork fields;
 - spawn input without a `tsk_...` identifier.
 
-The hook relies on current hook payload fields and handles common argument-name
+`pre_coordinator_tools.py` matches Terra `wait` / `list_agents` / `send_message`
+/ `followup_task` and Terra `wait_agent` with `timeout_ms` below 1800000. It
+denies only when `payload.model` classifies as Terra. Sol root chats keep those
+tools. Missing `model` fails open so user-global install cannot wedge ordinary
+sessions. Do not deny `exec`; this VS Code client wraps MCP as exec JS.
+
+The hooks rely on current hook payload fields and handle common argument-name
 aliases. Re-run hook tests after Codex upgrades.
 
 ### SubagentStart
@@ -181,21 +189,27 @@ PreToolUse.
 
 ### SubagentStop
 
-`subagent_stop.py` asks a child to continue once if its final response lacks the
-required durable `TASK_RESULT` handoff. It honors `stop_hook_active` to prevent
-infinite continuation.
+`subagent_stop.py` asks a child to continue once if its final response is not a
+compact `TASK_RESULT` block (header plus `task_id`, `status`, `artifact_refs`,
+`unresolved`, no preamble, under 800 characters). It honors `stop_hook_active`
+to prevent infinite continuation.
 
 The hook validates message shape, not control-plane truth. The parent must query
 the task.
 
 ## Native lifecycle ownership
 
-- Sol: create/wait/follow up direct Terra only.
-- Terra: create/wait/follow up its direct Luna only.
+- Sol: create/wait/close the direct Terra only. One long `wait_agent`. No
+  `list_agents` / `wait` / `send_message` poll loop. No `artifact_get`, no
+  workspace writes.
+- Terra: create/wait/gate its direct Luna only. One long `wait_agent` then
+  `children_status`. `send_message` and `followup_task` are denied. Read-only;
+  Luna synthesizer writes files.
 - Luna: no collaboration tools.
 
-Cross-layer `send_message` may carry advisory hints, but does not transfer task
-ownership. Avoid ancestor follow-up to a grandchild.
+Terra must not `send_message` children. Recover by spawning a replacement Luna.
+Sol skill forbids the same poll tools; it cannot be hooked safely because Sol is
+the root chat.
 
 ## Model and effort compatibility
 

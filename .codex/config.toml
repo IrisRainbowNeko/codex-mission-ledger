@@ -6,7 +6,7 @@ multi_agent = true
 hooks = true
 
 [[skills.config]]
-path = ".codex/skills/prism"
+path = ".codex/skills/agent-trio"
 enabled = true
 
 [agents]
@@ -28,6 +28,7 @@ enabled_tools = [
   "mission_close",
   "task_allocate",
   "task_get",
+  "children_status",
   "task_claim",
   "task_start",
   "task_heartbeat",
@@ -43,6 +44,7 @@ enabled_tools = [
   "result_check",
   "result_verify",
   "task_commit",
+  "results_gate_and_commit",
   "budget_report",
   "recovery_snapshot",
 ]

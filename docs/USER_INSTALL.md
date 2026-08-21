@@ -1,6 +1,6 @@
 # User-global install (VS Code Codex + CLI)
 
-Use this when you want `$prism` in **any** folder opened by the Codex
+Use this when you want `$agent-trio` in **any** folder opened by the Codex
 VS Code extension or Codex CLI. The control plane stays one Node process; Codex
 still creates native Terra/Luna threads in whatever workspace you opened.
 
@@ -36,7 +36,7 @@ npm run install:user -- --force
 
 The installer:
 
-1. copies the skill to `~/.agents/skills/prism` and `~/.codex/skills/prism`;
+1. copies the skill to `~/.agents/skills/agent-trio` and `~/.codex/skills/agent-trio`;
 2. copies agent profiles to `~/.codex/agents/` only when unmanaged files are absent (or `--force`);
 3. copies hooks to `~/.codex/hooks/hierarchical-codex/` and uses **absolute** paths;
 4. merges MCP settings into `~/.codex/config.toml` without changing your default model;
@@ -57,7 +57,7 @@ Then:
    spawn policy, start injection, and stop checks are inactive.
 5. Run `/mcp` and confirm `hierarchical_codex` is connected.
 6. Select `gpt-5.6-sol`.
-7. Invoke `$prism <mission>`.
+7. Invoke `$agent-trio <mission>`.
 
 `doctor:user` can PASS files/TOML while printing a WARN about untrusted hooks.
 That warning is expected until step 4.
@@ -99,7 +99,7 @@ npm run doctor:user
 
 Confirm `HIERARCHICAL_CODEX_HOME` in `~/.codex/config.toml` points at
 `~/.local/share/hierarchical-codex`, not `~/.codex/hierarchical-codex`. Then
-restart VS Code, open a new chat, run `/mcp`, and retry `$prism`.
+restart VS Code, open a new chat, run `/mcp`, and retry `$agent-trio`.
 
 `npm run install:user -- --force` is only needed if unmanaged skill/agent files
 block the installer. Do not copy this repo's `.codex/config.toml` over
@@ -112,11 +112,15 @@ User hooks call `pre_spawn_policy.py --opt-in`:
 - spawning `terra-coordinator` / `luna-*` / `sol-advisor` is still strictly checked;
 - any other `agent_type` is allowed, so other projects keep normal subagents.
 
+`pre_coordinator_tools.py` is also installed. It denies Terra babysitting tools
+only when the current model is Terra; Sol `list_agents` / `wait` stay allowed.
+
 Project-local `.codex/hooks.json` stays **strict** (unknown profiles denied) so
 this repository itself does not silently fall back to generic agents.
 
 Trust is stored against the hook definition hash. Editing the hook command or
-matcher requires a new `/hooks` review.
+matcher requires a new `/hooks` review. After this change, start a **new** Codex
+chat and trust the new PreToolUse command.
 
 ## Uninstall
 
@@ -134,7 +138,7 @@ SQLite state so you can reinstall without wiping missions.
 - The IDE extension uses its bundled Codex core, not necessarily the system
   `codex` binary. User files under `~/.codex` and `~/.agents` are still shared.
 - Codex plugins are not a VS Code distribution path.
-- If `$prism` is missing, type `$` in a **new** chat after restart. The
+- If `$agent-trio` is missing, type `$` in a **new** chat after restart. The
   user `AGENTS.md` section still applies if the picker is empty.
 - Trust the opened workspace. Untrusted workspaces can hide project overlays;
   user-level MCP/skills should still load.

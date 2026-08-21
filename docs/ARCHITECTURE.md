@@ -115,8 +115,9 @@ accountability.
 
 ### Native command channel
 
-`spawn_agent`, `wait_agent`, `send_message`, and direct child completion. This
-channel controls thread lifecycle and is visible in Codex.
+`spawn_agent`, `wait_agent`, and direct child completion. Terra coordinators
+must not `send_message` or `followup_task`; recovery is a replacement spawn.
+This channel controls thread lifecycle and is visible in Codex.
 
 ### Evidence blackboard
 
@@ -192,6 +193,14 @@ cannot submit because the token and version no longer match.
 
 Idempotency protects retried mutations, not arbitrary semantic duplicates. The
 same key must be reused only for the exact same operation.
+
+## Token placement
+
+Host `token_count` (cached input included) is the cost signal. Target worker
+share is Luna 82 · Terra 13 · Sol 5. Coordinators spawn and gate; Luna reads,
+writes, and synthesizes. Child finals are `TASK_RESULT` IDs so `wait_agent`
+does not re-inject reports into Sol/Terra transcripts. Guardian approval
+threads are host overhead and are reported separately from Luna 82.
 
 ## Budget model
 

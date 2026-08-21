@@ -91,7 +91,11 @@ Never copy a previous lease token into a new worker.
 Defaults:
 
 - lease: 15 minutes;
-- maximum lease: 60 minutes.
+- maximum lease: 4 hours.
+
+Terra coordinators should request `leaseSeconds=14400` on claim/start and
+immediately before a blocking `wait_agent`. Luna keeps the 15-minute default
+unless it asks for more.
 
 Set a lease longer than expected heartbeat jitter but shorter than acceptable
 failure detection. Workers should heartbeat before long, non-streaming tools.
@@ -170,7 +174,7 @@ The project may be untrusted, or the Codex client may not support the expected
 project config layer. Trust the project, restart the client, and create a new
 root thread.
 
-### `$prism` missing from the App picker
+### `$agent-trio` missing from the App picker
 
 `npm install` / `npm run doctor` do not register the skill with ChatGPT. Codex
 enumerates skills at session start from the **workspace root**.
@@ -179,8 +183,8 @@ enumerates skills at session start from the **workspace root**.
    Codex workspace.
 2. Trust the project. Some Codex builds hide `.codex/skills` until trusted.
 3. Restart the App and start a new conversation.
-4. Confirm both `.codex/skills/prism/SKILL.md` and
-   `.agents/skills/prism/SKILL.md` exist.
+4. Confirm both `.codex/skills/agent-trio/SKILL.md` and
+   `.agents/skills/agent-trio/SKILL.md` exist.
 5. If the `$` list is still empty, continue with `AGENTS.md`; it is injected
    for trusted workspaces even when the picker is empty.
 
@@ -222,6 +226,19 @@ Reservations are hierarchical:
 - actual usage counts against task and mission.
 
 Inspect sibling budgets and reported usage before raising limits.
+
+### Measuring host token share
+
+Ledger `usage_json` is agent-reported and can be near zero. Measure Codex host
+`token_count` instead (cached input included):
+
+```bash
+npx tsx scripts/measure-host-tokens.ts <parent-session-id>
+```
+
+Worker-thread target is Luna 82 · Terra 13 · Sol 5. Guardian share is printed
+separately and must not be folded into Luna 82. First rerun pass: Luna ≥75,
+Terra ≤18, Sol ≤12.
 
 ## Shutdown
 

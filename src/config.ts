@@ -154,7 +154,7 @@ export function loadConfig(
     ),
     maxLeaseSeconds: positiveInteger(
       environment["HIERARCHICAL_CODEX_MAX_LEASE_SECONDS"],
-      60 * 60,
+      4 * 60 * 60,
       "HIERARCHICAL_CODEX_MAX_LEASE_SECONDS",
     ),
     eventPageSize: positiveInteger(

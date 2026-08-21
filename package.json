@@ -1,6 +1,6 @@
 {
   "name": "hierarchical-codex",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Deterministic MCP control plane for native hierarchical Codex agents.",
   "type": "module",
@@ -34,6 +34,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build",
+    "measure:tokens": "tsx scripts/measure-host-tokens.ts",
     "install:user": "tsx src/install-user.ts",
     "uninstall:user": "tsx src/install-user.ts --uninstall",
     "doctor:user": "tsx src/doctor.ts --user"

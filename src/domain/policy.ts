@@ -4,15 +4,22 @@ import type {
   BudgetLimits,
   ModelTier,
   ReasoningEffort,
+  RiskLevel,
   TaskStatus,
   Usage,
 } from "./types.js";
 
 export const ALLOWED_EFFORTS: Readonly<Record<ModelTier, readonly ReasoningEffort[]>> = {
   sol: ["high", "xhigh", "max"],
-  terra: ["xhigh", "max"],
+  terra: ["high", "xhigh", "max"],
   luna: ["high", "xhigh", "max"],
 };
+
+/** Candidate summaries must stay short so Sol/Terra transcripts are not the report. */
+export const CANDIDATE_SUMMARY_MAX_CHARS = 500;
+
+/** Low/medium work may collapse check+verify+commit into one MCP call. Gates still run. */
+export const COLLAPSIBLE_GATE_RISKS: readonly RiskLevel[] = ["low", "medium"];
 
 export const ALLOWED_MODELS_BY_ROLE: Readonly<Record<AgentRole, readonly ModelTier[]>> = {
   director: ["sol"],

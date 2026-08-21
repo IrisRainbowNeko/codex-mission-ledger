@@ -103,6 +103,12 @@ command = "echo"
     };
     expect(hooks.hooks.PreToolUse.some((entry) => entry.matcher === "^Shell$")).toBe(true);
     expect(
+      hooks.hooks.PreToolUse.some(
+        (entry) => entry.matcher === "^(wait|Wait|list_agents|send_message|followup_task)$",
+      ),
+    ).toBe(true);
+    expect(hooks.hooks.PreToolUse.some((entry) => entry.matcher === "^wait_agent$")).toBe(true);
+    expect(
       hooks.hooks.PreToolUse.some((entry) =>
         entry.hooks.some((hook) => hook.command.includes("--opt-in")),
       ),
@@ -134,8 +140,8 @@ enabled = true
     const merged = mergeUserConfig(broken, paths, {
       ...paths,
       agentsHome: join(home, ".agents"),
-      skillAgents: join(home, ".agents", "skills", "prism"),
-      skillCodex: join(paths.codexHome, "skills", "prism"),
+      skillAgents: join(home, ".agents", "skills", "agent-trio"),
+      skillCodex: join(paths.codexHome, "skills", "agent-trio"),
       agentDirectory: join(paths.codexHome, "agents"),
       hookDirectory: join(paths.codexHome, "hooks", "hierarchical-codex"),
       hooksJson: join(paths.codexHome, "hooks.json"),

@@ -5,8 +5,39 @@ versioning once releases begin.
 
 ## [Unreleased]
 
+### Planned
+
+- Adaptive mission routing (`direct` / `fanout` / `director_plan` / `pipeline`).
+- End-to-end compatibility matrix for Codex App, CLI, and VS Code.
+- Host-authoritative token accounting.
+- Retention and artifact garbage collection.
+- Exported observability metrics.
+
+## [0.2.0] - 2026-08-21
+
+### Added
+
+- Terra PreToolUse hook blocks coordinator babysitting (`wait`, `list_agents`,
+  `send_message`, `followup_task`) and short `wait_agent` polls. Sol stays
+  skill-only so ordinary root chats keep those tools.
+- Compact `children_status` MCP tool for one post-wait child snapshot.
+- `results_gate_and_commit` records check + verify + commit in one call for
+  low/medium risk only. Gates are not skipped.
+- Host token measurer: `npx tsx scripts/measure-host-tokens.ts <parent-session-id>`.
+
 ### Changed
 
+- Coordinators are cheap: Terra spawn effort defaults to `high` (still may
+  use `xhigh`/`max`). Terra sandbox is read-only; a Luna synthesizer writes
+  the user-facing deliverable. Sol `artifact_get` / file I/O is out of the
+  happy path. Target host token mass is Luna 82 · Terra 13 · Sol 5.
+- `result_submit_candidate.summary` is capped at 500 characters. SubagentStop
+  accepts only a compact `TASK_RESULT` block so `wait_agent` does not re-inject
+  reports into parent transcripts.
+- Luna verifier is default-off for low/medium deterministic work.
+- Coordinator leases: default remains 15 minutes; maximum default is 4 hours
+  so Terra can `wait_agent` without a heartbeat poll loop. Terra should pass
+  `leaseSeconds=14400` on claim/start/pre-wait heartbeat.
 - Luna verifier protocol is now one path: Terra does not allocate a verifier
   task; spawn with `review_target_task_id`, and the verifier only
   `result_check`s the producer candidate. Spawn policy requires that field.
@@ -14,8 +45,8 @@ versioning once releases begin.
   (no extra `missionId`; same-task artifact refs; report actual `usage`).
 - User-install backups go to `~/.codex/hierarchical-codex/backups/` instead of
   sibling `.bak-*` folders under `skills/`, which Codex was loading.
-- Skill invocation is `$prism` (was `$sol-terra-luna`). Reinstall removes the
-  old skill folders so Codex does not list both.
+- Skill invocation is `$agent-trio` (was `$prism` / `$sol-terra-luna`). Reinstall
+  removes the old skill folders so Codex does not list both.
 
 ### Fixed
 
@@ -27,13 +58,6 @@ versioning once releases begin.
 - `serveStdio()` returns a connection handle, not a Promise. The MCP entrypoint
   awaited it and closed SQLite in `finally` before any tool call, so
   `mission_create` failed with `database is not open`.
-
-### Planned
-
-- End-to-end compatibility matrix for Codex App, CLI, and VS Code.
-- Host-authoritative token accounting.
-- Retention and artifact garbage collection.
-- Exported observability metrics.
 
 ## [0.1.0] - 2026-08-20
 

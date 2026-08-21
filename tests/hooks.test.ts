@@ -33,6 +33,7 @@ function spawnPrompt(profile: string): string {
 
 describe("Codex lifecycle hooks", () => {
   it.each([
+    ["terra-coordinator", "gpt-5.6-sol", "gpt-5.6-terra", "high", "v2"],
     ["terra-coordinator", "gpt-5.6-sol", "gpt-5.6-terra", "xhigh", "v2"],
     ["terra-coordinator", "gpt-5.6-sol", "gpt-5.6-terra", "max", "v2"],
     ["sol-advisor", "gpt-5.6-sol", "gpt-5.6-sol", "high", "v2"],
@@ -72,7 +73,7 @@ describe("Codex lifecycle hooks", () => {
       tool_input: {
         agent_type: "terra-coordinator",
         model: "gpt-5.6-terra",
-        reasoning_effort: "xhigh",
+        reasoning_effort: "high",
         fork_turns: "none",
         prompt: "TaskEnvelope task_id: tsk_abc123",
       },
@@ -106,7 +107,7 @@ describe("Codex lifecycle hooks", () => {
       tool_input: {
         agent_type: "terra-coordinator",
         model: "gpt-5.6-terra",
-        reasoning_effort: "high",
+        reasoning_effort: "medium",
         fork_turns: "none",
         prompt: "task_id: tsk_abc123",
       },
@@ -280,5 +281,97 @@ describe("Codex lifecycle hooks", () => {
       ].join("\n"),
     });
     expect(output).toEqual({});
+  });
+
+  it("rejects a TASK_RESULT buried in a report", () => {
+    const output = runHook("subagent_stop.py", {
+      hook_event_name: "SubagentStop",
+      agent_type: "luna-producer",
+      stop_hook_active: false,
+      last_assistant_message: [
+        "Here is the full analysis of the repository...",
+        "TASK_RESULT",
+        "task_id: tsk_abc123",
+        "status: candidate_submitted",
+        "artifact_refs: art_123",
+        "unresolved: none",
+      ].join("\n"),
+    });
+    expect(output).toMatchObject({ decision: "block" });
+  });
+
+  it("denies Terra babysitting tools and short wait_agent, and fails open otherwise", () => {
+    const deniedWait = runHook("pre_coordinator_tools.py", {
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.6-terra",
+      tool_name: "wait",
+      tool_input: { yield_time_ms: 30000 },
+    });
+    expect(deniedWait).toMatchObject({
+      hookSpecificOutput: { permissionDecision: "deny" },
+    });
+
+    const deniedList = runHook("pre_coordinator_tools.py", {
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.6-terra",
+      tool_name: "list_agents",
+      tool_input: {},
+    });
+    expect(deniedList).toMatchObject({
+      hookSpecificOutput: { permissionDecision: "deny" },
+    });
+
+    const deniedSend = runHook("pre_coordinator_tools.py", {
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.6-terra",
+      tool_name: "send_message",
+      tool_input: { target: "engineering_quality", message: "ping" },
+    });
+    expect(deniedSend).toMatchObject({
+      hookSpecificOutput: { permissionDecision: "deny" },
+    });
+
+    const deniedFollowup = runHook("pre_coordinator_tools.py", {
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.6-terra",
+      tool_name: "followup_task",
+      tool_input: { target: "code_architecture", message: "ping" },
+    });
+    expect(deniedFollowup).toMatchObject({
+      hookSpecificOutput: { permissionDecision: "deny" },
+    });
+
+    const deniedShortWait = runHook("pre_coordinator_tools.py", {
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.6-terra",
+      tool_name: "wait_agent",
+      tool_input: { timeout_ms: 60_000 },
+    });
+    expect(deniedShortWait).toMatchObject({
+      hookSpecificOutput: { permissionDecision: "deny" },
+    });
+
+    const allowedLongWait = runHook("pre_coordinator_tools.py", {
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.6-terra",
+      tool_name: "wait_agent",
+      tool_input: { timeout_ms: 3_600_000 },
+    });
+    expect(allowedLongWait).toEqual({});
+
+    const solList = runHook("pre_coordinator_tools.py", {
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.6-sol",
+      tool_name: "list_agents",
+      tool_input: {},
+    });
+    expect(solList).toEqual({});
+
+    const missingModel = runHook("pre_coordinator_tools.py", {
+      hook_event_name: "PreToolUse",
+      tool_name: "wait",
+      tool_input: { yield_time_ms: 30000 },
+    });
+    expect(missingModel).toEqual({});
   });
 });

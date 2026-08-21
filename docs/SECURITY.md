@@ -48,7 +48,9 @@ claims.
 - Sol cannot directly spawn Luna in the strict hierarchy.
 - Verifier workspace sandbox is read-only.
 
-The PreToolUse hook enforces spawn shape and model/effort compatibility.
+The PreToolUse hook enforces spawn shape, model/effort compatibility, and Terra
+coordinator babysit bans (`wait` / `list_agents` / `send_message` /
+`followup_task` / short `wait_agent`).
 
 ### Lease fencing
 

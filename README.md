@@ -17,7 +17,7 @@ The project follows one explicit route:
 
 ```text
 Codex native execution plane
-  spawn_agent / wait_agent / send_message / Subagents UI
+  spawn_agent / wait_agent / Subagents UI
                   |
                   | task_id in TaskEnvelope
                   v
@@ -36,9 +36,9 @@ MCP and hooks do not create native threads. The Sol or Terra model calls native
 
 - Mission and task ledgers with optimistic versions.
 - Direct-parent role policy: Sol director → Terra coordinator → Luna leaf.
-- Model/effort matrix:
-  - Sol: `high`, `xhigh`, `max`
-  - Terra: `xhigh`, `max`
+- Model/effort matrix (coordinators cheap, Luna expensive):
+  - Sol: `high`, `xhigh`, `max` (do not raise the parent chat for orchestration)
+  - Terra: `high` default; `xhigh`, `max` allowed
   - Luna: `high`, `xhigh`, `max`
 - Dependency-aware readiness and bounded child allocation.
 - Expiring worker leases, heartbeats, release, and safe reclamation.
@@ -74,7 +74,7 @@ Then:
    must use this folder as its workspace.
 2. Trust the project when prompted. Untrusted projects hide `.codex` skills.
 3. Start a **new** root conversation with `gpt-5.6-sol` (skills load at startup).
-4. Type `$` and select `prism`, or invoke `$prism <mission>`.
+4. Type `$` and select `agent-trio`, or invoke `$agent-trio <mission>`.
    If the picker is empty, `AGENTS.md` still instructs the root Sol.
 5. Inspect native child activity in the Subagents UI and durable state through
    the MCP tools.
@@ -145,6 +145,7 @@ Task and lease:
 
 - `task_allocate`
 - `task_get`
+- `children_status`
 - `task_claim`
 - `task_start`
 - `task_heartbeat`
@@ -155,6 +156,7 @@ Task and lease:
 - `task_supersede`
 - `task_set_effort`
 - `task_commit`
+- `results_gate_and_commit`
 
 Artifacts and evidence:
 
