@@ -3,10 +3,14 @@ import type { ControlPlaneError } from "../src/domain/errors.js";
 import {
   baseMissionInput,
   createTestHarness,
+  directorPlanPath,
+  lunaRootTaskInput,
   lunaTaskInput,
+  samplePortrait,
   terraTaskInput,
   type TestHarness,
 } from "./helpers.js";
+import { FANOUT_TERRA_OBJECTIVE_MAX_CHARS } from "../src/domain/policy.js";
 
 describe("ControlPlane", () => {
   let harness: TestHarness | undefined;
@@ -21,6 +25,8 @@ describe("ControlPlane", () => {
     const { controlPlane, repository } = harness;
 
     const mission = controlPlane.createMission(baseMissionInput());
+    expect(mission.strategy).toBe("fanout");
+    expect(mission.directorPlan).toBeNull();
     const replayed = controlPlane.createMission(baseMissionInput());
     expect(replayed.id).toBe(mission.id);
     expect(repository.listEvents(mission.id, 0, 50)).toHaveLength(1);
@@ -669,12 +675,12 @@ describe("ControlPlane", () => {
       idempotencyKey: "gate:batch:1",
     });
     expect(gated.tasks.map((task) => task.status)).toEqual(["committed", "committed"]);
-    expect(repository.listReviews(mission.id).filter((review) => review.stage === "check")).toHaveLength(
-      2,
-    );
-    expect(repository.listReviews(mission.id).filter((review) => review.stage === "verify")).toHaveLength(
-      2,
-    );
+    expect(
+      repository.listReviews(mission.id).filter((review) => review.stage === "check"),
+    ).toHaveLength(2);
+    expect(
+      repository.listReviews(mission.id).filter((review) => review.stage === "verify"),
+    ).toHaveLength(2);
 
     const replayed = controlPlane.gateAndCommitResults({
       reviewerId: "terra-1",
@@ -753,7 +759,9 @@ describe("ControlPlane", () => {
       ...baseMissionInput("mission:create:high:1"),
       risk: "high",
     });
-    const highTerra = controlPlane.allocateTask(terraTaskInput(highMission.id, "task:terra:high:1"));
+    const highTerra = controlPlane.allocateTask(
+      terraTaskInput(highMission.id, "task:terra:high:1"),
+    );
     const highClaim = controlPlane.claimTask({
       taskId: highTerra.id,
       workerId: "terra-high",
@@ -827,7 +835,520 @@ describe("ControlPlane", () => {
       }),
     );
   });
+
+  it("locks mission strategy, directorPlan, and root allocation policy", () => {
+    harness = createTestHarness();
+    const { controlPlane } = harness;
+
+    expect(() =>
+      controlPlane.createMission({
+        ...baseMissionInput("mission:plan-missing:1"),
+        strategy: "director_plan",
+        portrait: samplePortrait({ ambiguity: "high", validator: "none" }),
+      }),
+    ).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({ code: "validation_error" }),
+    );
+    expect(() =>
+      controlPlane.createMission({
+        ...baseMissionInput("mission:plan-on-fanout:1"),
+        strategy: "fanout",
+        directorPlan: directorPlanPath(),
+      }),
+    ).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({ code: "validation_error" }),
+    );
+
+    const planned = controlPlane.createMission({
+      ...baseMissionInput("mission:director:1"),
+      strategy: "director_plan",
+      portrait: samplePortrait({ ambiguity: "high", validator: "weak" }),
+      directorPlan: directorPlanPath("director-plan.md"),
+    });
+    expect(planned.strategy).toBe("director_plan");
+    expect(planned.directorPlan).toBe("director-plan.md");
+    const closedPlan = controlPlane.closeMission({
+      missionId: planned.id,
+      actorId: "sol-root",
+      expectedVersion: planned.version,
+      idempotencyKey: "mission:director:close:1",
+    });
+    expect(closedPlan.strategy).toBe("director_plan");
+    expect(closedPlan.directorPlan).toBe("director-plan.md");
+
+    const direct = controlPlane.createMission({
+      ...baseMissionInput("mission:direct:1"),
+      strategy: "direct",
+      portrait: samplePortrait({ parallelism: "low", validator: "strong" }),
+    });
+    expect(() =>
+      controlPlane.allocateTask(terraTaskInput(direct.id, "task:direct-terra:1")),
+    ).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({ code: "policy_violation" }),
+    );
+    const luna = controlPlane.allocateTask(lunaRootTaskInput(direct.id));
+    expect(luna).toMatchObject({
+      parentTaskId: null,
+      role: "operator",
+      model: "luna",
+    });
+    expect(() =>
+      controlPlane.allocateTask(lunaRootTaskInput(direct.id, "task:direct-luna-2:1")),
+    ).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({ code: "policy_violation" }),
+    );
+
+    const fanout = controlPlane.createMission(baseMissionInput("mission:fanout-long:1"));
+    expect(() =>
+      controlPlane.allocateTask({
+        ...terraTaskInput(fanout.id, "task:fanout-long:1"),
+        objective: "x".repeat(FANOUT_TERRA_OBJECTIVE_MAX_CHARS + 1),
+      }),
+    ).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({ code: "policy_violation" }),
+    );
+
+    const pipeline = controlPlane.createMission({
+      ...baseMissionInput("mission:pipeline:1"),
+      strategy: "pipeline",
+      portrait: samplePortrait({ coupling: "high", parallelism: "low" }),
+    });
+    controlPlane.allocateTask(terraTaskInput(pipeline.id, "task:pipeline-terra:1"));
+    expect(() =>
+      controlPlane.allocateTask(terraTaskInput(pipeline.id, "task:pipeline-terra-2:1")),
+    ).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({ code: "policy_violation" }),
+    );
+  });
+
+  it("lets Sol gate-and-commit a direct Luna candidate", () => {
+    harness = createTestHarness();
+    const { controlPlane } = harness;
+    const mission = controlPlane.createMission({
+      ...baseMissionInput("mission:direct-gate:1"),
+      strategy: "direct",
+      portrait: samplePortrait({ parallelism: "low" }),
+    });
+    const luna = controlPlane.allocateTask(lunaRootTaskInput(mission.id, "task:direct-luna:1"));
+    const claimed = controlPlane.claimTask({
+      taskId: luna.id,
+      workerId: "luna-producer-direct",
+      expectedVersion: luna.version,
+      idempotencyKey: "claim:direct-luna:1",
+    });
+    const running = controlPlane.startTask({
+      taskId: luna.id,
+      workerId: "luna-producer-direct",
+      leaseToken: claimed.leaseToken!,
+      expectedVersion: claimed.version,
+      idempotencyKey: "start:direct-luna:1",
+    });
+    const artifact = controlPlane.putArtifact({
+      taskId: luna.id,
+      actorId: "luna-producer-direct",
+      kind: "report",
+      mimeType: "text/plain",
+      content: "direct deliverable",
+      encoding: "utf8",
+      idempotencyKey: "artifact:direct-luna:1",
+    });
+    const candidate = controlPlane.submitCandidate({
+      taskId: luna.id,
+      workerId: "luna-producer-direct",
+      leaseToken: running.leaseToken!,
+      expectedVersion: running.version,
+      summary: "Wrote the deliverable.",
+      artifactRefs: [artifact.id],
+      claims: [
+        {
+          statement: "The deliverable was produced.",
+          confidence: 0.9,
+          evidenceRefs: [artifact.id],
+          artifactId: artifact.id,
+        },
+      ],
+      usage: { tokens: 20, costUsd: 0.02, toolCalls: 1, wallClockSeconds: 1 },
+      idempotencyKey: "candidate:direct-luna:1",
+    });
+    expect(() =>
+      controlPlane.gateAndCommitResults({
+        reviewerId: "luna-producer-direct",
+        decisions: [
+          {
+            taskId: candidate.task.id,
+            expectedVersion: candidate.task.version,
+            approved: true,
+            notes: "producer self-approve",
+          },
+        ],
+        idempotencyKey: "gate:direct-self:1",
+      }),
+    ).toThrowError(expect.objectContaining<Partial<ControlPlaneError>>({ code: "forbidden" }));
+    const gated = controlPlane.gateAndCommitResults({
+      reviewerId: "sol-root",
+      decisions: [
+        {
+          taskId: candidate.task.id,
+          expectedVersion: candidate.task.version,
+          approved: true,
+          evidenceRefs: [artifact.id],
+          notes: "Done criteria and artifact hash match.",
+        },
+      ],
+      idempotencyKey: "gate:direct:1",
+    });
+    expect(gated.tasks[0]?.status).toBe("committed");
+  });
+
+  it("auto-finalizes a fanout Terra candidate on mission_close and retries a stale mission version", () => {
+    harness = createTestHarness();
+    const { controlPlane, repository } = harness;
+    const mission = controlPlane.createMission(baseMissionInput("mission:close-autofinalize:1"));
+    const { terra, terraRunning, child } = startTerraWithCandidateChild(
+      controlPlane,
+      mission.id,
+      "autofinalize",
+    );
+    const gated = controlPlane.gateAndCommitResults({
+      reviewerId: "terra-1",
+      parentTaskId: terra.id,
+      decisions: [
+        {
+          taskId: child.task.id,
+          expectedVersion: child.task.version,
+          approved: true,
+          evidenceRefs: [child.artifactId],
+          notes: "Child hashes match.",
+        },
+      ],
+      idempotencyKey: "gate:autofinalize-child:1",
+    });
+    expect(gated.tasks[0]?.status).toBe("committed");
+
+    const summary = controlPlane.putArtifact({
+      taskId: terra.id,
+      actorId: "terra-1",
+      kind: "coordination-summary",
+      mimeType: "text/plain",
+      content: "Luna wrote LIME_项目分析报告.md",
+      encoding: "utf8",
+      idempotencyKey: "artifact:terra-summary:1",
+    });
+    const terraCandidate = controlPlane.submitCandidate({
+      taskId: terra.id,
+      workerId: "terra-1",
+      leaseToken: terraRunning.leaseToken!,
+      expectedVersion: terraRunning.version,
+      summary: "Deliverable is LIME_项目分析报告.md",
+      artifactRefs: [summary.id],
+      claims: [{ statement: "The synthesizer wrote the report.", evidenceRefs: [summary.id] }],
+      idempotencyKey: "candidate:terra-summary:1",
+    });
+    expect(terraCandidate.task.status).toBe("candidate");
+    expect(controlPlane.getMission(mission.id, false)).toMatchObject({ version: 3 });
+
+    const closed = controlPlane.closeMission({
+      missionId: mission.id,
+      actorId: "sol-root",
+      expectedVersion: 1,
+      idempotencyKey: "close:autofinalize:1",
+    });
+    expect(closed.status).toBe("completed");
+    expect(controlPlane.getTask(terra.id).status).toBe("committed");
+    const types = repository.listEvents(mission.id, 0, 200).map((event) => event.type);
+    expect(types).toEqual(
+      expect.arrayContaining([
+        "result.check_approved",
+        "result.verify_approved",
+        "task.committed",
+        "mission.completed",
+      ]),
+    );
+    expect(
+      repository.listReviews(mission.id).filter((review) => review.taskId === terra.id),
+    ).toHaveLength(2);
+  });
+
+  it("does not auto-finalize a high-risk coordinator on close", () => {
+    harness = createTestHarness();
+    const { controlPlane } = harness;
+    const mission = controlPlane.createMission({
+      ...baseMissionInput("mission:close-high:1"),
+      risk: "high",
+    });
+    const { terra, terraRunning, child } = startTerraWithCandidateChild(
+      controlPlane,
+      mission.id,
+      "high-close",
+      { terraRisk: "high" },
+    );
+    const checked = controlPlane.checkResult({
+      taskId: child.task.id,
+      reviewerId: "terra-1",
+      expectedVersion: child.task.version,
+      approved: true,
+      evidenceRefs: [child.artifactId],
+      notes: "Check only.",
+      idempotencyKey: "check:high-close:1",
+    });
+    const verified = controlPlane.verifyResult({
+      taskId: child.task.id,
+      reviewerId: "terra-1",
+      expectedVersion: checked.version,
+      approved: true,
+      evidenceRefs: [child.artifactId],
+      notes: "Verify only.",
+      idempotencyKey: "verify:high-close:1",
+    });
+    controlPlane.commitTask({
+      taskId: child.task.id,
+      actorId: "terra-1",
+      expectedVersion: verified.version,
+      idempotencyKey: "commit:high-close:1",
+    });
+    const summary = controlPlane.putArtifact({
+      taskId: terra.id,
+      actorId: "terra-1",
+      kind: "coordination-summary",
+      mimeType: "text/plain",
+      content: "high-risk summary",
+      encoding: "utf8",
+      idempotencyKey: "artifact:high-terra:1",
+    });
+    controlPlane.submitCandidate({
+      taskId: terra.id,
+      workerId: "terra-1",
+      leaseToken: terraRunning.leaseToken!,
+      expectedVersion: terraRunning.version,
+      summary: "Coordinator submitted.",
+      artifactRefs: [summary.id],
+      claims: [],
+      idempotencyKey: "candidate:high-terra:1",
+    });
+
+    expect(() =>
+      controlPlane.closeMission({
+        missionId: mission.id,
+        actorId: "sol-root",
+        expectedVersion: 1,
+        idempotencyKey: "close:high:1",
+      }),
+    ).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({
+        code: "invalid_state",
+      }),
+    );
+    expect(controlPlane.getTask(terra.id).status).toBe("candidate");
+  });
+
+  it("accepts a stale expectedParentVersion when the parent lease is valid", () => {
+    harness = createTestHarness();
+    const { controlPlane } = harness;
+    const mission = controlPlane.createMission(baseMissionInput("mission:stale-parent:1"));
+    const terra = controlPlane.allocateTask(
+      terraTaskInput(mission.id, "task:terra:stale-parent:1"),
+    );
+    const claimed = controlPlane.claimTask({
+      taskId: terra.id,
+      workerId: "terra-1",
+      expectedVersion: terra.version,
+      idempotencyKey: "claim:terra:stale-parent:1",
+    });
+    const running = controlPlane.startTask({
+      taskId: terra.id,
+      workerId: "terra-1",
+      leaseToken: claimed.leaseToken!,
+      expectedVersion: claimed.version,
+      idempotencyKey: "start:terra:stale-parent:1",
+    });
+    const heartbeat = controlPlane.heartbeatTask({
+      taskId: terra.id,
+      workerId: "terra-1",
+      leaseToken: running.leaseToken!,
+      expectedVersion: running.version,
+      idempotencyKey: "heartbeat:terra:stale-parent:1",
+    });
+    expect(heartbeat.version).toBeGreaterThan(running.version);
+
+    const luna = controlPlane.allocateTask(
+      lunaTaskInput(
+        mission.id,
+        terra.id,
+        running.version,
+        running.leaseToken!,
+        "task:luna:stale-parent:1",
+      ),
+    );
+    expect(luna.status).toBe("ready");
+    expect(() =>
+      controlPlane.allocateTask({
+        ...lunaTaskInput(
+          mission.id,
+          terra.id,
+          running.version,
+          "lease_forged",
+          "task:luna:bad-lease:1",
+        ),
+        budget: { tokens: 400, costUsd: 4, wallClockSeconds: 400, toolCalls: 40 },
+      }),
+    ).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({
+        code: "lease_conflict",
+      }),
+    );
+  });
+
+  it("counts remaining budget on running siblings so a replacement and synthesizer fit", () => {
+    harness = createTestHarness();
+    const { controlPlane } = harness;
+    const mission = controlPlane.createMission(baseMissionInput("mission:remaining-budget:1"));
+    const terra = controlPlane.allocateTask({
+      ...terraTaskInput(mission.id, "task:terra:remaining:1"),
+      budget: {
+        tokens: 2_000,
+        costUsd: 20,
+        wallClockSeconds: 1_000,
+        toolCalls: 200,
+        maxChildren: 4,
+      },
+    });
+    const claimed = controlPlane.claimTask({
+      taskId: terra.id,
+      workerId: "terra-1",
+      expectedVersion: terra.version,
+      idempotencyKey: "claim:terra:remaining:1",
+    });
+    const running = controlPlane.startTask({
+      taskId: terra.id,
+      workerId: "terra-1",
+      leaseToken: claimed.leaseToken!,
+      expectedVersion: claimed.version,
+      idempotencyKey: "start:terra:remaining:1",
+    });
+    const live = controlPlane.allocateTask({
+      ...lunaTaskInput(
+        mission.id,
+        terra.id,
+        running.version,
+        running.leaseToken!,
+        "task:luna:remaining-live:1",
+      ),
+      budget: { tokens: 400, costUsd: 4, wallClockSeconds: 700, toolCalls: 40 },
+    });
+    const liveClaim = controlPlane.claimTask({
+      taskId: live.id,
+      workerId: "luna-live",
+      expectedVersion: live.version,
+      idempotencyKey: "claim:luna:remaining-live:1",
+    });
+    const liveRunning = controlPlane.startTask({
+      taskId: live.id,
+      workerId: "luna-live",
+      leaseToken: liveClaim.leaseToken!,
+      expectedVersion: liveClaim.version,
+      idempotencyKey: "start:luna:remaining-live:1",
+    });
+    controlPlane.reportBudget({
+      missionId: mission.id,
+      taskId: live.id,
+      actorId: "luna-live",
+      expectedMissionVersion: 1,
+      expectedTaskVersion: liveRunning.version,
+      usage: { wallClockSeconds: 600 },
+      idempotencyKey: "budget:luna:remaining-live:1",
+    });
+
+    const failed = controlPlane.allocateTask({
+      ...lunaTaskInput(
+        mission.id,
+        terra.id,
+        running.version,
+        running.leaseToken!,
+        "task:luna:remaining-failed:1",
+      ),
+      budget: { tokens: 400, costUsd: 4, wallClockSeconds: 400, toolCalls: 40 },
+    });
+    const failedClaim = controlPlane.claimTask({
+      taskId: failed.id,
+      workerId: "luna-failed",
+      expectedVersion: failed.version,
+      idempotencyKey: "claim:luna:remaining-failed:1",
+    });
+    const failedRunning = controlPlane.startTask({
+      taskId: failed.id,
+      workerId: "luna-failed",
+      leaseToken: failedClaim.leaseToken!,
+      expectedVersion: failedClaim.version,
+      idempotencyKey: "start:luna:remaining-failed:1",
+    });
+    controlPlane.failTask({
+      taskId: failed.id,
+      workerId: "luna-failed",
+      leaseToken: failedRunning.leaseToken!,
+      expectedVersion: failedRunning.version,
+      reason: "Architecture artifact was rejected.",
+      usage: { wallClockSeconds: 50 },
+      idempotencyKey: "fail:luna:remaining-failed:1",
+    });
+
+    const replacement = controlPlane.allocateTask({
+      ...lunaTaskInput(
+        mission.id,
+        terra.id,
+        running.version,
+        running.leaseToken!,
+        "task:luna:remaining-replacement:1",
+      ),
+      budget: { tokens: 400, costUsd: 4, wallClockSeconds: 200, toolCalls: 40 },
+    });
+    const synthesizer = controlPlane.allocateTask({
+      ...lunaTaskInput(
+        mission.id,
+        terra.id,
+        running.version,
+        running.leaseToken!,
+        "task:luna:remaining-synth:1",
+      ),
+      budget: { tokens: 400, costUsd: 4, wallClockSeconds: 350, toolCalls: 40 },
+    });
+    expect(replacement.status).toBe("ready");
+    expect(synthesizer.status).toBe("ready");
+  });
 });
+
+function startTerraWithCandidateChild(
+  controlPlane: TestHarness["controlPlane"],
+  missionId: string,
+  label: string,
+  options: { terraRisk?: "low" | "medium" | "high" | "critical" } = {},
+) {
+  const terra = controlPlane.allocateTask({
+    ...terraTaskInput(missionId, `task:terra:${label}:1`),
+    risk: options.terraRisk ?? "medium",
+  });
+  const terraClaim = controlPlane.claimTask({
+    taskId: terra.id,
+    workerId: "terra-1",
+    expectedVersion: terra.version,
+    idempotencyKey: `claim:terra:${label}:1`,
+  });
+  const terraRunning = controlPlane.startTask({
+    taskId: terra.id,
+    workerId: "terra-1",
+    leaseToken: terraClaim.leaseToken!,
+    expectedVersion: terraClaim.version,
+    idempotencyKey: `start:terra:${label}:1`,
+  });
+  const child = produceLunaCandidate(
+    controlPlane,
+    missionId,
+    terra.id,
+    terraRunning.version,
+    terraRunning.leaseToken!,
+    label,
+  );
+  return { terra, terraRunning, child };
+}
 
 function produceLunaCandidate(
   controlPlane: TestHarness["controlPlane"],

@@ -53,12 +53,15 @@ does not need to know how the UI renders a thread.
 
 ### Sol director
 
+- Emits a no-tool `MISSION_ROUTE`, then locks `mission.strategy` on create.
 - Converts the user request into a mission contract.
-- Chooses whether hierarchy is useful.
 - Allocates total risk and budget.
-- Creates a few coherent Terra cells.
+- On `fanout` / `director_plan` / `pipeline`, creates Terra cells.
+- On `direct`, allocates one root Luna and reviews it (not as producer).
+- Writes one bounded markdown plan in the project folder when strategy is
+  `director_plan`, and stores that relative path on the mission.
 - Resolves cross-cell conflict and performs final acceptance.
-- Does not manage Luna lifecycle directly.
+- Does not babysit children with `list_agents` / `wait` / `send_message`.
 
 ### Terra coordinator
 

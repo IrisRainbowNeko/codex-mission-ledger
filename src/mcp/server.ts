@@ -23,7 +23,15 @@ import type {
 import type { ControlPlane } from "../control-plane.js";
 import { isControlPlaneError } from "../domain/errors.js";
 import { mapSqliteError } from "../infra/database.js";
-import { AGENT_ROLES, MODEL_TIERS, REASONING_EFFORTS, RISK_LEVELS } from "../domain/types.js";
+import {
+  AGENT_ROLES,
+  MISSION_STRATEGIES,
+  MODEL_TIERS,
+  PORTRAIT_LEVELS,
+  REASONING_EFFORTS,
+  RISK_LEVELS,
+  VALIDATOR_STRENGTHS,
+} from "../domain/types.js";
 
 const id = z.string().trim().min(1).max(200);
 const idempotencyKey = z.string().trim().min(8).max(200);
@@ -31,6 +39,15 @@ const text = z.string().trim().min(1).max(20_000);
 const shortText = z.string().trim().min(1).max(500);
 const stringList = z.array(z.string().trim().min(1).max(2_000)).max(500);
 const risk = z.enum(RISK_LEVELS);
+const strategy = z.enum(MISSION_STRATEGIES);
+const portrait = z
+  .object({
+    ambiguity: z.enum(PORTRAIT_LEVELS),
+    coupling: z.enum(PORTRAIT_LEVELS),
+    parallelism: z.enum(PORTRAIT_LEVELS),
+    validator: z.enum(VALIDATOR_STRENGTHS),
+  })
+  .strict();
 const role = z.enum(AGENT_ROLES);
 const model = z.enum(MODEL_TIERS);
 const effort = z.enum(REASONING_EFFORTS);
@@ -136,13 +153,16 @@ export function createMcpServer(controlPlane: ControlPlane): McpServer {
     {
       title: "Create mission",
       description:
-        "Create the durable mission record before spawning any Terra agents. Returns the mission ID and authoritative budget version.",
+        "Create the durable mission record before spawning agents. strategy is locked at create (default fanout). directorPlan is required only for director_plan: a workspace-relative .md path to the plan file Sol wrote in the project folder. Forbidden otherwise.",
       inputSchema: z
         .object({
           objective: text,
           constraints: stringList.optional(),
           successCriteria: stringList.min(1),
           risk,
+          strategy: strategy.optional(),
+          portrait: portrait.optional(),
+          directorPlan: z.string().max(200).optional(),
           budget: budget.optional(),
           actorId: id,
           idempotencyKey,
@@ -157,7 +177,7 @@ export function createMcpServer(controlPlane: ControlPlane): McpServer {
     {
       title: "Get mission",
       description:
-        "Read a mission and optionally its task, artifact, claim, and review state. Treat this result as authoritative over chat summaries.",
+        "Read a mission and optionally its task, artifact, claim, and review state. Treat this result as authoritative over chat summaries. The mission row includes strategy, portrait, and directorPlan (workspace-relative plan file path) even when includeDetails is false.",
       inputSchema: z
         .object({
           missionId: id,
@@ -193,7 +213,7 @@ export function createMcpServer(controlPlane: ControlPlane): McpServer {
     {
       title: "Allocate task",
       description:
-        "Allocate a policy-checked work package before native spawn_agent. Put the returned task_id into the child's prompt; only direct parent-child role edges are accepted.",
+        "Allocate a policy-checked work package before native spawn_agent. Put the returned task_id into the child's prompt. Root role depends on mission.strategy: fanout/director_plan/pipeline require Terra; direct allows one root Luna. fanout Terra objective max 2000 characters.",
       inputSchema: z
         .object({
           missionId: id,
@@ -508,7 +528,7 @@ export function createMcpServer(controlPlane: ControlPlane): McpServer {
     {
       title: "Gate and commit low-risk children",
       description:
-        "For low or medium risk only, record check and verify reviews then commit in one call. Does not skip gates. High or critical work must use luna-verifier plus result_check, result_verify, and task_commit. Children must already be candidate.",
+        "For low or medium risk only, record check and verify reviews then commit in one call. Does not skip gates. High or critical work must use luna-verifier plus result_check, result_verify, and task_commit. Children must already be candidate. On a direct mission, Sol (not the Luna producer) may be the reviewer without parentTaskId.",
       inputSchema: z
         .object({
           reviewerId: id,

@@ -2,8 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { ControlPlaneError } from "../src/domain/errors.js";
 import {
   assertAssignmentPolicy,
+  assertFanoutCoordinatorObjective,
   assertParentChildPolicy,
+  assertRootRoleForStrategy,
   assertTransition,
+  FANOUT_TERRA_OBJECTIVE_MAX_CHARS,
+  normalizeDirectorPlan,
+  normalizeStrategy,
 } from "../src/domain/policy.js";
 
 describe("hierarchy policy", () => {
@@ -38,6 +43,46 @@ describe("hierarchy policy", () => {
     expect(() => assertParentChildPolicy(null, "operator")).toThrowError(
       expect.objectContaining<Partial<ControlPlaneError>>({ code: "policy_violation" }),
     );
+    expect(() => assertRootRoleForStrategy("direct", "operator")).not.toThrow();
+    expect(() => assertRootRoleForStrategy("direct", "coordinator")).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({ code: "policy_violation" }),
+    );
+    expect(() => assertRootRoleForStrategy("fanout", "operator")).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({ code: "policy_violation" }),
+    );
+    expect(() => assertRootRoleForStrategy("pipeline", "coordinator")).not.toThrow();
+  });
+
+  it("locks directorPlan and fanout Terra objective length", () => {
+    expect(normalizeStrategy(undefined)).toBe("fanout");
+    expect(() => normalizeDirectorPlan("fanout", "hidden plan")).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({ code: "validation_error" }),
+    );
+    expect(normalizeDirectorPlan("fanout", "")).toBeNull();
+    expect(() => normalizeDirectorPlan("director_plan", "too short")).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({ code: "validation_error" }),
+    );
+    expect(() => normalizeDirectorPlan("director_plan", "../secret.md")).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({ code: "validation_error" }),
+    );
+    expect(() => normalizeDirectorPlan("director_plan", "/tmp/plan.md")).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({ code: "validation_error" }),
+    );
+    expect(normalizeDirectorPlan("director_plan", "director-plan.md")).toBe("director-plan.md");
+    expect(normalizeDirectorPlan("director_plan", "docs/mission-plan.md")).toBe(
+      "docs/mission-plan.md",
+    );
+    expect(() =>
+      assertFanoutCoordinatorObjective("fanout", "x".repeat(FANOUT_TERRA_OBJECTIVE_MAX_CHARS + 1)),
+    ).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({ code: "policy_violation" }),
+    );
+    expect(() =>
+      assertFanoutCoordinatorObjective(
+        "director_plan",
+        "x".repeat(FANOUT_TERRA_OBJECTIVE_MAX_CHARS + 1),
+      ),
+    ).not.toThrow();
   });
 
   it("enforces evidence-gate transitions", () => {

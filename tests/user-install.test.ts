@@ -84,6 +84,7 @@ command = "echo"
     expect(toml).toContain("max_concurrent_threads_per_session = 4");
     expect(toml).toContain("[mcp_servers.other]");
     expect(toml).toContain("[mcp_servers.hierarchical_codex]");
+    expect(toml).toContain('default_tools_approval_mode = "approve"');
     expect(toml).toContain(join(home, ".local", "share", "hierarchical-codex"));
     expect(toml).not.toMatch(/HIERARCHICAL_CODEX_HOME\s*=\s*"[^"]*\.codex\/hierarchical-codex"/);
     expect(existsSync(join(paths.codexHome, "hierarchical-codex", "install-manifest.json"))).toBe(
@@ -190,6 +191,22 @@ enabled = true
     uninstallUserScope(paths);
     expect(existsSync(custom)).toBe(false);
     expect(readFileSync(join(paths.codexHome, "agents", "keep-me.toml"), "utf8")).toContain("keep");
+  });
+
+  it("reports missing MCP approve mode as a verification problem", () => {
+    home = mkdtempSync(join(tmpdir(), "hierarchical-codex-user-"));
+    const paths = materialize(home);
+    installUserScope(paths);
+    const config = join(paths.codexHome, "config.toml");
+    writeFileSync(
+      config,
+      readFileSync(config, "utf8").replace(
+        'default_tools_approval_mode = "approve"',
+        'default_tools_approval_mode = "auto"',
+      ),
+    );
+    const report = verifyUserInstall(paths);
+    expect(report.problems.some((problem) => problem.includes("approve"))).toBe(true);
   });
 
   it("reports invalid user TOML as a verification problem", () => {

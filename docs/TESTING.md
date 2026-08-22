@@ -33,6 +33,7 @@ unrecoverable state:
 
 - mission idempotency;
 - allocation policy;
+- locked mission strategy (`direct` / `fanout` / `director_plan` / `pipeline`);
 - optimistic versions;
 - lease replay, expiry, and reclamation;
 - candidate/check/verify/commit workflow;
@@ -49,6 +50,8 @@ Tests use real in-memory SQLite and a temporary artifact directory.
 `tests/hooks.test.ts`
 
 - compliant Sol → Terra spawn;
+- Sol → Luna denied without a `direct` ledger row; allowed when the task is
+  a `direct` root operator;
 - Luna spawn rejection;
 - invalid effort rejection;
 - required V2 `fork_turns: none` and accepted V1 `fork_context: false`;

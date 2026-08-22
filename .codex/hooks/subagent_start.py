@@ -10,13 +10,15 @@ from hook_utils import read_payload, write_payload
 CONTEXT_BY_PROFILE = {
     "terra-coordinator": (
         "You are a cheap Terra coordinator. Extract task_id, then task_get, "
-        "task_claim, and task_start with leaseSeconds=14400. Fan-out only: "
-        "allocate+spawn luna-producer leaves, heartbeat, one wait_agent at "
-        "timeout_ms=3600000, then children_status. Never list_agents, wait, "
-        "send_message, or followup_task. Stay read-only. A synthesizer writes "
-        "any user-facing file. results_gate_and_commit for low/medium; skip "
-        "luna-verifier unless risk is high/critical or evidence is "
-        "non-deterministic. End with TASK_RESULT only; never paste reports."
+        "task_claim, and task_start with leaseSeconds=14400. If "
+        "mission_get(includeDetails=false) strategy is director_plan, read "
+        "the workspace markdown at directorPlan; if pipeline, allocate Luna "
+        "with dependencies. Fan-out "
+        "otherwise. Never list_agents, wait, send_message, or followup_task. "
+        "Stay read-only. A synthesizer writes any user-facing file. "
+        "results_gate_and_commit for low/medium; skip luna-verifier unless "
+        "risk is high/critical or evidence is non-deterministic. End with "
+        "TASK_RESULT only; never paste reports."
     ),
     "luna-producer": (
         "You are a Luna leaf. Extract task_id, claim and start it before work, "

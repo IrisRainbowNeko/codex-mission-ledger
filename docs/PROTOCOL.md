@@ -71,28 +71,51 @@ Sol creates the mission before native child spawning:
     "maxChildren": 4
   },
   "actorId": "sol-root",
-  "idempotencyKey": "mission_create:user-request-42:1"
+  "idempotencyKey": "mission_create:user-request-42:1",
+  "strategy": "fanout",
+  "portrait": {
+    "ambiguity": "low",
+    "coupling": "low",
+    "parallelism": "high",
+    "validator": "strong"
+  }
 }
 ```
 
-The returned mission version is required for budget updates and closure.
+The returned mission version is required for budget updates. `mission_close`
+retries a stale `expectedVersion` once. On Terra-path strategies it also
+auto-finalizes one low/medium root coordinator that is already a candidate
+with all descendants terminal, so Sol does not call `results_gate_and_commit`.
+`strategy` is immutable. Omit it to default `fanout`. `director_plan` requires
+`directorPlan` to be a workspace-relative markdown path (for example
+`director-plan.md`). Sol writes the 750–8000 character plan body into that
+project file before `mission_create`. Other strategies must leave `directorPlan`
+empty.
+
+Sol's first action is a no-tool `MISSION_ROUTE` (strategy + portrait + one-line
+reason), then `mission_create` with those fields, then only that strategy's
+call list.
 
 ## Allocate before spawn
 
-For a Terra producer:
+For a Terra producer (`fanout`, `director_plan`, `pipeline`):
 
-1. Sol calls `task_allocate` with no parent task.
-2. The control plane validates role/model/effort and reserves budget.
+1. Sol calls `task_allocate` with no parent task (`role=coordinator`).
+2. The control plane validates role/model/effort, strategy root policy, and budget.
 3. Sol places the returned `task_id` in a complete TaskEnvelope.
 4. Sol calls native `spawn_agent`.
 
-For a Luna producer:
+For a Luna producer under Terra:
 
 1. Terra claims and starts its coordinator task.
 2. Terra calls `task_allocate` with its coordinator task as parent, current
    parent version, and parent lease token.
 3. Terra uses `role=operator`, `model=luna`, and an explicit effort.
 4. Terra calls native `spawn_agent` with `luna-producer`.
+
+For `direct`, Sol allocates one root Luna (`parentTaskId=null`) instead of Terra.
+The spawn hook allows Sol→`luna-producer` only when the ledger row is that
+root operator on a `direct` mission.
 
 Never spawn first and invent a task ID afterward. The allocation is the durable
 intent and the native spawn is its execution attempt.
@@ -234,9 +257,10 @@ The direct parent calls `task_commit`.
 - Proposed dependent tasks whose dependencies are now satisfied become `ready`.
 
 No single MCP round-trip is required for high/critical work. For `low` or
-`medium` risk, Terra may call `results_gate_and_commit` after `children_status`.
-That tool still writes check and verify reviews and then commits; it does not
-skip the producer≠reviewer rule.
+`medium` risk, Terra (or Sol on a `direct` mission) may call
+`results_gate_and_commit` after the candidate is in. That tool still writes
+check and verify reviews and then commits; it does not skip the
+producer≠reviewer rule.
 
 ## Verifier native threads
 
@@ -248,12 +272,16 @@ review through `result_check`. Terra then calls `result_verify` and
 
 ## Direct-parent lifecycle
 
-- Sol waits for and accepts Terra with one long `wait_agent`. It must not poll
-  with `list_agents`, `wait`, or `send_message`.
-- Terra waits for and accepts its own Luna children with one long `wait_agent`
-  then `children_status`. It must not `send_message` or `followup_task`.
-- Sol may observe Luna in the UI, but does not perform Luna follow-up or wait
-  lifecycle.
+- Sol waits for and accepts its child (Terra, or the root Luna on `direct`)
+  with one long `wait_agent`. It must not poll with `list_agents`, `wait`, or
+  `send_message`. On Terra paths Sol then `task_get`s the summary and
+  `mission_close`s; it does not gate Terra.
+- Terra waits for the research batch with one long `wait_agent`, then the
+  synthesizer with one more. It must not `wait_agent` per spawn, `send_message`,
+  or `followup_task`. VS Code cell yield (`wait` with `cell_id` + `max_tokens`)
+  is not a poll.
+- On Terra paths, Sol may observe Luna in the UI, but does not perform Luna
+  follow-up or wait lifecycle except `direct`.
 - Cross-cell data moves through committed artifacts and dependencies.
 
 This avoids completion routing ambiguity in deep native trees.

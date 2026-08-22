@@ -15,7 +15,10 @@
 ### Codex host
 
 Trusted to authenticate the user, run native agents, enforce sandbox/tool
-approvals, and start configured MCP servers.
+approvals, and start configured MCP servers. User-global install marks
+`hierarchical_codex` with `default_tools_approval_mode = "approve"` so
+Codex skips Guardian on this local stdio server. That is a host approval,
+not a skill or prompt claim. Other MCP servers are unchanged.
 
 ### Language models
 
@@ -49,8 +52,9 @@ claims.
 - Verifier workspace sandbox is read-only.
 
 The PreToolUse hook enforces spawn shape, model/effort compatibility, and Terra
-coordinator babysit bans (`wait` / `list_agents` / `send_message` /
-`followup_task` / short `wait_agent`).
+coordinator babysit bans (`list_agents` / `send_message` /
+`followup_task` / timeout-style `wait` / short `wait_agent`). VS Code cell
+yield (`wait` with `cell_id` + `max_tokens`) is allowed.
 
 ### Lease fencing
 

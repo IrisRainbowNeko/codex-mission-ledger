@@ -92,13 +92,16 @@ Required:
 - `actorId`
 - `idempotencyKey`
 
-Optional: `constraints[]`, `budget`.
+Optional: `constraints[]`, `budget`, `strategy` (`direct | fanout | director_plan | pipeline`, default `fanout`), `portrait` (`ambiguity`, `coupling`, `parallelism` each `low|medium|high`; `validator` `strong|weak|none`), `directorPlan` (required when `strategy` is `director_plan`: a workspace-relative `.md` path to the plan file in the project folder; must be empty otherwise). Strategy is immutable after create.
 
 ### `mission_get`
 
 Input: `missionId`, optional `includeDetails` (default true).
 
-Detailed output includes tasks, artifacts, claims, and reviews.
+Detailed output includes tasks, artifacts, claims, and reviews. The mission row
+includes `strategy`, `portrait`, and `directorPlan` (relative plan file path)
+even when `includeDetails` is false. Terra should use that compact read on
+`director_plan` missions, then read the markdown file from the workspace.
 
 ### `mission_close`
 
@@ -109,7 +112,13 @@ Required:
 - `expectedVersion`
 - `idempotencyKey`
 
-Optional `acceptFailedTasks` defaults false. All tasks must be terminal.
+Optional `acceptFailedTasks` defaults false. All tasks must be terminal. On
+`fanout`, `director_plan`, and `pipeline`, if the only non-terminal task is a
+low/medium-risk root Terra coordinator in `candidate` / `checked` / `verified`,
+`mission_close` records check + verify + commit (reviewer = close `actorId`)
+then completes the mission. High/critical and `direct` root Lunas are not
+auto-gated. A stale `expectedVersion` is retried once against the live mission
+version; a second mismatch is still `conflict`.
 
 ## Task tools
 
@@ -142,10 +151,17 @@ Optional:
 - `outputSchema`
 - `budget`
 
-Root tasks must be coordinators or advisors. Terra coordinator children must be
-Luna operators or verifiers. When `parentTaskId` is set, the parent must be
-running and `expectedParentVersion` plus `parentLeaseToken` are required; the
-allocating actor must own that lease.
+Root role depends on `mission.strategy`. `fanout`, `director_plan`, and
+`pipeline` require a Terra coordinator (or Sol advisor) at the root; `pipeline`
+allows only one coordinator. `direct` allows one root Luna operator (or a Sol
+advisor) and rejects a Terra tree. `fanout` Terra `objective` is capped at 2000
+characters. Terra coordinator children must be Luna operators or verifiers.
+When `parentTaskId` is set, the parent must be running and
+`expectedParentVersion` plus `parentLeaseToken` are required; the allocating
+actor must own that lease. A stale `expectedParentVersion` is accepted when
+that lease is valid (heartbeats bump the parent without changing allocation
+intent). Running siblings reserve remaining budget, not their full original
+reservation, so a replacement plus synthesizer can fit after a cancelled leaf.
 
 ### `task_get`
 

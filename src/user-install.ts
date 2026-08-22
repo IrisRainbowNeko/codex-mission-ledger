@@ -388,6 +388,11 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
     if (!toml.includes(layout.mcpEntrypoint)) {
       problems.push("config.toml MCP args do not point at dist/cli.js");
     }
+    if (!/default_tools_approval_mode\s*=\s*"approve"/.test(toml)) {
+      problems.push(
+        'config.toml must set mcp_servers.hierarchical_codex.default_tools_approval_mode = "approve" so Codex Guardian skips this local ledger. Re-run npm run install:user.',
+      );
+    }
     if (/HIERARCHICAL_CODEX_HOME\s*=\s*"[^"]*\.codex\/hierarchical-codex"/.test(toml)) {
       warnings.push(
         "MCP state is under ~/.codex, which Codex sandboxes as read-only. Re-run npm run install:user so the ledger moves to ~/.local/share/hierarchical-codex.",
@@ -563,6 +568,7 @@ function renderManagedConfig(paths: UserInstallPaths, layout: UserInstallLayout)
 # User-global hierarchical-codex. Does not pin the default model.
 # Hook scripts live at ${hookPolicy}
 # Ledger lives outside ~/.codex because Codex sandboxes that tree as read-only.
+# approval_mode approve skips Codex Guardian on this local stdio MCP.
 
 [mcp_servers.hierarchical_codex]
 command = ${tomlString(paths.nodeExecutable)}
@@ -571,7 +577,7 @@ cwd = ${tomlString(paths.packageRoot)}
 required = false
 startup_timeout_sec = 20
 tool_timeout_sec = 60
-default_tools_approval_mode = "auto"
+default_tools_approval_mode = "approve"
 enabled_tools = [
 ${tools}
 ]

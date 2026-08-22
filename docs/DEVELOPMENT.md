@@ -95,8 +95,10 @@ For a new migration:
 5. document backup and rollback requirements;
 6. never silently discard unknown/newer schema versions.
 
-The current MVP has schema version 2. Version 2 adds request hashes to
-idempotency records so payload-changing replays fail closed.
+The current MVP has schema version 3. Version 3 adds immutable mission
+`strategy`, `portrait_json`, and `director_plan`. Existing rows migrate to
+`fanout`. Version 2 adds request hashes to idempotency records so
+payload-changing replays fail closed.
 
 ## Time and IDs in tests
 

@@ -127,7 +127,8 @@ SQLite configuration:
 - synchronous normal;
 - WAL requested when supported.
 
-The current schema version is stored in `schema_metadata`.
+The current schema version is stored in `schema_metadata` (version 3: mission
+strategy, portrait, and director plan).
 
 Before application upgrades:
 

@@ -3,16 +3,22 @@ import { assertCondition } from "./domain/errors.js";
 import {
   CANDIDATE_SUMMARY_MAX_CHARS,
   COLLAPSIBLE_GATE_RISKS,
+  TERRA_PATH_STRATEGIES,
   addBudgets,
   addUsage,
   assertAssignmentPolicy,
   assertBudgetWithin,
+  assertFanoutCoordinatorObjective,
   assertParentChildPolicy,
+  assertRootRoleForStrategy,
   assertTransition,
   assertUsageWithin,
   dependenciesSatisfied,
   isTerminalTaskStatus,
   normalizeBudget,
+  normalizeDirectorPlan,
+  normalizePortrait,
+  normalizeStrategy,
   normalizeUsage,
 } from "./domain/policy.js";
 import {
@@ -25,6 +31,8 @@ import {
   type Claim,
   type JsonObject,
   type Mission,
+  type MissionPortrait,
+  type MissionStrategy,
   type ModelTier,
   type ReasoningEffort,
   type RecoverySnapshot,
@@ -50,6 +58,9 @@ export interface MissionCreateInput {
   constraints?: string[];
   successCriteria: string[];
   risk: RiskLevel;
+  strategy?: MissionStrategy;
+  portrait?: MissionPortrait;
+  directorPlan?: string | null;
   budget?: BudgetLimits;
   actorId: string;
   idempotencyKey: string;
@@ -250,6 +261,9 @@ export class ControlPlane {
     this.assertStringArray(input.successCriteria, "successCriteria", true);
     this.assertStringArray(input.constraints ?? [], "constraints");
     const budget = normalizeBudget(input.budget);
+    const strategy = normalizeStrategy(input.strategy);
+    const portrait = normalizePortrait(input.portrait);
+    const directorPlan = normalizeDirectorPlan(strategy, input.directorPlan);
 
     return this.idempotent("mission_create", input.idempotencyKey, input, () => {
       const now = this.now();
@@ -260,6 +274,9 @@ export class ControlPlane {
         successCriteria: this.cleanStrings(input.successCriteria),
         risk: input.risk,
         status: "active",
+        strategy,
+        portrait,
+        directorPlan,
         budget,
         usage: { ...ZERO_USAGE },
         version: 1,
@@ -274,6 +291,7 @@ export class ControlPlane {
         input.actorId,
         {
           risk: mission.risk,
+          strategy: mission.strategy,
           budget: mission.budget,
         },
         input.idempotencyKey,
@@ -297,51 +315,9 @@ export class ControlPlane {
   }
 
   closeMission(input: MissionCloseInput): Mission {
-    return this.idempotent("mission_close", input.idempotencyKey, input, () => {
-      const mission = this.requireMission(input.missionId);
-      this.assertVersion(mission.version, input.expectedVersion, "Mission");
-      assertCondition(
-        mission.status === "active",
-        "invalid_state",
-        "Only an active mission can be closed.",
-        { missionId: mission.id, status: mission.status },
-      );
-
-      const tasks = this.repository.listTasks(mission.id);
-      const active = tasks.filter((task) => !isTerminalTaskStatus(task.status));
-      assertCondition(
-        active.length === 0,
-        "invalid_state",
-        "Mission still has non-terminal tasks.",
-        { activeTaskIds: active.map((task) => task.id) },
-      );
-      if (input.acceptFailedTasks !== true) {
-        const failed = tasks.filter((task) => task.status === "failed");
-        assertCondition(
-          failed.length === 0,
-          "invalid_state",
-          "Mission has failed tasks; explicitly accept them or supersede them.",
-          { failedTaskIds: failed.map((task) => task.id) },
-        );
-      }
-
-      const updated: Mission = {
-        ...mission,
-        status: "completed",
-        version: mission.version + 1,
-        updatedAt: this.now(),
-      };
-      this.repository.updateMission(updated, mission.version);
-      this.event(
-        mission.id,
-        null,
-        "mission.completed",
-        input.actorId,
-        { acceptedFailedTasks: input.acceptFailedTasks === true },
-        input.idempotencyKey,
-      );
-      return updated;
-    });
+    return this.idempotent("mission_close", input.idempotencyKey, input, () =>
+      this.closeMissionOnce(input, input.expectedVersion, true),
+    );
   }
 
   allocateTask(input: TaskAllocateInput): Task {
@@ -387,10 +363,15 @@ export class ControlPlane {
           "parentLeaseToken is required for a child allocation.",
           { parentTaskId: parent.id },
         );
-        this.assertVersion(parent.version, input.expectedParentVersion, "Parent task");
         this.assertLease(parent, input.actorId, input.parentLeaseToken);
+        assertParentChildPolicy(parent.role, input.role);
+      } else {
+        assertRootRoleForStrategy(mission.strategy, input.role);
+        this.assertRootAllocationLimits(mission, input.role);
       }
-      assertParentChildPolicy(parent?.role ?? null, input.role);
+      if (input.role === "coordinator") {
+        assertFanoutCoordinatorObjective(mission.strategy, input.objective.trim());
+      }
 
       const dependencies = [...new Set(input.dependencies ?? [])];
       const dependencyTasks = dependencies.map((id) => this.requireTask(id));
@@ -1052,10 +1033,7 @@ export class ControlPlane {
           { taskId: task.id, status: task.status },
         );
 
-        const reviewInput = (
-          stage: "check" | "verify",
-          expectedVersion: number,
-        ): ReviewInput => {
+        const reviewInput = (stage: "check" | "verify", expectedVersion: number): ReviewInput => {
           const review: ReviewInput = {
             taskId: task.id,
             reviewerId: input.reviewerId,
@@ -1303,6 +1281,31 @@ export class ControlPlane {
     }
   }
 
+  private assertRootAllocationLimits(mission: Mission, childRole: AgentRole): void {
+    const roots = this.repository.listRootTasks(mission.id);
+    if (mission.strategy === "direct" && childRole === "operator") {
+      const operators = roots.filter((task) => task.role === "operator");
+      assertCondition(
+        operators.length === 0,
+        "policy_violation",
+        "direct missions allow at most one root Luna operator.",
+        { missionId: mission.id, existingRootOperatorIds: operators.map((task) => task.id) },
+      );
+    }
+    if (mission.strategy === "pipeline" && childRole === "coordinator") {
+      const coordinators = roots.filter((task) => task.role === "coordinator");
+      assertCondition(
+        coordinators.length === 0,
+        "policy_violation",
+        "pipeline missions allow one Terra coordinator; Luna children must use dependencies.",
+        {
+          missionId: mission.id,
+          existingRootCoordinatorIds: coordinators.map((task) => task.id),
+        },
+      );
+    }
+  }
+
   private assertAllocationBudget(
     mission: Mission,
     parent: Task | null,
@@ -1340,7 +1343,9 @@ export class ControlPlane {
       } else {
         consumed = addBudgets(
           consumed,
-          isTerminalTaskStatus(sibling.status) ? this.usageAsBudget(sibling.usage) : sibling.budget,
+          isTerminalTaskStatus(sibling.status)
+            ? this.usageAsBudget(sibling.usage)
+            : this.remainingBudget(sibling.budget, sibling.usage),
         );
       }
     }
@@ -1358,6 +1363,113 @@ export class ControlPlane {
       wallClockSeconds: usage.wallClockSeconds,
       toolCalls: usage.toolCalls,
     };
+  }
+
+  private closeMissionOnce(
+    input: MissionCloseInput,
+    expectedVersion: number,
+    allowVersionRetry: boolean,
+  ): Mission {
+    let mission = this.requireMission(input.missionId);
+    if (mission.version !== expectedVersion) {
+      assertCondition(
+        allowVersionRetry,
+        "conflict",
+        "Mission version does not match expectedVersion.",
+        { actualVersion: mission.version, expectedVersion },
+      );
+      return this.closeMissionOnce(input, mission.version, false);
+    }
+    assertCondition(
+      mission.status === "active",
+      "invalid_state",
+      "Only an active mission can be closed.",
+      { missionId: mission.id, status: mission.status },
+    );
+
+    this.finalizeCloseableCoordinator(mission, input.actorId, input.idempotencyKey);
+    mission = this.requireMission(input.missionId);
+
+    const tasks = this.repository.listTasks(mission.id);
+    const active = tasks.filter((task) => !isTerminalTaskStatus(task.status));
+    assertCondition(active.length === 0, "invalid_state", "Mission still has non-terminal tasks.", {
+      activeTaskIds: active.map((task) => task.id),
+    });
+    if (input.acceptFailedTasks !== true) {
+      const failed = tasks.filter((task) => task.status === "failed");
+      assertCondition(
+        failed.length === 0,
+        "invalid_state",
+        "Mission has failed tasks; explicitly accept them or supersede them.",
+        { failedTaskIds: failed.map((task) => task.id) },
+      );
+    }
+
+    const updated: Mission = {
+      ...mission,
+      status: "completed",
+      version: mission.version + 1,
+      updatedAt: this.now(),
+    };
+    this.repository.updateMission(updated, mission.version);
+    this.event(
+      mission.id,
+      null,
+      "mission.completed",
+      input.actorId,
+      { acceptedFailedTasks: input.acceptFailedTasks === true },
+      input.idempotencyKey,
+    );
+    return updated;
+  }
+
+  private finalizeCloseableCoordinator(
+    mission: Mission,
+    actorId: string,
+    idempotencyKey: string,
+  ): void {
+    if (!TERRA_PATH_STRATEGIES.includes(mission.strategy)) {
+      return;
+    }
+    if (!COLLAPSIBLE_GATE_RISKS.includes(mission.risk)) {
+      return;
+    }
+
+    const tasks = this.repository.listTasks(mission.id);
+    const active = tasks.filter((task) => !isTerminalTaskStatus(task.status));
+    if (active.length !== 1) {
+      return;
+    }
+    const coordinator = active[0];
+    if (
+      coordinator === undefined ||
+      coordinator.parentTaskId !== null ||
+      coordinator.role !== "coordinator" ||
+      !COLLAPSIBLE_GATE_RISKS.includes(coordinator.risk) ||
+      (coordinator.status !== "candidate" &&
+        coordinator.status !== "checked" &&
+        coordinator.status !== "verified")
+    ) {
+      return;
+    }
+
+    const evidenceRefs = this.repository
+      .listArtifacts(mission.id, coordinator.id)
+      .map((artifact) => artifact.id);
+    this.gateAndCommitResults({
+      reviewerId: actorId,
+      decisions: [
+        {
+          taskId: coordinator.id,
+          expectedVersion: coordinator.version,
+          approved: true,
+          evidenceRefs,
+          notes:
+            "mission_close auto-finalized the root coordinator after all descendants were terminal.",
+        },
+      ],
+      idempotencyKey: this.derivedIdempotencyKey(idempotencyKey, "close_gate", coordinator.id),
+    });
   }
 
   private remainingBudget(budget: BudgetLimits, usage: Usage): BudgetLimits {
@@ -1468,7 +1580,6 @@ export class ControlPlane {
       "parentLeaseToken is required for a child lifecycle decision.",
       { taskId: task.id, parentTaskId: parent.id },
     );
-    this.assertVersion(parent.version, input.expectedParentVersion, "Parent task");
     this.assertLease(parent, input.actorId, input.parentLeaseToken);
     assertCondition(
       parent.status === "running",

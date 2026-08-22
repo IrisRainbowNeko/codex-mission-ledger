@@ -1,25 +1,48 @@
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { ControlPlane } from "../src/control-plane.js";
+import { ArtifactStore } from "../src/infra/artifact-store.js";
+import { ControlPlaneDatabase } from "../src/infra/database.js";
+import { Repository } from "../src/infra/repository.js";
+import { baseMissionInput, lunaRootTaskInput, samplePortrait, terraTaskInput } from "./helpers.js";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 const hookDirectory = join(projectRoot, ".codex", "hooks");
+const isolatedHookHome = join(tmpdir(), "hierarchical-codex-hook-empty");
 
 function invokeHook(
   script: string,
   payload: string | Record<string, unknown>,
   args: string[] = [],
+  options: { env?: NodeJS.ProcessEnv; cwd?: string } = {},
 ) {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HIERARCHICAL_CODEX_HOME: isolatedHookHome,
+    ...options.env,
+  };
+  if (options.env === undefined || !("HIERARCHICAL_CODEX_DB" in options.env)) {
+    delete env["HIERARCHICAL_CODEX_DB"];
+  }
   return spawnSync("python3", [join(hookDirectory, script), ...args], {
-    cwd: projectRoot,
+    cwd: options.cwd ?? projectRoot,
+    env,
     input: typeof payload === "string" ? payload : JSON.stringify(payload),
     encoding: "utf8",
   });
 }
 
-function runHook(script: string, payload: Record<string, unknown>, args: string[] = []) {
-  const result = invokeHook(script, payload, args);
+function runHook(
+  script: string,
+  payload: Record<string, unknown>,
+  args: string[] = [],
+  options: { env?: NodeJS.ProcessEnv; cwd?: string } = {},
+) {
+  const result = invokeHook(script, payload, args, options);
   expect(result.status, result.stderr).toBe(0);
   return JSON.parse(result.stdout) as Record<string, unknown>;
 }
@@ -311,6 +334,14 @@ describe("Codex lifecycle hooks", () => {
       hookSpecificOutput: { permissionDecision: "deny" },
     });
 
+    const allowedCellYield = runHook("pre_coordinator_tools.py", {
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.6-terra",
+      tool_name: "wait",
+      tool_input: { cell_id: "7", yield_time_ms: 10000, max_tokens: 10000 },
+    });
+    expect(allowedCellYield).toEqual({});
+
     const deniedList = runHook("pre_coordinator_tools.py", {
       hook_event_name: "PreToolUse",
       model: "gpt-5.6-terra",
@@ -373,5 +404,90 @@ describe("Codex lifecycle hooks", () => {
       tool_input: { yield_time_ms: 30000 },
     });
     expect(missingModel).toEqual({});
+  });
+
+  it("denies Sol→Luna without a direct-mission ledger row and allows it when present", () => {
+    const denied = runHook("pre_spawn_policy.py", {
+      hook_event_name: "PreToolUse",
+      model: "gpt-5.6-sol",
+      tool_name: "spawn_agent",
+      tool_input: {
+        agent_type: "luna-producer",
+        model: "gpt-5.6-luna",
+        reasoning_effort: "high",
+        fork_turns: "none",
+        prompt: "TaskEnvelope task_id: tsk_missingdirect",
+      },
+    });
+    expect(denied).toMatchObject({
+      hookSpecificOutput: { permissionDecision: "deny" },
+    });
+
+    const directory = mkdtempSync(join(tmpdir(), "hierarchical-codex-hook-ledger-"));
+    const database = new ControlPlaneDatabase(join(directory, "control-plane.sqlite"));
+    const repository = new Repository(database);
+    const artifacts = new ArtifactStore(join(directory, "artifacts"), 1024);
+    const controlPlane = new ControlPlane(repository, artifacts, {
+      defaultLeaseSeconds: 60,
+      maxLeaseSeconds: 300,
+      eventPageSize: 50,
+    });
+    try {
+      const direct = controlPlane.createMission({
+        ...baseMissionInput("mission:hook-direct:1"),
+        strategy: "direct",
+        portrait: samplePortrait({ parallelism: "low" }),
+      });
+      const luna = controlPlane.allocateTask(lunaRootTaskInput(direct.id, "task:hook-direct:1"));
+      const fanout = controlPlane.createMission(baseMissionInput("mission:hook-fanout:1"));
+      const terra = controlPlane.allocateTask(terraTaskInput(fanout.id, "task:hook-fanout:1"));
+      database.close();
+      const allowed = runHook(
+        "pre_spawn_policy.py",
+        {
+          hook_event_name: "PreToolUse",
+          model: "gpt-5.6-sol",
+          tool_name: "spawn_agent",
+          tool_input: {
+            agent_type: "luna-producer",
+            model: "gpt-5.6-luna",
+            reasoning_effort: "high",
+            fork_turns: "none",
+            prompt: `TaskEnvelope task_id: ${luna.id}`,
+          },
+        },
+        [],
+        { env: { HIERARCHICAL_CODEX_HOME: directory } },
+      );
+      expect(allowed).toEqual({});
+
+      const deniedFanout = runHook(
+        "pre_spawn_policy.py",
+        {
+          hook_event_name: "PreToolUse",
+          model: "gpt-5.6-sol",
+          tool_name: "spawn_agent",
+          tool_input: {
+            agent_type: "luna-producer",
+            model: "gpt-5.6-luna",
+            reasoning_effort: "high",
+            fork_turns: "none",
+            prompt: `TaskEnvelope task_id: ${terra.id}`,
+          },
+        },
+        [],
+        { env: { HIERARCHICAL_CODEX_HOME: directory } },
+      );
+      expect(deniedFanout).toMatchObject({
+        hookSpecificOutput: { permissionDecision: "deny" },
+      });
+    } finally {
+      try {
+        database.close();
+      } catch {
+        // Closed before the hook runs so Python can open the file.
+      }
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

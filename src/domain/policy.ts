@@ -2,12 +2,17 @@ import { ControlPlaneError, assertCondition } from "./errors.js";
 import type {
   AgentRole,
   BudgetLimits,
+  MissionPortrait,
+  MissionStrategy,
   ModelTier,
+  PortraitLevel,
   ReasoningEffort,
   RiskLevel,
   TaskStatus,
   Usage,
+  ValidatorStrength,
 } from "./types.js";
+import { MISSION_STRATEGIES, PORTRAIT_LEVELS, VALIDATOR_STRENGTHS } from "./types.js";
 
 export const ALLOWED_EFFORTS: Readonly<Record<ModelTier, readonly ReasoningEffort[]>> = {
   sol: ["high", "xhigh", "max"],
@@ -20,6 +25,23 @@ export const CANDIDATE_SUMMARY_MAX_CHARS = 500;
 
 /** Low/medium work may collapse check+verify+commit into one MCP call. Gates still run. */
 export const COLLAPSIBLE_GATE_RISKS: readonly RiskLevel[] = ["low", "medium"];
+
+/** Terra-path strategies whose root coordinator may be auto-finalized on close. */
+export const TERRA_PATH_STRATEGIES: readonly MissionStrategy[] = [
+  "fanout",
+  "director_plan",
+  "pipeline",
+];
+
+/** Skill-level bound for the workspace markdown file body (not stored on the mission). */
+export const DIRECTOR_PLAN_FILE_MIN_CHARS = 750;
+export const DIRECTOR_PLAN_FILE_MAX_CHARS = 8000;
+
+/** `directorPlan` on the mission is a workspace-relative `.md` path, not the plan body. */
+export const DIRECTOR_PLAN_PATH_MAX_CHARS = 200;
+
+/** fanout must not hide a director plan in the Terra envelope. */
+export const FANOUT_TERRA_OBJECTIVE_MAX_CHARS = 2000;
 
 export const ALLOWED_MODELS_BY_ROLE: Readonly<Record<AgentRole, readonly ModelTier[]>> = {
   director: ["sol"],
@@ -121,6 +143,120 @@ export function assertParentChildPolicy(parentRole: AgentRole | null, childRole:
     "policy_violation",
     `Role '${parentRole}' cannot own child role '${childRole}'.`,
     { parentRole, childRole, allowedChildRoles: [...ALLOWED_CHILD_ROLES[parentRole]] },
+  );
+}
+
+export function assertRootRoleForStrategy(strategy: MissionStrategy, childRole: AgentRole): void {
+  if (strategy === "direct") {
+    assertCondition(
+      childRole === "operator" || childRole === "advisor",
+      "policy_violation",
+      "direct missions may allocate one root Luna operator (or a Sol advisor), not a Terra tree.",
+      { strategy, childRole },
+    );
+    return;
+  }
+  assertParentChildPolicy(null, childRole);
+}
+
+export function normalizeStrategy(strategy: MissionStrategy | undefined): MissionStrategy {
+  if (strategy === undefined) {
+    return "fanout";
+  }
+  assertCondition(
+    (MISSION_STRATEGIES as readonly string[]).includes(strategy),
+    "validation_error",
+    `Unknown mission strategy '${String(strategy)}'.`,
+    { strategy, allowed: [...MISSION_STRATEGIES] },
+  );
+  return strategy;
+}
+
+export function normalizePortrait(
+  portrait: MissionPortrait | undefined | null,
+): MissionPortrait | null {
+  if (portrait === undefined || portrait === null) {
+    return null;
+  }
+  const ambiguity = portrait.ambiguity;
+  const coupling = portrait.coupling;
+  const parallelism = portrait.parallelism;
+  const validator = portrait.validator;
+  assertCondition(
+    (PORTRAIT_LEVELS as readonly string[]).includes(ambiguity) &&
+      (PORTRAIT_LEVELS as readonly string[]).includes(coupling) &&
+      (PORTRAIT_LEVELS as readonly string[]).includes(parallelism) &&
+      (VALIDATOR_STRENGTHS as readonly string[]).includes(validator),
+    "validation_error",
+    "portrait requires ambiguity, coupling, and parallelism as low|medium|high, and validator as strong|weak|none.",
+    { portrait },
+  );
+  return {
+    ambiguity: ambiguity as PortraitLevel,
+    coupling: coupling as PortraitLevel,
+    parallelism: parallelism as PortraitLevel,
+    validator: validator as ValidatorStrength,
+  };
+}
+
+export function isWorkspaceMarkdownPath(value: string): boolean {
+  if (value.length === 0 || value.length > DIRECTOR_PLAN_PATH_MAX_CHARS) {
+    return false;
+  }
+  if (
+    value.startsWith("/") ||
+    value.startsWith("~") ||
+    value.includes("\\") ||
+    value.includes("\0")
+  ) {
+    return false;
+  }
+  if (/^[A-Za-z]:/.test(value)) {
+    return false;
+  }
+  const parts = value.split("/");
+  if (parts.some((part) => part.length === 0 || part === "." || part === "..")) {
+    return false;
+  }
+  const filename = parts[parts.length - 1];
+  return filename !== undefined && /^[A-Za-z0-9._-]+\.md$/.test(filename);
+}
+
+export function normalizeDirectorPlan(
+  strategy: MissionStrategy,
+  directorPlan: string | undefined | null,
+): string | null {
+  const trimmed = directorPlan?.trim() ?? "";
+  if (strategy === "director_plan") {
+    assertCondition(
+      isWorkspaceMarkdownPath(trimmed),
+      "validation_error",
+      "director_plan requires directorPlan to be a workspace-relative markdown path (for example director-plan.md). Write the plan body into that project file.",
+      { directorPlan: trimmed },
+    );
+    return trimmed;
+  }
+  assertCondition(
+    trimmed.length === 0,
+    "validation_error",
+    "directorPlan must be empty unless strategy is director_plan.",
+    { strategy, length: trimmed.length },
+  );
+  return null;
+}
+
+export function assertFanoutCoordinatorObjective(
+  strategy: MissionStrategy,
+  objective: string,
+): void {
+  if (strategy !== "fanout") {
+    return;
+  }
+  assertCondition(
+    objective.length <= FANOUT_TERRA_OBJECTIVE_MAX_CHARS,
+    "policy_violation",
+    `fanout Terra objective must be at most ${FANOUT_TERRA_OBJECTIVE_MAX_CHARS} characters; do not hide a plan in the envelope.`,
+    { length: objective.length, max: FANOUT_TERRA_OBJECTIVE_MAX_CHARS },
   );
 }
 

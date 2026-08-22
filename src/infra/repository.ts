@@ -8,6 +8,8 @@ import type {
   JsonObject,
   JsonValue,
   Mission,
+  MissionPortrait,
+  MissionStrategy,
   Review,
   Task,
   Usage,
@@ -47,7 +49,19 @@ function parseJson<T>(value: string): T {
   return JSON.parse(value) as T;
 }
 
-function json(value: JsonValue | BudgetLimits | Usage | string[]): string {
+function parsePortrait(value: string): MissionPortrait | null {
+  const parsed = parseJson<unknown>(value);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  const record = parsed as Record<string, unknown>;
+  if (Object.keys(record).length === 0) {
+    return null;
+  }
+  return parsed as MissionPortrait;
+}
+
+function json(value: JsonValue | BudgetLimits | Usage | string[] | MissionPortrait): string {
   return JSON.stringify(value);
 }
 
@@ -72,8 +86,9 @@ export class Repository {
       .prepare(
         `INSERT INTO missions(
           id, objective, constraints_json, success_criteria_json, risk, status,
+          strategy, portrait_json, director_plan,
           budget_json, usage_json, version, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         mission.id,
@@ -82,6 +97,9 @@ export class Repository {
         json(mission.successCriteria),
         mission.risk,
         mission.status,
+        mission.strategy,
+        json(mission.portrait ?? {}),
+        mission.directorPlan,
         json(mission.budget),
         json(mission.usage),
         mission.version,
@@ -101,7 +119,8 @@ export class Repository {
       .prepare(
         `UPDATE missions SET
           objective = ?, constraints_json = ?, success_criteria_json = ?, risk = ?,
-          status = ?, budget_json = ?, usage_json = ?, version = ?, updated_at = ?
+          status = ?, strategy = ?, portrait_json = ?, director_plan = ?,
+          budget_json = ?, usage_json = ?, version = ?, updated_at = ?
          WHERE id = ? AND version = ?`,
       )
       .run(
@@ -110,6 +129,9 @@ export class Repository {
         json(mission.successCriteria),
         mission.risk,
         mission.status,
+        mission.strategy,
+        json(mission.portrait ?? {}),
+        mission.directorPlan,
         json(mission.budget),
         json(mission.usage),
         mission.version,
@@ -450,6 +472,9 @@ export class Repository {
       successCriteria: parseJson<string[]>(requiredString(row, "success_criteria_json")),
       risk: requiredString(row, "risk") as Mission["risk"],
       status: requiredString(row, "status") as Mission["status"],
+      strategy: (optionalString(row, "strategy") ?? "fanout") as MissionStrategy,
+      portrait: parsePortrait(requiredString(row, "portrait_json")),
+      directorPlan: optionalString(row, "director_plan"),
       budget: parseJson<BudgetLimits>(requiredString(row, "budget_json")),
       usage: parseJson<Usage>(requiredString(row, "usage_json")),
       version: requiredNumber(row, "version"),

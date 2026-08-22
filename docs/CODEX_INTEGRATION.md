@@ -44,7 +44,12 @@ command = "node"
 args = ["dist/cli.js"]
 cwd = "."
 required = true
+default_tools_approval_mode = "approve"
 ```
+
+`approve` is Codex skip-review for this server only (including Guardian).
+`auto` still sends write tools such as `artifact_put` through Guardian.
+Prompt or skill text cannot grant that authorization.
 
 The repository must be opened at its root and built before a session starts:
 
@@ -163,7 +168,8 @@ The Skill instructs Sol/Terra to:
 
 - unregistered agent profiles;
 - Luna parent spawning;
-- Sol directly spawning Luna;
+- Sol directly spawning Luna unless the ledger says the `tsk_` is a `direct`
+  mission's root operator;
 - Terra spawning Sol/Terra;
 - invalid model/profile combinations;
 - unsupported reasoning effort;
@@ -172,11 +178,13 @@ The Skill instructs Sol/Terra to:
 - mixed V1/V2 fork fields;
 - spawn input without a `tsk_...` identifier.
 
-`pre_coordinator_tools.py` matches Terra `wait` / `list_agents` / `send_message`
-/ `followup_task` and Terra `wait_agent` with `timeout_ms` below 1800000. It
-denies only when `payload.model` classifies as Terra. Sol root chats keep those
-tools. Missing `model` fails open so user-global install cannot wedge ordinary
-sessions. Do not deny `exec`; this VS Code client wraps MCP as exec JS.
+`pre_coordinator_tools.py` matches Terra `list_agents` / `send_message` /
+`followup_task`, timeout-style Terra `wait`, and Terra `wait_agent` with
+`timeout_ms` below 1800000. VS Code cell yield (`wait` with `cell_id` +
+`max_tokens`) is allowed. It denies only when `payload.model` classifies as
+Terra. Sol root chats keep those tools. Missing `model` fails open so
+user-global install cannot wedge ordinary sessions. Do not deny `exec`; this
+VS Code client wraps MCP as exec JS.
 
 The hooks rely on current hook payload fields and handle common argument-name
 aliases. Re-run hook tests after Codex upgrades.

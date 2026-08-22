@@ -32,7 +32,11 @@ Exit criteria still pending:
 
 ## Phase 3: Adaptive routing
 
+Status: first slice implemented (locked `mission.strategy` on create).
+
 - Task-profile classifier for coupling, ambiguity, risk, and validator strength.
+  Sol emits `MISSION_ROUTE`; the kernel stores `strategy`, `portrait`, and a
+  workspace-relative `directorPlan` path and forbids the other topologies.
 - Historical success/cost/latency metrics by capability pack.
 - Data-driven model × effort selection.
 - Fan-out limits based on expected utility.

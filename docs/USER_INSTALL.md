@@ -39,7 +39,7 @@ The installer:
 1. copies the skill to `~/.agents/skills/agent-trio` and `~/.codex/skills/agent-trio`;
 2. copies agent profiles to `~/.codex/agents/` only when unmanaged files are absent (or `--force`);
 3. copies hooks to `~/.codex/hooks/hierarchical-codex/` and uses **absolute** paths;
-4. merges MCP settings into `~/.codex/config.toml` without changing your default model;
+4. merges MCP settings into `~/.codex/config.toml` without changing your default model, and sets `default_tools_approval_mode = "approve"` so Codex Guardian does not treat this local ledger as untrusted egress;
 5. is safe to re-run: it rewrites one managed block and will not duplicate TOML keys;
 6. merges hook entries into `~/.codex/hooks.json` with `--opt-in` so ordinary `spawn_agent` still works;
 7. appends a short section to `~/.codex/AGENTS.md`;
@@ -55,7 +55,9 @@ Then:
 4. Run `/hooks`. Review and **trust** the hierarchical-codex command hooks.
    User-level command hooks are skipped until trusted; MCP can still work while
    spawn policy, start injection, and stop checks are inactive.
-5. Run `/mcp` and confirm `hierarchical_codex` is connected.
+5. Run `/mcp` and confirm `hierarchical_codex` is connected. After a new
+   chat, this server is pre-approved (`approve`); Guardian should not review
+   `artifact_put` or other tools on it.
 6. Select `gpt-5.6-sol`.
 7. Invoke `$agent-trio <mission>`.
 

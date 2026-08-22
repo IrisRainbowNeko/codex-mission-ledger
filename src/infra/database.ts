@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { ControlPlaneError, isControlPlaneError } from "../domain/errors.js";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 export function mapSqliteError(error: unknown, databasePath: string): unknown {
   if (isControlPlaneError(error)) {
@@ -134,6 +134,11 @@ export class ControlPlaneDatabase {
       if (currentVersion < 2) {
         this.applyVersionTwo();
         currentVersion = 2;
+        this.setSchemaVersion(currentVersion);
+      }
+      if (currentVersion < 3) {
+        this.applyVersionThree();
+        currentVersion = 3;
         this.setSchemaVersion(currentVersion);
       }
     });
@@ -277,6 +282,14 @@ export class ControlPlaneDatabase {
     this.handle.exec(`
       ALTER TABLE idempotency
         ADD COLUMN request_hash TEXT NOT NULL DEFAULT '';
+    `);
+  }
+
+  private applyVersionThree(): void {
+    this.handle.exec(`
+      ALTER TABLE missions ADD COLUMN strategy TEXT NOT NULL DEFAULT 'fanout';
+      ALTER TABLE missions ADD COLUMN portrait_json TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE missions ADD COLUMN director_plan TEXT;
     `);
   }
 }

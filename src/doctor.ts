@@ -93,6 +93,7 @@ check("MCP project configuration", () => {
     "[mcp_servers.hierarchical_codex]",
     'args = ["dist/cli.js"]',
     "required = true",
+    'default_tools_approval_mode = "approve"',
   ]) {
     if (!source.includes(requiredText)) {
       throw new Error(`Missing expected config fragment: ${requiredText}`);

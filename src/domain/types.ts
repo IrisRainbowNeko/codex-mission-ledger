@@ -19,6 +19,22 @@ export type AgentRole = (typeof AGENT_ROLES)[number];
 export const MISSION_STATUSES = ["active", "completed", "cancelled"] as const;
 export type MissionStatus = (typeof MISSION_STATUSES)[number];
 
+export const MISSION_STRATEGIES = ["direct", "fanout", "director_plan", "pipeline"] as const;
+export type MissionStrategy = (typeof MISSION_STRATEGIES)[number];
+
+export const PORTRAIT_LEVELS = ["low", "medium", "high"] as const;
+export type PortraitLevel = (typeof PORTRAIT_LEVELS)[number];
+
+export const VALIDATOR_STRENGTHS = ["strong", "weak", "none"] as const;
+export type ValidatorStrength = (typeof VALIDATOR_STRENGTHS)[number];
+
+export interface MissionPortrait extends JsonObject {
+  ambiguity: PortraitLevel;
+  coupling: PortraitLevel;
+  parallelism: PortraitLevel;
+  validator: ValidatorStrength;
+}
+
 export const TASK_STATUSES = [
   "proposed",
   "ready",
@@ -70,6 +86,10 @@ export interface Mission {
   successCriteria: string[];
   risk: RiskLevel;
   status: MissionStatus;
+  strategy: MissionStrategy;
+  portrait: MissionPortrait | null;
+  /** Workspace-relative `.md` path when strategy is `director_plan`. */
+  directorPlan: string | null;
   budget: BudgetLimits;
   usage: Usage;
   version: number;

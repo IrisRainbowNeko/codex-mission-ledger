@@ -84,6 +84,49 @@ export function terraTaskInput(missionId: string, idempotencyKey = "task:terra:1
   };
 }
 
+export function samplePortrait(
+  overrides: Partial<{
+    ambiguity: "low" | "medium" | "high";
+    coupling: "low" | "medium" | "high";
+    parallelism: "low" | "medium" | "high";
+    validator: "strong" | "weak" | "none";
+  }> = {},
+) {
+  return {
+    ambiguity: "low" as const,
+    coupling: "low" as const,
+    parallelism: "high" as const,
+    validator: "strong" as const,
+    ...overrides,
+  };
+}
+
+export function directorPlanPath(relativePath = "director-plan.md"): string {
+  return relativePath;
+}
+
+export function lunaRootTaskInput(missionId: string, idempotencyKey = "task:luna-root:1") {
+  return {
+    missionId,
+    objective: "Produce the bounded deliverable",
+    role: "operator" as const,
+    model: "luna" as const,
+    reasoningEffort: "high" as const,
+    maxEffort: "xhigh" as const,
+    capabilityPack: "software",
+    doneCriteria: ["Deliverable is stored"],
+    risk: "low" as const,
+    budget: {
+      tokens: 2_000,
+      costUsd: 20,
+      wallClockSeconds: 2_000,
+      toolCalls: 200,
+    },
+    actorId: "sol-root",
+    idempotencyKey,
+  };
+}
+
 export function lunaTaskInput(
   missionId: string,
   parentTaskId: string,

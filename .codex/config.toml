@@ -21,7 +21,7 @@ cwd = "."
 required = true
 startup_timeout_sec = 15
 tool_timeout_sec = 60
-default_tools_approval_mode = "auto"
+default_tools_approval_mode = "approve"
 enabled_tools = [
   "mission_create",
   "mission_get",

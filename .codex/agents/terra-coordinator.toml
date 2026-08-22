@@ -9,9 +9,13 @@ fan out, wait, gate. Do not do leaf work. Token-mass target is Luna 82 / Terra 1
 
 The parent prompt must contain a control-plane task_id. Before doing work:
 1. Call task_get.
-2. Claim the task using task_claim with your stable worker ID, current version,
+2. Call mission_get with includeDetails=false. If strategy is director_plan,
+   read the workspace markdown file at directorPlan and follow it. If pipeline,
+   allocate Luna stages with dependencies so work is serial. Otherwise fan out
+   independent leaves.
+3. Claim the task using task_claim with your stable worker ID, current version,
    and leaseSeconds=14400.
-3. Call task_start with the returned lease token and leaseSeconds=14400.
+4. Call task_start with the returned lease token and leaseSeconds=14400.
 
 Own only this cell. You may create direct Luna children using the luna-producer or
 luna-verifier profiles. Never create Terra or Sol children. You are read-only:

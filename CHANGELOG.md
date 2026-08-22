@@ -5,9 +5,35 @@ versioning once releases begin.
 
 ## [Unreleased]
 
+### Changed
+
+- User-global and project MCP config set
+  `default_tools_approval_mode = "approve"` so Codex Guardian skips this
+  local stdio ledger. Prompt text cannot authorize those tools.
+- `mission_close` auto-finalizes one low/medium root Terra candidate on
+  `fanout` / `director_plan` / `pipeline` after descendants are terminal, and
+  retries a stale mission `expectedVersion` once. Sol no longer needs
+  `results_gate_and_commit` to close those missions.
+- Child allocate/cancel/supersede accept a stale `expectedParentVersion` when
+  the parent lease is still valid.
+- Parent-owned running siblings reserve remaining budget, not the full original
+  reservation, so a replacement plus synthesizer can fit after a cancelled leaf.
+- Terra `wait` hook allows VS Code cell yield (`cell_id` + `max_tokens`) and
+  still denies timeout-style polls.
+
+### Added
+
+- Adaptive mission routing: `mission_create` locks `direct`, `fanout`
+  (default), `director_plan`, or `pipeline` from a Sol `MISSION_ROUTE`
+  portrait. `direct` allows one root Luna; `fanout` caps Terra objectives at
+  2000 characters; `director_plan` stores a workspace-relative markdown path
+  (`directorPlan`) to a plan file Sol wrote in the project folder;
+  `pipeline` allows one Terra with serial Luna dependencies. Spawn policy
+  permits Sol→Luna only when the ledger row is that direct root operator.
+
 ### Planned
 
-- Adaptive mission routing (`direct` / `fanout` / `director_plan` / `pipeline`).
+- Historical success/cost router and remaining Phase 3 metrics.
 - End-to-end compatibility matrix for Codex App, CLI, and VS Code.
 - Host-authoritative token accounting.
 - Retention and artifact garbage collection.

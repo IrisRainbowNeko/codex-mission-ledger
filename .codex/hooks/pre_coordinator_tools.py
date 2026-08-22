@@ -34,6 +34,21 @@ def parse_tool_input(payload: dict[str, Any]) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def is_cell_yield(tool_input: dict[str, Any]) -> bool:
+    cell_id = tool_input.get("cell_id")
+    max_tokens = tool_input.get("max_tokens")
+    has_cell = (isinstance(cell_id, str) and cell_id.strip() != "") or (
+        isinstance(cell_id, int) and not isinstance(cell_id, bool)
+    )
+    if isinstance(max_tokens, bool):
+        return False
+    if isinstance(max_tokens, int):
+        return has_cell and max_tokens > 0
+    if isinstance(max_tokens, float):
+        return has_cell and max_tokens.is_integer() and max_tokens > 0
+    return False
+
+
 def timeout_ms(tool_input: dict[str, Any]) -> int | None:
     for key in ("timeout_ms", "timeoutMs", "timeout"):
         value = tool_input.get(key)
@@ -67,11 +82,15 @@ def main() -> None:
         return
 
     if tool_name in BABYSIT_TOOLS:
+        if tool_name in {"wait", "Wait"} and is_cell_yield(parse_tool_input(payload)):
+            write_payload({})
+            return
         deny_pre_tool(
             "Terra coordinators must not poll or babysit. Do not call wait, "
             "list_agents, send_message, or followup_task. Spawn the batch, then "
             "one wait_agent with timeout_ms >= 1800000. Recover by spawning a "
-            "replacement Luna, not by pinging the child."
+            "replacement Luna, not by pinging the child. VS Code cell yield "
+            "(cell_id + max_tokens) is allowed."
         )
         return
 

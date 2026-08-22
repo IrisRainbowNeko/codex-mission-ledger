@@ -35,7 +35,9 @@ MCP and hooks do not create native threads. The Sol or Terra model calls native
 ## Implemented capabilities
 
 - Mission and task ledgers with optimistic versions.
-- Direct-parent role policy: Sol director → Terra coordinator → Luna leaf.
+- Locked mission strategy (`direct` / `fanout` / `director_plan` / `pipeline`).
+- Direct-parent role policy: Sol director → Terra coordinator → Luna leaf,
+  with `direct` allowing one root Luna.
 - Model/effort matrix (coordinators cheap, Luna expensive):
   - Sol: `high`, `xhigh`, `max` (do not raise the parent chat for orchestration)
   - Terra: `high` default; `xhigh`, `max` allowed
