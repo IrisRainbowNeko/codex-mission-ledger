@@ -1,6 +1,6 @@
 {
   "name": "codex-mission-ledger",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Mission Ledger for Codex: a deterministic MCP control plane for native Codex agents.",
   "type": "module",

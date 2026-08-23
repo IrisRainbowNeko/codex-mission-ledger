@@ -3,16 +3,35 @@
 All notable changes are documented here. The project follows semantic
 versioning once releases begin.
 
-- Renamed the product-facing package and defaults to Mission Ledger for Codex
+## [Unreleased]
+
+### Planned
+
+- Historical success/cost router and remaining Phase 3 metrics.
+- End-to-end compatibility matrix for Codex App, CLI, and VS Code.
+- Host-authoritative token accounting.
+- Retention and artifact garbage collection.
+- Exported observability metrics.
+
+## [0.3.0] - 2026-08-23
+
+### Added
+
+- Adaptive mission routing: `mission_create` locks `direct`, `fanout`
+  (default), `director_plan`, or `pipeline` from a Sol `MISSION_ROUTE`
+  portrait. `direct` allows one root Luna; `fanout` caps Terra objectives at
+  2000 characters; `director_plan` stores a workspace-relative markdown path
+  (`directorPlan`) to a plan file Sol wrote in the project folder;
+  `pipeline` allows one Terra with serial Luna dependencies. Spawn policy
+  permits Sol→Luna only when the ledger row is that direct root operator.
+
+### Changed
+
+- Product-facing package and defaults are Mission Ledger for Codex
   (`codex-mission-ledger`). Legacy `hierarchical-codex` CLI bins, environment
   variables, state paths, installer markers, and manifests remain accepted for
   upgrade compatibility. The `hierarchical_codex` MCP key and `$agent-trio`
   trigger remain stable protocol identifiers.
-
-## [Unreleased]
-
-### Changed
-
 - Sol/Terra wait recovery is one timeout check, not three 1-hour waits.
   Default mission risk is `medium` unless the user asked for irreversible
   damage. `result_submit_candidate` no longer rejects tool/time overage, and
@@ -30,24 +49,6 @@ versioning once releases begin.
   reservation, so a replacement plus synthesizer can fit after a cancelled leaf.
 - Terra `wait` hook allows VS Code cell yield (`cell_id` + `max_tokens`) and
   still denies timeout-style polls.
-
-### Added
-
-- Adaptive mission routing: `mission_create` locks `direct`, `fanout`
-  (default), `director_plan`, or `pipeline` from a Sol `MISSION_ROUTE`
-  portrait. `direct` allows one root Luna; `fanout` caps Terra objectives at
-  2000 characters; `director_plan` stores a workspace-relative markdown path
-  (`directorPlan`) to a plan file Sol wrote in the project folder;
-  `pipeline` allows one Terra with serial Luna dependencies. Spawn policy
-  permits Sol→Luna only when the ledger row is that direct root operator.
-
-### Planned
-
-- Historical success/cost router and remaining Phase 3 metrics.
-- End-to-end compatibility matrix for Codex App, CLI, and VS Code.
-- Host-authoritative token accounting.
-- Retention and artifact garbage collection.
-- Exported observability metrics.
 
 ## [0.2.0] - 2026-08-21
 
