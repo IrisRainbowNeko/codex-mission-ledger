@@ -26,7 +26,7 @@ export function mapSqliteError(error: unknown, databasePath: string): unknown {
   ) {
     return new ControlPlaneError(
       "forbidden",
-      `Control plane SQLite is not writable at ${databasePath}: ${message}. Codex sandboxes often treat ~/.codex as read-only; hierarchical-codex stores the ledger under ~/.local/share/hierarchical-codex or a temp directory.`,
+      `Control plane SQLite is not writable at ${databasePath}: ${message}. Codex sandboxes often treat ~/.codex as read-only; Mission Ledger for Codex stores the ledger under ~/.local/share/codex-mission-ledger or a temp directory.`,
       { databasePath, sqlite: message, sqliteCode: code },
     );
   }

@@ -4,6 +4,11 @@ import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 export const CONTROL_PLANE_DB_NAME = "control-plane.sqlite";
+export const PRODUCT_NAME = "Mission Ledger for Codex";
+export const PROJECT_STATE_DIRECTORY = ".codex-mission-ledger";
+export const STATE_DIRECTORY = "codex-mission-ledger";
+export const LEGACY_PROJECT_STATE_DIRECTORY = ".hierarchical-codex";
+export const LEGACY_STATE_DIRECTORY = "hierarchical-codex";
 
 export interface ControlPlaneConfig {
   homeDirectory: string;
@@ -31,22 +36,37 @@ function positiveInteger(value: string | undefined, fallback: number, name: stri
 }
 
 export function defaultProjectHome(cwd: string): string {
-  return resolve(cwd, ".hierarchical-codex");
+  return resolve(cwd, PROJECT_STATE_DIRECTORY);
 }
 
 export function xdgStateHome(environment: NodeJS.ProcessEnv): string {
   const xdg = environment["XDG_DATA_HOME"];
   if (xdg !== undefined && xdg.trim().length > 0) {
-    return resolve(xdg, "hierarchical-codex");
+    return resolve(xdg, STATE_DIRECTORY);
   }
   const home = environment["HOME"] ?? homedir();
-  return resolve(home, ".local", "share", "hierarchical-codex");
+  return resolve(home, ".local", "share", STATE_DIRECTORY);
 }
 
 export function ephemeralStateHome(environment: NodeJS.ProcessEnv): string {
   const root = environment["TMPDIR"] ?? environment["TMP"] ?? tmpdir();
   const uid = typeof process.getuid === "function" ? String(process.getuid()) : "user";
-  return resolve(root, "hierarchical-codex", uid);
+  return resolve(root, STATE_DIRECTORY, uid);
+}
+
+function legacyXdgStateHome(environment: NodeJS.ProcessEnv): string {
+  const xdg = environment["XDG_DATA_HOME"];
+  if (xdg !== undefined && xdg.trim().length > 0) {
+    return resolve(xdg, LEGACY_STATE_DIRECTORY);
+  }
+  const home = environment["HOME"] ?? homedir();
+  return resolve(home, ".local", "share", LEGACY_STATE_DIRECTORY);
+}
+
+function legacyEphemeralStateHome(environment: NodeJS.ProcessEnv): string {
+  const root = environment["TMPDIR"] ?? environment["TMP"] ?? tmpdir();
+  const uid = typeof process.getuid === "function" ? String(process.getuid()) : "user";
+  return resolve(root, LEGACY_STATE_DIRECTORY, uid);
 }
 
 export function directoryAllowsWrites(directory: string): boolean {
@@ -107,18 +127,20 @@ export function resolveWritableHome(
   const candidates = uniquePaths([
     requestedHome,
     xdgStateHome(environment),
+    legacyXdgStateHome(environment),
     ephemeralStateHome(environment),
+    legacyEphemeralStateHome(environment),
   ]);
   const selected = candidates.find((candidate) => controlPlaneHomeIsWritable(candidate));
   if (selected === undefined) {
     throw new Error(
-      `hierarchical-codex has no writable state directory. Tried: ${candidates.join(", ")}`,
+      `${PRODUCT_NAME} has no writable state directory. Tried: ${candidates.join(", ")}`,
     );
   }
   if (selected !== requestedHome) {
     const warn = options.warn ?? ((message: string) => console.error(message));
     warn(
-      `hierarchical-codex: control plane home "${requestedHome}" is not writable; using "${selected}". Codex sandboxes often treat ~/.codex as read-only.`,
+      `${PRODUCT_NAME}: control plane home "${requestedHome}" is not writable; using "${selected}". Codex sandboxes often treat ~/.codex as read-only.`,
     );
   }
   return selected;
@@ -129,13 +151,37 @@ export function loadConfig(
   cwd: string = process.cwd(),
   options: LoadConfigOptions = {},
 ): ControlPlaneConfig {
-  const requestedHome = resolve(environment["HIERARCHICAL_CODEX_HOME"] ?? defaultProjectHome(cwd));
+  const canonicalHome = environment["CODEX_MISSION_LEDGER_HOME"];
+  const legacyHome = environment["HIERARCHICAL_CODEX_HOME"];
+  const canonicalProjectHome = defaultProjectHome(cwd);
+  const legacyProjectHome = resolve(cwd, LEGACY_PROJECT_STATE_DIRECTORY);
+  const legacyGlobalHome = legacyXdgStateHome(environment);
+  const legacyGlobalDatabase = join(legacyGlobalHome, CONTROL_PLANE_DB_NAME);
+  const requestedHome = resolve(
+    canonicalHome ??
+      legacyHome ??
+      ((existsSync(legacyProjectHome) && !existsSync(canonicalProjectHome)) ||
+      (existsSync(join(legacyProjectHome, CONTROL_PLANE_DB_NAME)) &&
+        !existsSync(join(canonicalProjectHome, CONTROL_PLANE_DB_NAME)))
+        ? legacyProjectHome
+        : existsSync(legacyGlobalDatabase) &&
+            !existsSync(join(canonicalProjectHome, CONTROL_PLANE_DB_NAME))
+          ? legacyGlobalHome
+          : canonicalProjectHome),
+  );
+  if (canonicalHome === undefined && legacyHome !== undefined) {
+    options.warn?.("HIERARCHICAL_CODEX_HOME is deprecated; use CODEX_MISSION_LEDGER_HOME.");
+  }
   const homeDirectory = resolveWritableHome(requestedHome, environment, options);
   const databasePath = resolve(
-    environment["HIERARCHICAL_CODEX_DB"] ?? resolve(homeDirectory, CONTROL_PLANE_DB_NAME),
+    environment["CODEX_MISSION_LEDGER_DB"] ??
+      environment["HIERARCHICAL_CODEX_DB"] ??
+      resolve(homeDirectory, CONTROL_PLANE_DB_NAME),
   );
   const artifactDirectory = resolve(
-    environment["HIERARCHICAL_CODEX_ARTIFACTS"] ?? resolve(homeDirectory, "artifacts"),
+    environment["CODEX_MISSION_LEDGER_ARTIFACTS"] ??
+      environment["HIERARCHICAL_CODEX_ARTIFACTS"] ??
+      resolve(homeDirectory, "artifacts"),
   );
 
   return {
@@ -143,24 +189,28 @@ export function loadConfig(
     databasePath,
     artifactDirectory,
     maxArtifactBytes: positiveInteger(
-      environment["HIERARCHICAL_CODEX_MAX_ARTIFACT_BYTES"],
+      environment["CODEX_MISSION_LEDGER_MAX_ARTIFACT_BYTES"] ??
+        environment["HIERARCHICAL_CODEX_MAX_ARTIFACT_BYTES"],
       5 * 1024 * 1024,
-      "HIERARCHICAL_CODEX_MAX_ARTIFACT_BYTES",
+      "CODEX_MISSION_LEDGER_MAX_ARTIFACT_BYTES",
     ),
     defaultLeaseSeconds: positiveInteger(
-      environment["HIERARCHICAL_CODEX_DEFAULT_LEASE_SECONDS"],
+      environment["CODEX_MISSION_LEDGER_DEFAULT_LEASE_SECONDS"] ??
+        environment["HIERARCHICAL_CODEX_DEFAULT_LEASE_SECONDS"],
       15 * 60,
-      "HIERARCHICAL_CODEX_DEFAULT_LEASE_SECONDS",
+      "CODEX_MISSION_LEDGER_DEFAULT_LEASE_SECONDS",
     ),
     maxLeaseSeconds: positiveInteger(
-      environment["HIERARCHICAL_CODEX_MAX_LEASE_SECONDS"],
+      environment["CODEX_MISSION_LEDGER_MAX_LEASE_SECONDS"] ??
+        environment["HIERARCHICAL_CODEX_MAX_LEASE_SECONDS"],
       4 * 60 * 60,
-      "HIERARCHICAL_CODEX_MAX_LEASE_SECONDS",
+      "CODEX_MISSION_LEDGER_MAX_LEASE_SECONDS",
     ),
     eventPageSize: positiveInteger(
-      environment["HIERARCHICAL_CODEX_EVENT_PAGE_SIZE"],
+      environment["CODEX_MISSION_LEDGER_EVENT_PAGE_SIZE"] ??
+        environment["HIERARCHICAL_CODEX_EVENT_PAGE_SIZE"],
       250,
-      "HIERARCHICAL_CODEX_EVENT_PAGE_SIZE",
+      "CODEX_MISSION_LEDGER_EVENT_PAGE_SIZE",
     ),
   };
 }

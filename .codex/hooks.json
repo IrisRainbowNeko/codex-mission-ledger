@@ -1,5 +1,5 @@
 {
-  "description": "Policy gates for the hierarchical-codex native agent tree.",
+  "description": "Policy gates for the Mission Ledger for Codex native agent tree.",
   "hooks": {
     "PreToolUse": [
       {

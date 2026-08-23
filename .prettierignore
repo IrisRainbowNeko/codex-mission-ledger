@@ -1,5 +1,6 @@
 dist
 coverage
 node_modules
+.codex-mission-ledger
 .hierarchical-codex
 package-lock.json

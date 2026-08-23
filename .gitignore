@@ -1,6 +1,8 @@
 node_modules/
 dist/
 coverage/
+.codex-mission-ledger/
+# Legacy state path retained during migration.
 .hierarchical-codex/
 *.log
 .DS_Store

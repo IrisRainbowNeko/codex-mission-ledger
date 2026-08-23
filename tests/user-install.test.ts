@@ -72,7 +72,7 @@ command = "echo"
 
     const installed = installUserScope(paths);
     expect(verifyUserInstall(paths).problems).toEqual([]);
-    expect(installed.backedUpConfig).toContain(".bak-hierarchical-codex-");
+    expect(installed.backedUpConfig).toContain(".bak-codex-mission-ledger-");
     assertParses(installed.layout.configToml);
 
     const toml = readFileSync(installed.layout.configToml, "utf8");
@@ -85,9 +85,9 @@ command = "echo"
     expect(toml).toContain("[mcp_servers.other]");
     expect(toml).toContain("[mcp_servers.hierarchical_codex]");
     expect(toml).toContain('default_tools_approval_mode = "approve"');
-    expect(toml).toContain(join(home, ".local", "share", "hierarchical-codex"));
+    expect(toml).toContain(join(home, ".local", "share", "codex-mission-ledger"));
     expect(toml).not.toMatch(/HIERARCHICAL_CODEX_HOME\s*=\s*"[^"]*\.codex\/hierarchical-codex"/);
-    expect(existsSync(join(paths.codexHome, "hierarchical-codex", "install-manifest.json"))).toBe(
+    expect(existsSync(join(paths.codexHome, "codex-mission-ledger", "install-manifest.json"))).toBe(
       true,
     );
 
@@ -151,6 +151,10 @@ enabled = true
       stateDirectory: join(home, ".local", "share", "hierarchical-codex"),
       manifestDirectory: join(paths.codexHome, "hierarchical-codex"),
       manifestPath: join(paths.codexHome, "hierarchical-codex", "install-manifest.json"),
+      legacyHookDirectory: join(paths.codexHome, "hooks", "hierarchical-codex"),
+      legacyManifestDirectory: join(paths.codexHome, "hierarchical-codex"),
+      legacyManifestPath: join(paths.codexHome, "hierarchical-codex", "install-manifest.json"),
+      legacyStateDirectory: join(home, ".local", "share", "hierarchical-codex"),
       mcpEntrypoint: join(paths.packageRoot, "dist", "cli.js"),
     });
     expect(countTomlKey(merged, "features", "hooks")).toBe(1);
@@ -160,6 +164,37 @@ enabled = true
     writeFileSync(path, merged);
     assertParses(path);
     rmSync(directory, { recursive: true, force: true });
+  });
+
+  it("replaces legacy managed markers with the canonical block", () => {
+    home = mkdtempSync(join(tmpdir(), "codex-mission-ledger-user-"));
+    const paths = materialize(home);
+    const merged = mergeUserConfig(
+      `# >>> hierarchical-codex\n[mcp_servers.hierarchical_codex]\n# <<< hierarchical-codex\n`,
+      paths,
+      {
+        ...paths,
+        agentsHome: join(home, ".agents"),
+        skillAgents: join(home, ".agents", "skills", "agent-trio"),
+        skillCodex: join(paths.codexHome, "skills", "agent-trio"),
+        agentDirectory: join(paths.codexHome, "agents"),
+        hookDirectory: join(paths.codexHome, "hooks", "codex-mission-ledger"),
+        hooksJson: join(paths.codexHome, "hooks.json"),
+        configToml: join(paths.codexHome, "config.toml"),
+        userAgentsMd: join(paths.codexHome, "AGENTS.md"),
+        stateDirectory: join(home, ".local", "share", "codex-mission-ledger"),
+        manifestDirectory: join(paths.codexHome, "codex-mission-ledger"),
+        manifestPath: join(paths.codexHome, "codex-mission-ledger", "install-manifest.json"),
+        legacyHookDirectory: join(paths.codexHome, "hooks", "hierarchical-codex"),
+        legacyManifestDirectory: join(paths.codexHome, "hierarchical-codex"),
+        legacyManifestPath: join(paths.codexHome, "hierarchical-codex", "install-manifest.json"),
+        legacyStateDirectory: join(home, ".local", "share", "hierarchical-codex"),
+        mcpEntrypoint: join(paths.packageRoot, "dist", "cli.js"),
+      },
+    );
+    expect(merged).toContain("# >>> codex-mission-ledger");
+    expect(merged).not.toContain("# >>> hierarchical-codex");
+    expect(merged).toContain("CODEX_MISSION_LEDGER_HOME");
   });
 
   it("aborts on unmanaged conflicts and only deletes manifest files on uninstall", () => {
@@ -176,13 +211,13 @@ enabled = true
     expect(
       forced.backedUpConflicts.some(
         (path) =>
-          path.includes(join("hierarchical-codex", "backups")) &&
-          path.includes("terra-coordinator.toml.bak-hierarchical-codex-"),
+          path.includes(join("codex-mission-ledger", "backups")) &&
+          path.includes("terra-coordinator.toml.bak-codex-mission-ledger-"),
       ),
     ).toBe(true);
     expect(
       readdirSync(join(paths.codexHome, "agents")).filter((name) =>
-        name.includes(".bak-hierarchical-codex-"),
+        name.includes(".bak-codex-mission-ledger-"),
       ),
     ).toEqual([]);
     expect(readFileSync(custom, "utf8")).toContain("terra-coordinator");
@@ -191,6 +226,29 @@ enabled = true
     uninstallUserScope(paths);
     expect(existsSync(custom)).toBe(false);
     expect(readFileSync(join(paths.codexHome, "agents", "keep-me.toml"), "utf8")).toContain("keep");
+  });
+
+  it("uninstalls canonical and legacy manifests and hook directories together", () => {
+    home = mkdtempSync(join(tmpdir(), "hierarchical-codex-user-"));
+    const paths = materialize(home);
+    const installed = installUserScope(paths);
+    const legacyHookDirectory = join(paths.codexHome, "hooks", "hierarchical-codex");
+    const legacyManifestDirectory = join(paths.codexHome, "hierarchical-codex");
+    const legacyHook = join(legacyHookDirectory, "pre_spawn_policy.py");
+    mkdirSync(legacyHookDirectory, { recursive: true });
+    writeFileSync(legacyHook, "# legacy hook\n");
+    mkdirSync(legacyManifestDirectory, { recursive: true });
+    writeFileSync(
+      join(legacyManifestDirectory, "install-manifest.json"),
+      `${JSON.stringify({ version: 1, packageRoot: paths.packageRoot, files: [legacyHook] })}\n`,
+    );
+
+    uninstallUserScope(paths);
+
+    expect(existsSync(installed.layout.manifestPath)).toBe(false);
+    expect(existsSync(join(legacyManifestDirectory, "install-manifest.json"))).toBe(false);
+    expect(existsSync(installed.layout.hookDirectory)).toBe(false);
+    expect(existsSync(legacyHookDirectory)).toBe(false);
   });
 
   it("reports missing MCP approve mode as a verification problem", () => {

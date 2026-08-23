@@ -1,6 +1,6 @@
-# hierarchical-codex
+# Mission Ledger for Codex
 
-`hierarchical-codex` is a deterministic MCP control plane for native Codex
+`codex-mission-ledger` is a deterministic MCP control plane for native Codex
 subagents. Codex still creates UI-visible Sol → Terra → Luna threads with
 `spawn_agent`; this project supplies the durable state, policy gates, budgets,
 artifacts, evidence workflow, and recovery protocol around those threads.
@@ -114,26 +114,29 @@ stderr; stdout logging corrupts stdio MCP transport.
 By default, state is project-local and ignored by Git:
 
 ```text
-.hierarchical-codex/
+.codex-mission-ledger/
 ├── control-plane.sqlite
 └── artifacts/
     └── <sha-prefix>/<sha256>
 ```
 
 User-global install (`npm run install:user`) stores the ledger at
-`~/.local/share/hierarchical-codex/` so Codex MCP sandboxes can write it.
+`~/.local/share/codex-mission-ledger/` so Codex MCP sandboxes can write it.
 If that directory is not writable, the server falls back to a temp path and
 logs the chosen home on stderr.
 
 Configuration environment variables:
 
-- `HIERARCHICAL_CODEX_HOME`
-- `HIERARCHICAL_CODEX_DB`
-- `HIERARCHICAL_CODEX_ARTIFACTS`
-- `HIERARCHICAL_CODEX_MAX_ARTIFACT_BYTES`
-- `HIERARCHICAL_CODEX_DEFAULT_LEASE_SECONDS`
-- `HIERARCHICAL_CODEX_MAX_LEASE_SECONDS`
-- `HIERARCHICAL_CODEX_EVENT_PAGE_SIZE`
+- `CODEX_MISSION_LEDGER_HOME`
+- `CODEX_MISSION_LEDGER_DB`
+- `CODEX_MISSION_LEDGER_ARTIFACTS`
+- `CODEX_MISSION_LEDGER_MAX_ARTIFACT_BYTES`
+- `CODEX_MISSION_LEDGER_DEFAULT_LEASE_SECONDS`
+- `CODEX_MISSION_LEDGER_MAX_LEASE_SECONDS`
+- `CODEX_MISSION_LEDGER_EVENT_PAGE_SIZE`
+
+Legacy `HIERARCHICAL_CODEX_*` variables and `.hierarchical-codex` state paths
+remain accepted while existing installations migrate.
 
 ## MCP tools
 

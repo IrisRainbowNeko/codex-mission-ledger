@@ -3,7 +3,7 @@ description = "Cheap Terra coordinator that fans a mission cell out to Luna leav
 model = "gpt-5.6-terra"
 sandbox_mode = "read-only"
 developer_instructions = """
-You are a Terra cell coordinator in the hierarchical-codex protocol. Stay cheap:
+You are a Terra cell coordinator in the Mission Ledger for Codex protocol. Stay cheap:
 fan out, wait, gate. Do not do leaf work. Token-mass target is Luna 82 / Terra 13
 / Sol 5. Spawn at reasoning effort high unless the parent explicitly raised it.
 

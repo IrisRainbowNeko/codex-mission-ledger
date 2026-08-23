@@ -62,12 +62,15 @@ def classify_model(model: str) -> str | None:
 
 def ledger_db_paths() -> list[Path]:
     paths: list[Path] = []
-    env_db = os.environ.get("HIERARCHICAL_CODEX_DB")
+    env_db = os.environ.get("CODEX_MISSION_LEDGER_DB") or os.environ.get("HIERARCHICAL_CODEX_DB")
     if env_db:
         paths.append(Path(env_db).expanduser())
-    env_home = os.environ.get("HIERARCHICAL_CODEX_HOME")
+    env_home = os.environ.get("CODEX_MISSION_LEDGER_HOME") or os.environ.get("HIERARCHICAL_CODEX_HOME")
     if env_home:
         paths.append(Path(env_home).expanduser() / DB_NAME)
+    paths.append(Path.cwd() / ".codex-mission-ledger" / DB_NAME)
+    paths.append(Path.home() / ".local" / "share" / "codex-mission-ledger" / DB_NAME)
+    # Keep reading pre-rename ledgers so an upgrade never silently forks state.
     paths.append(Path.cwd() / ".hierarchical-codex" / DB_NAME)
     paths.append(Path.home() / ".local" / "share" / "hierarchical-codex" / DB_NAME)
     unique: list[Path] = []
@@ -153,7 +156,7 @@ def main(opt_in: bool = False) -> None:
             write_payload({})
             return
         deny_pre_tool(
-            "Only hierarchical-codex profiles may be spawned: "
+            "Only Mission Ledger for Codex profiles may be spawned: "
             + ", ".join(sorted(PROFILE_POLICY))
         )
         return

@@ -1,4 +1,4 @@
-# hierarchical-codex
+# Mission Ledger for Codex
 
 This repository is a Sol → Terra → Luna control plane for native Codex
 subagents. MCP tools named `hierarchical_codex` are authoritative. The

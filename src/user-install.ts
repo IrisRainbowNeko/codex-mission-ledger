@@ -13,13 +13,20 @@ import {
 import { homedir as osHomedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CONTROL_PLANE_DB_NAME } from "./config.js";
 
-export const MANAGED_BEGIN = "# >>> hierarchical-codex";
-export const MANAGED_END = "# <<< hierarchical-codex";
-export const AGENTS_BEGIN = "<!-- hierarchical-codex -->";
-export const AGENTS_END = "<!-- /hierarchical-codex -->";
-export const HOOK_MARKER = "hierarchical-codex/pre_spawn_policy.py";
-export const COORDINATOR_HOOK_MARKER = "hierarchical-codex/pre_coordinator_tools.py";
+export const MANAGED_BEGIN = "# >>> codex-mission-ledger";
+export const MANAGED_END = "# <<< codex-mission-ledger";
+export const AGENTS_BEGIN = "<!-- codex-mission-ledger -->";
+export const AGENTS_END = "<!-- /codex-mission-ledger -->";
+export const HOOK_MARKER = "codex-mission-ledger/pre_spawn_policy.py";
+export const COORDINATOR_HOOK_MARKER = "codex-mission-ledger/pre_coordinator_tools.py";
+export const LEGACY_MANAGED_BEGIN = "# >>> hierarchical-codex";
+export const LEGACY_MANAGED_END = "# <<< hierarchical-codex";
+export const LEGACY_AGENTS_BEGIN = "<!-- hierarchical-codex -->";
+export const LEGACY_AGENTS_END = "<!-- /hierarchical-codex -->";
+export const LEGACY_HOOK_MARKER = "hierarchical-codex/pre_spawn_policy.py";
+export const LEGACY_COORDINATOR_HOOK_MARKER = "hierarchical-codex/pre_coordinator_tools.py";
 export const MANIFEST_NAME = "install-manifest.json";
 export const SKILL_NAME = "agent-trio";
 
@@ -93,6 +100,10 @@ export interface UserInstallLayout {
   stateDirectory: string;
   manifestDirectory: string;
   manifestPath: string;
+  legacyHookDirectory: string;
+  legacyManifestDirectory: string;
+  legacyManifestPath: string;
+  legacyStateDirectory: string;
   mcpEntrypoint: string;
 }
 
@@ -136,11 +147,24 @@ export function defaultUserInstallPaths(
 }
 
 export function resolveUserLayout(paths: UserInstallPaths): UserInstallLayout {
-  const hookDirectory = join(paths.codexHome, "hooks", "hierarchical-codex");
-  const manifestDirectory = join(paths.codexHome, "hierarchical-codex");
+  const hookDirectory = join(paths.codexHome, "hooks", "codex-mission-ledger");
+  const manifestDirectory = join(paths.codexHome, "codex-mission-ledger");
   // Codex sandboxes ~/.codex as read-only for MCP processes, so the live ledger
   // must live outside that tree. The install manifest stays under ~/.codex.
-  const stateDirectory = join(paths.homeDirectory, ".local", "share", "hierarchical-codex");
+  const canonicalStateDirectory = join(
+    paths.homeDirectory,
+    ".local",
+    "share",
+    "codex-mission-ledger",
+  );
+  const legacyHookDirectory = join(paths.codexHome, "hooks", "hierarchical-codex");
+  const legacyManifestDirectory = join(paths.codexHome, "hierarchical-codex");
+  const legacyStateDirectory = join(paths.homeDirectory, ".local", "share", "hierarchical-codex");
+  const stateDirectory =
+    existsSync(join(canonicalStateDirectory, CONTROL_PLANE_DB_NAME)) ||
+    !existsSync(join(legacyStateDirectory, CONTROL_PLANE_DB_NAME))
+      ? canonicalStateDirectory
+      : legacyStateDirectory;
   return {
     codexHome: paths.codexHome,
     agentsHome: join(paths.homeDirectory, ".agents"),
@@ -154,6 +178,10 @@ export function resolveUserLayout(paths: UserInstallPaths): UserInstallLayout {
     stateDirectory,
     manifestDirectory,
     manifestPath: join(manifestDirectory, MANIFEST_NAME),
+    legacyHookDirectory,
+    legacyManifestDirectory,
+    legacyManifestPath: join(legacyManifestDirectory, MANIFEST_NAME),
+    legacyStateDirectory,
     mcpEntrypoint: join(paths.packageRoot, "dist", "cli.js"),
   };
 }
@@ -181,7 +209,8 @@ export function installUserScope(
   const force = options.force === true;
   const written: string[] = [];
   const backedUpConflicts: string[] = [];
-  const previousManifest = readManifest(layout.manifestPath);
+  const previousManifest =
+    readManifest(layout.manifestPath) ?? readManifest(layout.legacyManifestPath);
   const owned = new Set(previousManifest?.files ?? []);
   const planned = plannedManagedFiles(paths, layout);
 
@@ -231,7 +260,7 @@ export function installUserScope(
   const existingConfig = existsSync(layout.configToml)
     ? readFileSync(layout.configToml, "utf8")
     : "";
-  const firstManagedInstall = !existingConfig.includes(MANAGED_BEGIN);
+  const firstManagedInstall = !hasManagedBlock(existingConfig);
   const backedUpConfig = firstManagedInstall ? backupIfExists(layout.configToml, layout) : null;
   const nextConfig = mergeUserConfig(existingConfig, paths, layout);
   assertTomlText(nextConfig, layout.configToml);
@@ -265,22 +294,21 @@ export function installUserScope(
 
 export function uninstallUserScope(paths: UserInstallPaths): UserInstallLayout {
   const layout = resolveUserLayout(paths);
-  const manifest = readManifest(layout.manifestPath);
-  const files = manifest?.files ?? [];
+  const manifestPaths = [layout.manifestPath, layout.legacyManifestPath];
+  const manifests = manifestPaths
+    .map((path) => readManifest(path))
+    .filter((manifest): manifest is InstallManifest => manifest !== null);
+  const files = new Set(manifests.flatMap((manifest) => manifest.files));
   for (const file of files) {
     rmSync(file, { recursive: true, force: true });
   }
-  if (manifest === null) {
-    // Legacy installs had no manifest; only remove the dedicated hook directory.
-    rmSync(layout.hookDirectory, { recursive: true, force: true });
-  }
+  // Both directories are dedicated to this integration, including installs
+  // from before the manifest was introduced.
+  rmSync(layout.hookDirectory, { recursive: true, force: true });
+  rmSync(layout.legacyHookDirectory, { recursive: true, force: true });
 
   if (existsSync(layout.configToml)) {
-    const stripped = stripManagedBlock(
-      readFileSync(layout.configToml, "utf8"),
-      MANAGED_BEGIN,
-      MANAGED_END,
-    );
+    const stripped = stripManagedBlocks(readFileSync(layout.configToml, "utf8"));
     atomicWrite(layout.configToml, stripped.length === 0 ? "" : `${stripped}\n`);
   }
   if (existsSync(layout.hooksJson)) {
@@ -290,10 +318,12 @@ export function uninstallUserScope(paths: UserInstallPaths): UserInstallLayout {
   if (existsSync(layout.userAgentsMd)) {
     atomicWrite(
       layout.userAgentsMd,
-      stripManagedBlock(readFileSync(layout.userAgentsMd, "utf8"), AGENTS_BEGIN, AGENTS_END),
+      stripManagedAgentBlocks(readFileSync(layout.userAgentsMd, "utf8")),
     );
   }
-  rmSync(layout.manifestPath, { force: true });
+  for (const manifestPath of manifestPaths) {
+    rmSync(manifestPath, { force: true });
+  }
   return layout;
 }
 
@@ -302,7 +332,7 @@ export function mergeUserConfig(
   paths: UserInstallPaths,
   layout: UserInstallLayout,
 ): string {
-  let next = stripManagedBlock(source, MANAGED_BEGIN, MANAGED_END);
+  let next = stripManagedBlocks(source);
   for (const key of FEATURE_KEYS) {
     next = dedupeTomlKey(next, "features", key);
   }
@@ -339,7 +369,7 @@ export function mergeUserHooks(
 }
 
 export function mergeUserAgentsMd(source: string): string {
-  const stripped = stripManagedBlock(source, AGENTS_BEGIN, AGENTS_END).trimEnd();
+  const stripped = stripManagedAgentBlocks(source).trimEnd();
   const section = `${AGENTS_BEGIN}
 When the user invokes \`$agent-trio\` or asks for hierarchical Sol/Terra/Luna
 agents, follow the agent-trio skill. Use native spawn_agent and the
@@ -395,7 +425,7 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
     }
     if (/HIERARCHICAL_CODEX_HOME\s*=\s*"[^"]*\.codex\/hierarchical-codex"/.test(toml)) {
       warnings.push(
-        "MCP state is under ~/.codex, which Codex sandboxes as read-only. Re-run npm run install:user so the ledger moves to ~/.local/share/hierarchical-codex.",
+        "MCP state is under ~/.codex, which Codex sandboxes as read-only. Re-run npm run install:user so the ledger moves to ~/.local/share/codex-mission-ledger.",
       );
     }
     if (/^\s*model\s*=\s*"gpt-5\.6-sol"/m.test(managedSection(toml))) {
@@ -413,7 +443,7 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
     }
     if (!/trusted_hash\s*=/.test(toml)) {
       warnings.push(
-        "User-level command hooks are not trusted yet. In a new Codex chat run /hooks and trust the hierarchical-codex commands; until then spawn policy is skipped.",
+        "User-level command hooks are not trusted yet. In a new Codex chat run /hooks and trust the Mission Ledger for Codex commands; until then spawn policy is skipped.",
       );
     }
   }
@@ -440,10 +470,13 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
     if (!hooks.includes("--opt-in")) {
       problems.push("user hooks.json must call pre_spawn_policy.py --opt-in");
     }
-    if (!hooks.includes(HOOK_MARKER)) {
-      problems.push("user hooks.json is missing hierarchical-codex hook commands");
+    if (!hooks.includes(HOOK_MARKER) && !hooks.includes(LEGACY_HOOK_MARKER)) {
+      problems.push("user hooks.json is missing Mission Ledger for Codex hook commands");
     }
-    if (!hooks.includes(COORDINATOR_HOOK_MARKER)) {
+    if (
+      !hooks.includes(COORDINATOR_HOOK_MARKER) &&
+      !hooks.includes(LEGACY_COORDINATOR_HOOK_MARKER)
+    ) {
       problems.push("user hooks.json is missing coordinator babysit policy");
     }
   }
@@ -565,7 +598,7 @@ function renderManagedConfig(paths: UserInstallPaths, layout: UserInstallLayout)
   const tools = MCP_TOOLS.map((name) => `  ${tomlString(name)},`).join("\n");
   const hookPolicy = join(layout.hookDirectory, "pre_spawn_policy.py");
   return `${MANAGED_BEGIN}
-# User-global hierarchical-codex. Does not pin the default model.
+# User-global Mission Ledger for Codex. Does not pin the default model.
 # Hook scripts live at ${hookPolicy}
 # Ledger lives outside ~/.codex because Codex sandboxes that tree as read-only.
 # approval_mode approve skips Codex Guardian on this local stdio MCP.
@@ -583,7 +616,7 @@ ${tools}
 ]
 
 [mcp_servers.hierarchical_codex.env]
-HIERARCHICAL_CODEX_HOME = ${tomlString(layout.stateDirectory)}
+CODEX_MISSION_LEDGER_HOME = ${tomlString(layout.stateDirectory)}
 
 [[skills.config]]
 path = ${tomlString(layout.skillAgents)}
@@ -703,7 +736,11 @@ function removeOurHooks(file: HooksFile): HooksFile {
     (entries ?? [])
       .map((entry) => ({
         ...entry,
-        hooks: entry.hooks.filter((hook) => !hook.command.includes("hooks/hierarchical-codex/")),
+        hooks: entry.hooks.filter(
+          (hook) =>
+            !hook.command.includes("hooks/codex-mission-ledger/") &&
+            !hook.command.includes("hooks/hierarchical-codex/"),
+        ),
       }))
       .filter((entry) => entry.hooks.length > 0);
   return hooksFile(file.description, {
@@ -723,7 +760,7 @@ function findTable(lines: string[], table: string): { start: number; end: number
     let end = start + 1;
     while (end < lines.length) {
       const trimmed = lines[end]?.trim() ?? "";
-      if (trimmed === MANAGED_BEGIN) {
+      if (trimmed === MANAGED_BEGIN || trimmed === LEGACY_MANAGED_BEGIN) {
         break;
       }
       if (trimmed.startsWith("[")) {
@@ -767,13 +804,36 @@ function stripManagedBlock(source: string, begin: string, end: string): string {
     .trimEnd();
 }
 
+function stripManagedBlocks(source: string): string {
+  return stripManagedBlock(
+    stripManagedBlock(source, MANAGED_BEGIN, MANAGED_END),
+    LEGACY_MANAGED_BEGIN,
+    LEGACY_MANAGED_END,
+  );
+}
+
+function stripManagedAgentBlocks(source: string): string {
+  return stripManagedBlock(
+    stripManagedBlock(source, AGENTS_BEGIN, AGENTS_END),
+    LEGACY_AGENTS_BEGIN,
+    LEGACY_AGENTS_END,
+  );
+}
+
+function hasManagedBlock(source: string): boolean {
+  return source.includes(MANAGED_BEGIN) || source.includes(LEGACY_MANAGED_BEGIN);
+}
+
 function managedSection(source: string): string {
-  const start = source.indexOf(MANAGED_BEGIN);
-  const end = source.indexOf(MANAGED_END);
+  const legacy = source.indexOf(MANAGED_BEGIN) === -1;
+  const begin = legacy ? LEGACY_MANAGED_BEGIN : MANAGED_BEGIN;
+  const endMarker = legacy ? LEGACY_MANAGED_END : MANAGED_END;
+  const start = source.indexOf(begin);
+  const end = source.indexOf(endMarker, start + begin.length);
   if (start === -1 || end === -1 || end < start) {
     return "";
   }
-  return source.slice(start, end + MANAGED_END.length);
+  return source.slice(start, end + endMarker.length);
 }
 
 function readManifest(path: string): InstallManifest | null {
@@ -792,7 +852,7 @@ function readManifest(path: string): InstallManifest | null {
 }
 
 function assertTomlText(source: string, label: string): void {
-  const directory = mkdtempSync(join(tmpdir(), "hierarchical-codex-toml-"));
+  const directory = mkdtempSync(join(tmpdir(), "codex-mission-ledger-toml-"));
   const path = join(directory, "config.toml");
   try {
     writeFileSync(path, source.length === 0 ? "\n" : source);
@@ -814,7 +874,12 @@ function leftoverSkillBackups(skillsDirectory: string): string[] {
     return [];
   }
   return readdirSync(skillsDirectory, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && entry.name.includes(".bak-hierarchical-codex-"))
+    .filter(
+      (entry) =>
+        entry.isDirectory() &&
+        (entry.name.includes(".bak-codex-mission-ledger-") ||
+          entry.name.includes(".bak-hierarchical-codex-")),
+    )
     .map((entry) => join(skillsDirectory, entry.name));
 }
 
@@ -824,12 +889,12 @@ function backupIfExists(path: string, layout: UserInstallLayout): string | null 
   }
   const backupsDirectory = join(layout.manifestDirectory, "backups");
   mkdirSync(backupsDirectory, { recursive: true, mode: 0o700 });
-  let backup = join(backupsDirectory, `${basename(path)}.bak-hierarchical-codex-${stamp()}`);
+  let backup = join(backupsDirectory, `${basename(path)}.bak-codex-mission-ledger-${stamp()}`);
   let suffix = 1;
   while (existsSync(backup)) {
     backup = join(
       backupsDirectory,
-      `${basename(path)}.bak-hierarchical-codex-${stamp()}-${suffix}`,
+      `${basename(path)}.bak-codex-mission-ledger-${stamp()}-${suffix}`,
     );
     suffix += 1;
   }
@@ -839,7 +904,7 @@ function backupIfExists(path: string, layout: UserInstallLayout): string | null 
 
 function atomicWrite(path: string, contents: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const directory = mkdtempSync(join(tmpdir(), "hierarchical-codex-write-"));
+  const directory = mkdtempSync(join(tmpdir(), "codex-mission-ledger-write-"));
   const temporary = join(directory, "file");
   try {
     writeFileSync(temporary, contents, { encoding: "utf8", mode: 0o600 });

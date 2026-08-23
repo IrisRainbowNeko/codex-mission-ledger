@@ -20,7 +20,7 @@ const controlPlane = new ControlPlane(repository, artifactStore, {
 
 const handle = serveStdio(() => createMcpServer(controlPlane), {
   onerror: (error) => {
-    console.error("hierarchical-codex MCP transport error:", error);
+    console.error("Mission Ledger for Codex MCP transport error:", error);
   },
 });
 
@@ -33,7 +33,7 @@ const shutdown = async (): Promise<void> => {
   try {
     await handle.close();
   } catch (error) {
-    console.error("hierarchical-codex MCP server failed to close:", error);
+    console.error("Mission Ledger for Codex MCP server failed to close:", error);
   } finally {
     database.close();
   }

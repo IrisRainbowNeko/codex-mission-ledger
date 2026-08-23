@@ -3,6 +3,12 @@
 All notable changes are documented here. The project follows semantic
 versioning once releases begin.
 
+- Renamed the product-facing package and defaults to Mission Ledger for Codex
+  (`codex-mission-ledger`). Legacy `hierarchical-codex` CLI bins, environment
+  variables, state paths, installer markers, and manifests remain accepted for
+  upgrade compatibility. The `hierarchical_codex` MCP key and `$agent-trio`
+  trigger remain stable protocol identifiers.
+
 ## [Unreleased]
 
 ### Changed

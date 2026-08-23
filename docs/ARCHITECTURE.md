@@ -29,7 +29,7 @@ Luna producer/verifier leaf threads -------------------+
   |
   | MCP tool calls carrying mission_id/task_id/version/lease
   v
-hierarchical-codex MCP server
+Mission Ledger for Codex MCP server
   |
   +-- ControlPlane service
   |    +-- state-transition policy

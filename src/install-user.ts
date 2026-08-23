@@ -15,11 +15,13 @@ const force = process.argv.includes("--force");
 
 if (uninstall) {
   const layout = uninstallUserScope(paths);
-  process.stdout.write(`Removed hierarchical-codex managed files from ${layout.codexHome}\n`);
+  process.stdout.write(`Removed Mission Ledger for Codex managed files from ${layout.codexHome}\n`);
   process.stdout.write(`Feature flags and ${layout.stateDirectory} state were kept.\n`);
 } else {
   const result = installUserScope(paths, { force });
-  process.stdout.write("Installed hierarchical-codex for Codex CLI and the VS Code extension.\n");
+  process.stdout.write(
+    "Installed Mission Ledger for Codex for Codex CLI and the VS Code extension.\n",
+  );
   process.stdout.write(`MCP entrypoint: ${result.layout.mcpEntrypoint}\n`);
   process.stdout.write(`Skill: ${result.layout.skillAgents}\n`);
   process.stdout.write(`State: ${result.layout.stateDirectory}\n`);
@@ -44,6 +46,8 @@ if (!uninstall) {
   } else {
     process.stdout.write("Verification passed for files and TOML.\n");
     process.stdout.write("Restart VS Code, start a new Codex chat, run /hooks and trust the\n");
-    process.stdout.write("hierarchical-codex commands, then /mcp and $agent-trio <mission>.\n");
+    process.stdout.write(
+      "Mission Ledger for Codex commands, then /mcp and $agent-trio <mission>.\n",
+    );
   }
 }

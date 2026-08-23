@@ -36,7 +36,7 @@ trusted.
 
 ## MCP startup
 
-`.codex/config.toml` configures:
+`.codex/config.toml` configures Mission Ledger for Codex:
 
 ```toml
 [mcp_servers.hierarchical_codex]
@@ -50,6 +50,9 @@ default_tools_approval_mode = "approve"
 `approve` is Codex skip-review for this server only (including Guardian).
 `auto` still sends write tools such as `artifact_put` through Guardian.
 Prompt or skill text cannot grant that authorization.
+
+The `hierarchical_codex` server key is retained as a compatibility alias for
+existing Codex clients; the product display name is Mission Ledger for Codex.
 
 The repository must be opened at its root and built before a session starts:
 

@@ -29,21 +29,22 @@ entrypoint must keep SQLite open until that handle closes.
 
 ## State locations
 
-Project-local default (when `HIERARCHICAL_CODEX_HOME` is unset):
+Project-local default (when `CODEX_MISSION_LEDGER_HOME` is unset):
 
 ```text
-.hierarchical-codex/control-plane.sqlite
-.hierarchical-codex/control-plane.sqlite-wal
-.hierarchical-codex/control-plane.sqlite-shm
-.hierarchical-codex/artifacts/
+.codex-mission-ledger/control-plane.sqlite
+.codex-mission-ledger/control-plane.sqlite-wal
+.codex-mission-ledger/control-plane.sqlite-shm
+.codex-mission-ledger/artifacts/
 ```
 
 User-global install (`npm run install:user`) stores the ledger at
-`~/.local/share/hierarchical-codex/`. That path is outside `~/.codex` because
+`~/.local/share/codex-mission-ledger/`. That path is outside `~/.codex` because
 Codex MCP sandboxes treat `~/.codex` as read-only; `mission_create` cannot
 INSERT into a read-only SQLite file. If the configured home is not writable,
-the server falls back to `$TMPDIR/hierarchical-codex/<uid>` and logs the
-chosen path on stderr.
+the server falls back to `$TMPDIR/codex-mission-ledger/<uid>` and logs the
+chosen path on stderr. The pre-rename `hierarchical-codex` paths remain readable
+for compatibility with existing state.
 
 Use environment variables to move state to a persistent encrypted volume.
 

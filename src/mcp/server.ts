@@ -112,7 +112,7 @@ function failure(error: unknown) {
     };
   }
 
-  console.error("Unexpected hierarchical-codex control-plane error:", error);
+  console.error("Unexpected Mission Ledger for Codex control-plane error:", error);
   const message = error instanceof Error ? error.message : String(error);
   const code =
     error !== null && typeof error === "object" && "code" in error ? String(error.code) : "";
@@ -144,8 +144,8 @@ function run(operation: () => unknown) {
 
 export function createMcpServer(controlPlane: ControlPlane): McpServer {
   const server = new McpServer({
-    name: "hierarchical-codex",
-    version: "0.1.0",
+    name: "Mission Ledger for Codex",
+    version: "0.2.0",
   });
 
   server.registerTool(

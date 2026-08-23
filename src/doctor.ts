@@ -99,7 +99,7 @@ check("MCP project configuration", () => {
       throw new Error(`Missing expected config fragment: ${requiredText}`);
     }
   }
-  return "hierarchical_codex stdio server is required";
+  return "Mission Ledger for Codex stdio server is required";
 });
 
 check("Python hook runtime", () => {
@@ -123,7 +123,7 @@ if (userMode) {
     return layout.configToml;
   });
 
-  check("User-global hierarchical-codex", () => {
+  check("User-global Mission Ledger for Codex", () => {
     if (report.problems.length > 0) {
       throw new Error(report.problems.join("; "));
     }
@@ -153,7 +153,7 @@ if (userMode) {
   });
 
   check("User MCP server constructs", () => {
-    const directory = mkdtempSync(join(tmpdir(), "hierarchical-codex-doctor-mcp-"));
+    const directory = mkdtempSync(join(tmpdir(), "codex-mission-ledger-doctor-mcp-"));
     const database = new ControlPlaneDatabase(":memory:");
     try {
       createMcpServer(

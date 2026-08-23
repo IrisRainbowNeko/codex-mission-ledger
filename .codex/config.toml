@@ -50,4 +50,4 @@ enabled_tools = [
 ]
 
 [mcp_servers.hierarchical_codex.env]
-HIERARCHICAL_CODEX_HOME = ".hierarchical-codex"
+CODEX_MISSION_LEDGER_HOME = ".codex-mission-ledger"

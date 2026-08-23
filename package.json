@@ -1,10 +1,12 @@
 {
-  "name": "hierarchical-codex",
+  "name": "codex-mission-ledger",
   "version": "0.2.0",
   "private": true,
-  "description": "Deterministic MCP control plane for native hierarchical Codex agents.",
+  "description": "Mission Ledger for Codex: a deterministic MCP control plane for native Codex agents.",
   "type": "module",
   "bin": {
+    "codex-mission-ledger-mcp": "./dist/cli.js",
+    "codex-mission-ledger-doctor": "./dist/doctor.js",
     "hierarchical-codex-mcp": "./dist/cli.js",
     "hierarchical-codex-doctor": "./dist/doctor.js"
   },
