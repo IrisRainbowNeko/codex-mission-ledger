@@ -88,9 +88,10 @@ def main() -> None:
         deny_pre_tool(
             "Terra coordinators must not poll or babysit. Do not call wait, "
             "list_agents, send_message, or followup_task. Spawn the batch, then "
-            "one wait_agent with timeout_ms >= 1800000. Recover by spawning a "
-            "replacement Luna, not by pinging the child. VS Code cell yield "
-            "(cell_id + max_tokens) is allowed."
+            "one wait_agent with timeout_ms >= 1800000. After a timeout, "
+            "children_status once; retry wait_agent only if a child is still "
+            "live. Recover by spawning a replacement Luna, not by pinging the "
+            "child. VS Code cell yield (cell_id + max_tokens) is allowed."
         )
         return
 
@@ -99,9 +100,8 @@ def main() -> None:
         if parsed_timeout is None or parsed_timeout < MIN_WAIT_AGENT_TIMEOUT_MS:
             deny_pre_tool(
                 "Terra must use one long wait_agent (timeout_ms >= 1800000) and "
-                "must not poll with 60s waits. If wait_agent returns before "
-                "TASK_RESULT, call wait_agent again with the same long timeout "
-                "(at most 3 times), then children_status."
+                "must not poll with 60s waits. After a timeout, children_status "
+                "once; retry wait_agent only if a child is still live."
             )
             return
 

@@ -363,6 +363,27 @@ export function assertBudgetWithin(
 }
 
 export function assertUsageWithin(usage: Usage, limit: BudgetLimits, label: string): void {
+  assertUsageFieldsWithin(usage, limit, label, ["tokens", "costUsd", "wallClockSeconds", "toolCalls"]);
+}
+
+/** Candidate submit still enforces spend caps; tool/time overage must not block a finished result. */
+export function assertHardUsageWithin(usage: Usage, limit: BudgetLimits, label: string): void {
+  assertUsageFieldsWithin(usage, limit, label, ["tokens", "costUsd"]);
+}
+
+export function isLeaseExpired(leaseExpiresAt: string | null, now: string): boolean {
+  if (leaseExpiresAt === null) {
+    return false;
+  }
+  return Date.parse(leaseExpiresAt) <= Date.parse(now);
+}
+
+function assertUsageFieldsWithin(
+  usage: Usage,
+  limit: BudgetLimits,
+  label: string,
+  fields: readonly BudgetField[],
+): void {
   const usageByBudgetField: Partial<Record<BudgetField, number>> = {
     tokens: usage.tokens,
     costUsd: usage.costUsd,
@@ -370,10 +391,7 @@ export function assertUsageWithin(usage: Usage, limit: BudgetLimits, label: stri
     toolCalls: usage.toolCalls,
   };
 
-  for (const field of BUDGET_FIELDS) {
-    if (field === "maxChildren") {
-      continue;
-    }
+  for (const field of fields) {
     const maximum = limit[field];
     if (maximum === undefined) {
       continue;

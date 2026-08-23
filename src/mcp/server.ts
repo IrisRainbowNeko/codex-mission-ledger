@@ -257,7 +257,7 @@ export function createMcpServer(controlPlane: ControlPlane): McpServer {
     {
       title: "List compact child status",
       description:
-        "Read direct children of a coordinator task as compact status rows (ids, status, version, summary). Call once after wait_agent. Do not poll with task_get.",
+        "Read direct children of a coordinator task as compact status rows (ids, status, version, summary, leaseExpired). Call once after wait_agent. Do not poll with task_get. If leaseExpired, cancel instead of waiting again.",
       inputSchema: z.object({ parentTaskId: id }).strict(),
     },
     async ({ parentTaskId }) => run(() => controlPlane.childrenStatus(parentTaskId)),

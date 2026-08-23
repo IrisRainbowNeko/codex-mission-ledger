@@ -373,6 +373,20 @@ describe("ControlPlane", () => {
       }),
     );
     expect(controlPlane.getTask(terra.id).status).toBe("running");
+
+    const overage = controlPlane.submitCandidate({
+      taskId: terra.id,
+      workerId: "terra-a",
+      leaseToken: running.leaseToken!,
+      expectedVersion: running.version,
+      summary: "Finished after extra tool calls",
+      artifactRefs: [],
+      claims: [],
+      usage: { toolCalls: 40 },
+      idempotencyKey: "candidate:tool-overage:1",
+    });
+    expect(overage.task.status).toBe("candidate");
+    expect(overage.task.usage.toolCalls).toBe(40);
   });
 
   it("stores artifacts by content hash and returns bounded reads", () => {
@@ -648,6 +662,7 @@ describe("ControlPlane", () => {
         status: "candidate",
         summary: "Produced the bounded artifact.",
         producerId: "luna-producer-one",
+        leaseExpired: false,
       }),
     );
     expect(status.children[0]?.artifactRefs).toEqual([first.artifactId]);
@@ -1139,6 +1154,36 @@ describe("ControlPlane", () => {
       }),
     );
     expect(controlPlane.getTask(terra.id).status).toBe("candidate");
+  });
+
+  it("cancels expired-lease running tasks on mission_close", () => {
+    harness = createTestHarness();
+    const { controlPlane, advance } = harness;
+    const mission = controlPlane.createMission(baseMissionInput("mission:close-stalled:1"));
+    const terra = controlPlane.allocateTask(terraTaskInput(mission.id, "task:terra:close-stalled:1"));
+    const claimed = controlPlane.claimTask({
+      taskId: terra.id,
+      workerId: "terra-stalled",
+      expectedVersion: terra.version,
+      idempotencyKey: "claim:terra:close-stalled:1",
+    });
+    controlPlane.startTask({
+      taskId: terra.id,
+      workerId: "terra-stalled",
+      leaseToken: claimed.leaseToken!,
+      expectedVersion: claimed.version,
+      idempotencyKey: "start:terra:close-stalled:1",
+    });
+    advance(61_000);
+
+    const closed = controlPlane.closeMission({
+      missionId: mission.id,
+      actorId: "sol-root",
+      expectedVersion: 1,
+      idempotencyKey: "close:stalled:1",
+    });
+    expect(closed.status).toBe("completed");
+    expect(controlPlane.getTask(terra.id).status).toBe("cancelled");
   });
 
   it("accepts a stale expectedParentVersion when the parent lease is valid", () => {

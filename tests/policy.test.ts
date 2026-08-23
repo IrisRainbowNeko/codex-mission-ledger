@@ -3,10 +3,12 @@ import type { ControlPlaneError } from "../src/domain/errors.js";
 import {
   assertAssignmentPolicy,
   assertFanoutCoordinatorObjective,
+  assertHardUsageWithin,
   assertParentChildPolicy,
   assertRootRoleForStrategy,
   assertTransition,
   FANOUT_TERRA_OBJECTIVE_MAX_CHARS,
+  isLeaseExpired,
   normalizeDirectorPlan,
   normalizeStrategy,
 } from "../src/domain/policy.js";
@@ -93,5 +95,18 @@ describe("hierarchy policy", () => {
     expect(() => assertTransition("candidate", "committed")).toThrowError(
       expect.objectContaining<Partial<ControlPlaneError>>({ code: "invalid_state" }),
     );
+  });
+
+  it("treats tool and wall-clock overage as soft on candidate submit", () => {
+    const usage = { tokens: 10, costUsd: 1, wallClockSeconds: 500, toolCalls: 80 };
+    expect(() =>
+      assertHardUsageWithin(usage, { tokens: 20, costUsd: 2, wallClockSeconds: 10, toolCalls: 8 }, "task"),
+    ).not.toThrow();
+    expect(() => assertHardUsageWithin(usage, { tokens: 5, costUsd: 2 }, "task")).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({ code: "budget_exceeded" }),
+    );
+    expect(isLeaseExpired(null, "2026-08-23T00:00:00.000Z")).toBe(false);
+    expect(isLeaseExpired("2026-08-23T00:00:00.000Z", "2026-08-23T00:00:00.000Z")).toBe(true);
+    expect(isLeaseExpired("2026-08-23T00:01:00.000Z", "2026-08-23T00:00:00.000Z")).toBe(false);
   });
 });

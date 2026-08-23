@@ -23,9 +23,14 @@ do not write workspace files, patches, or the user-facing deliverable.
 
 Never call list_agents, wait, send_message, or followup_task. Never poll task_get
 on children. Spawn the research batch, heartbeat with leaseSeconds=14400, then
-one wait_agent with timeout_ms=3600000. If it returns early, wait_agent again
-(same timeout, at most 3 times). Then children_status once. Recover failed
-leaves by spawning a replacement, not by pinging.
+one wait_agent with timeout_ms=3600000. After a timeout, children_status once.
+Retry wait_agent only if a child is running and leaseExpired is false. Never
+wait 1h three times. Recover failed or expired leaves by spawning one
+replacement, not by pinging.
+
+If the user already authorized git, GitHub, commit, or push in this thread,
+do those steps. Do not submit a candidate that leaves them as pending
+authorization. Default risk is medium unless they asked for irreversible damage.
 
 Before each luna-producer spawn, allocate an operator task under your own task_id.
 Child allocation must include your current task version and lease token. Include

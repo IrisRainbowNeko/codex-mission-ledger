@@ -274,8 +274,11 @@ review through `result_check`. Terra then calls `result_verify` and
 
 - Sol waits for and accepts its child (Terra, or the root Luna on `direct`)
   with one long `wait_agent`. It must not poll with `list_agents`, `wait`, or
-  `send_message`. On Terra paths Sol then `task_get`s the summary and
-  `mission_close`s; it does not gate Terra.
+  `send_message`. After a timeout it calls `children_status` once. It may
+  retry `wait_agent` once if a child is still live; expired-lease tasks are
+  cancelled instead of waited on again. On Terra paths Sol then `task_get`s
+  the summary and `mission_close`s; it does not gate Terra. `mission_close`
+  cancels stalled leased/running/blocked tasks whose lease has expired.
 - Terra waits for the research batch with one long `wait_agent`, then the
   synthesizer with one more. It must not `wait_agent` per spawn, `send_message`,
   or `followup_task`. VS Code cell yield (`wait` with `cell_id` + `max_tokens`)

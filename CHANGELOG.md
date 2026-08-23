@@ -13,6 +13,10 @@ versioning once releases begin.
 
 ### Changed
 
+- Sol/Terra wait recovery is one timeout check, not three 1-hour waits.
+  Default mission risk is `medium` unless the user asked for irreversible
+  damage. `result_submit_candidate` no longer rejects tool/time overage, and
+  `mission_close` cancels stalled tasks whose lease has expired.
 - User-global and project MCP config set
   `default_tools_approval_mode = "approve"` so Codex Guardian skips this
   local stdio ledger. Prompt text cannot authorize those tools.

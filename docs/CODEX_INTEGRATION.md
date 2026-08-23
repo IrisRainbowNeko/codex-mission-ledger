@@ -183,11 +183,12 @@ The Skill instructs Sol/Terra to:
 
 `pre_coordinator_tools.py` matches Terra `list_agents` / `send_message` /
 `followup_task`, timeout-style Terra `wait`, and Terra `wait_agent` with
-`timeout_ms` below 1800000. VS Code cell yield (`wait` with `cell_id` +
-`max_tokens`) is allowed. It denies only when `payload.model` classifies as
-Terra. Sol root chats keep those tools. Missing `model` fails open so
-user-global install cannot wedge ordinary sessions. Do not deny `exec`; this
-VS Code client wraps MCP as exec JS.
+`timeout_ms` below 1800000. After a timeout, Terra should `children_status`
+once rather than waiting 1h three times. VS Code cell yield (`wait` with
+`cell_id` + `max_tokens`) is allowed. It denies only when `payload.model`
+classifies as Terra. Sol root chats keep those tools. Missing `model` fails
+open so user-global install cannot wedge ordinary sessions. Do not deny
+`exec`; this VS Code client wraps MCP as exec JS.
 
 The hooks rely on current hook payload fields and handle common argument-name
 aliases. Re-run hook tests after Codex upgrades.

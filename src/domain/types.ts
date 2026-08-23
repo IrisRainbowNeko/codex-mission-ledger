@@ -198,6 +198,8 @@ export interface ChildStatus {
   unresolved: string[];
   artifactRefs: string[];
   producerId: string | null;
+  updatedAt: string;
+  leaseExpired: boolean;
 }
 
 export interface ChildrenStatus {

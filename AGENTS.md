@@ -25,6 +25,6 @@ Hard rules even if the skill picker is unavailable:
 5. A producer cannot check, verify, or commit its own result.
 6. Sol and Terra must not `artifact_get` full reports or write the user-facing deliverable. Luna writes that file. Exception: on `director_plan`, Sol writes one markdown plan (default `director-plan.md`) in the project folder and stores that relative path in `directorPlan`.
 7. The entire final child message is a `TASK_RESULT` block. Do not paste reports into `wait_agent`.
-8. Sol never polls with `list_agents`, `wait`, `send_message`, or `sleep`. One `wait_agent` at 1h. Terra never babysits children; one long `wait_agent` then `children_status`. On fanout, Sol closes from the Terra summary — `mission_close` auto-finalizes a low/medium root Terra candidate. Sol's last user-visible reply includes the path Luna wrote.
+8. Sol never polls with `list_agents`, `wait`, `send_message`, or `sleep`. One `wait_agent` at 1h. After timeout, `children_status` once — do not wait 1h three times. Cancel `leaseExpired` tasks and close. Terra never babysits children; one long `wait_agent` then `children_status`. On fanout, Sol closes from the Terra summary — `mission_close` auto-finalizes a low/medium root Terra candidate and cancels stalled expired-lease tasks. Default risk is `medium` unless the user asked for irreversible damage. Sol's last user-visible reply includes the path Luna wrote.
 
 Do not invent an external orchestrator. Use native spawn so threads stay in the Codex UI.

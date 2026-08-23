@@ -177,7 +177,7 @@ Input: `parentTaskId`.
 
 Returns compact direct-child rows only:
 
-- `id`, `status`, `version`, `risk`, `summary`, `unresolved`, `artifactRefs` (ids), `producerId`
+- `id`, `status`, `version`, `risk`, `summary`, `unresolved`, `artifactRefs` (ids), `producerId`, `updatedAt`, `leaseExpired`
 - `allTerminal`
 
 No artifact bodies, claim text, or event pages. Do not use `recovery_snapshot`

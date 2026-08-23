@@ -12,8 +12,10 @@ import {
   assertParentChildPolicy,
   assertRootRoleForStrategy,
   assertTransition,
+  assertHardUsageWithin,
   assertUsageWithin,
   dependenciesSatisfied,
+  isLeaseExpired,
   isTerminalTaskStatus,
   normalizeBudget,
   normalizeDirectorPlan,
@@ -880,8 +882,8 @@ export class ControlPlane {
 
       const taskUsage = addUsage(task.usage, usageDelta);
       const missionUsage = addUsage(mission.usage, usageDelta);
-      assertUsageWithin(taskUsage, task.budget, `Task '${task.id}'`);
-      assertUsageWithin(missionUsage, mission.budget, `Mission '${mission.id}'`);
+      assertHardUsageWithin(taskUsage, task.budget, `Task '${task.id}'`);
+      assertHardUsageWithin(missionUsage, mission.budget, `Mission '${mission.id}'`);
 
       const now = this.now();
       const claims = input.claims.map((claimInput) => {
@@ -1119,6 +1121,8 @@ export class ControlPlane {
         .listArtifacts(child.missionId, child.id)
         .map((artifact) => artifact.id),
       producerId: child.producerId,
+      updatedAt: child.updatedAt,
+      leaseExpired: isLeaseExpired(child.leaseExpiresAt, this.now()),
     };
   }
 
@@ -1387,6 +1391,7 @@ export class ControlPlane {
       { missionId: mission.id, status: mission.status },
     );
 
+    this.cancelStalledExpiredTasks(mission, input.actorId, input.idempotencyKey);
     this.finalizeCloseableCoordinator(mission, input.actorId, input.idempotencyKey);
     mission = this.requireMission(input.missionId);
 
@@ -1421,6 +1426,51 @@ export class ControlPlane {
       input.idempotencyKey,
     );
     return updated;
+  }
+
+  private cancelStalledExpiredTasks(
+    mission: Mission,
+    actorId: string,
+    idempotencyKey: string,
+  ): void {
+    const now = this.now();
+    const stallable = new Set<TaskStatus>(["leased", "running", "blocked"]);
+    let progressed = true;
+    while (progressed) {
+      progressed = false;
+      const tasks = this.repository.listTasks(mission.id);
+      const stalled = tasks.filter(
+        (task) =>
+          stallable.has(task.status) && isLeaseExpired(task.leaseExpiresAt, now),
+      );
+      for (const task of stalled) {
+        const activeChildren = this.repository
+          .listChildren(task.id)
+          .filter((child) => !isTerminalTaskStatus(child.status));
+        if (activeChildren.length > 0) {
+          continue;
+        }
+        const updated = this.transitionTask(task, "cancelled", {
+          leaseOwner: null,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          unresolved: [
+            ...task.unresolved,
+            "Cancelled: mission_close found an expired lease with no live children.",
+          ],
+        });
+        this.repository.updateTask(updated, task.version);
+        this.event(
+          mission.id,
+          task.id,
+          "task.cancelled",
+          actorId,
+          { reason: "mission_close cancelled a stalled task with an expired lease." },
+          this.derivedIdempotencyKey(idempotencyKey, "close_cancel_stalled", task.id),
+        );
+        progressed = true;
+      }
+    }
   }
 
   private finalizeCloseableCoordinator(

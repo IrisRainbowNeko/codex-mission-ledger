@@ -375,7 +375,8 @@ When the user invokes \`$agent-trio\` or asks for hierarchical Sol/Terra/Luna
 agents, follow the agent-trio skill. Use native spawn_agent and the
 \`hierarchical_codex\` MCP tools. Do not spawn Luna from Sol. Allocate a control-plane
 task before spawning Terra or Luna. Coordinators must not poll with list_agents,
-wait, send_message, or followup_task; use one long wait_agent.
+wait, send_message, or followup_task; use one long wait_agent. After a timeout,
+children_status once — do not wait 1h three times.
 ${AGENTS_END}
 `;
   return stripped.length === 0 ? `${section}\n` : `${stripped}\n\n${section}\n`;

@@ -72,16 +72,17 @@ Do **not** also memorize heartbeat, release, fail, or recovery unless a gate fai
 
 These tools re-bill the cached prefix every time they return. Do not use them as a wait loop.
 
-- Sol: never `list_agents`, never native `wait`, never `send_message`, never `exec` `sleep`/`setTimeout`, never `sed`/`cat` SKILL.md (it is already injected). If `wait_agent` returns without a child `TASK_RESULT`, call `wait_agent` again with the same 1h timeout (at most 3 times), then `task_get` summary and `mission_close`.
-- Terra: never `list_agents`, `send_message`, or `followup_task`. Never poll `task_get` on children. Recover a failed leaf by spawning a replacement Luna, then one more long `wait_agent`. `wait_agent` timeout must be ≥ 1800000 ms (hook-enforced). VS Code cell yield (`wait` with `cell_id` + `max_tokens`) is allowed; timeout-style `wait` is not. Do not deny `exec` — this client may wrap MCP as exec JS.
+- Sol: never `list_agents`, never native `wait` (including guessed `cell_id`s), never `send_message`, never `exec` `sleep`/`setTimeout`, never `sed`/`cat` SKILL.md. One `wait_agent` (`timeout_ms=3600000`). If it returns without `TASK_RESULT`, call `children_status` on the root Terra (or `task_get` on a `direct` Luna). Terminal or `candidate` → `mission_close`. Still running and `leaseExpired=false` → **one** more `wait_agent` only. `leaseExpired` or a second timeout → `task_cancel` the stalled tasks and `mission_close`. Never wait 1h three times.
+- Terra: never `list_agents`, `send_message`, or `followup_task`. Never poll `task_get` on children. After `wait_agent` timeout, `children_status` once. Retry `wait_agent` only if a child is running and not `leaseExpired`. Recover a failed or expired leaf with one replacement Luna, then one more long `wait_agent`. `wait_agent` timeout must be ≥ 1800000 ms (hook-enforced). VS Code cell yield (`wait` with a real `cell_id` + `max_tokens`) is allowed; guessed cell ids and timeout-style `wait` are not. Do not deny `exec` — this client may wrap MCP as exec JS.
 
 ## Token placement
 
 - Sol never restates the analysis and never `artifact_get`s. Sol's last user-visible message is a few lines plus IDs **and the path Luna wrote** when a file exists — not a `TASK_RESULT` block alone. The only Sol workspace write is the `director_plan` markdown file in the project folder.
 - Terra is read-only coordination. It does not write the user-facing file and does not copy child bodies into its own artifacts.
 - Luna does every read, write, and synthesis. On Terra paths, spawn a `luna-producer` synthesizer whose `dependencies` are the research tasks; its objective is to write the deliverable from `input_artifact_refs`.
+- Default mission `risk` is `medium`. Use `high`/`critical` only when the user asks to destroy data, leak credentials, or change production they did not already authorize. Git/GitHub rename, commit, and push the user already authorized in this thread are `medium`. Do not submit a candidate that leaves those steps as "pending authorization".
 - Default-off `luna-verifier` when `risk` is `low` or `medium` and evidence is deterministic. Then `results_gate_and_commit` from done criteria, claims, and hashes (still writes check + verify + commit). On `direct`, Sol is the reviewer and must not be the Luna producer.
-- High/critical or non-deterministic evidence: spawn `luna-verifier`, then parent `result_verify` and `task_commit`. Do not use `results_gate_and_commit`.
+- High/critical or non-deterministic evidence: spawn `luna-verifier` for the **last** mutating producer only, then parent `result_verify` and `task_commit`. Do not use `results_gate_and_commit`. Do not verifier-gate every pipeline stage.
 - Do not raise Sol or Terra to `xhigh`/`max` for ordinary coordination.
 
 ## Spawn recipe
