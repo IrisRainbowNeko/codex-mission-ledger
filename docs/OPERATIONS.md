@@ -192,6 +192,18 @@ enumerates skills at session start from the **workspace root**.
 5. If the `$` list is still empty, continue with `AGENTS.md`; it is injected
    for trusted workspaces even when the picker is empty.
 
+### ChatGPT App Settings shows no hooks
+
+Settings → Hooks lists inline `[[hooks.*]]` in `config.toml` and enabled
+plugin hooks. It does not list `~/.codex/hooks.json`. MCP can appear under
+Plugins while Hooks stays empty if only JSON hooks were installed.
+
+1. From this repository run `npm run build` then `npm run install:user`.
+2. Confirm `~/.codex/config.toml` contains `[[hooks.PreToolUse]]` and
+   `run_hook.mjs` inside the `# >>> codex-mission-ledger` block.
+3. Fully quit the ChatGPT desktop app and reopen it. Start a **new** chat.
+4. Run `/hooks` and trust the Mission Ledger commands (the hash changed).
+
 ### Spawn rejected by hook
 
 Inspect the hook reason. Common causes:

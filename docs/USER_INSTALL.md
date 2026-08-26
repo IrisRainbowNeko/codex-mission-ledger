@@ -56,7 +56,11 @@ The installer:
 3. copies hooks to `~/.codex/hooks/codex-mission-ledger/` and uses **absolute** paths;
 4. merges MCP settings into `~/.codex/config.toml` without changing your default model, and sets `default_tools_approval_mode = "approve"` so Codex Guardian does not treat this local ledger as untrusted egress;
 5. is safe to re-run: it rewrites one managed block and will not duplicate TOML keys;
-6. merges hook entries into `~/.codex/hooks.json` with `--opt-in` so ordinary `spawn_agent` still works;
+6. writes Mission Ledger lifecycle hooks as inline `[[hooks.*]]` tables in
+   `~/.codex/config.toml` (ChatGPT App Settings → Hooks reads config and
+   plugins, not `hooks.json`), with `--opt-in` so ordinary `spawn_agent` still
+   works; leftover Mission Ledger entries are stripped from
+   `~/.codex/hooks.json` so CLI does not double-run;
 7. appends a short section to `~/.codex/AGENTS.md`;
 8. records owned paths in `~/.codex/codex-mission-ledger/install-manifest.json`;
 9. stores mission state in `~/.local/share/codex-mission-ledger/` on POSIX and
@@ -71,20 +75,27 @@ protocol identifiers.
 
 Then:
 
-1. Restart VS Code (the Codex extension enumerates skills, MCP, and hooks at startup).
+1. Restart VS Code, Codex CLI, or **fully quit** the ChatGPT desktop app
+   (closing the window is not enough). Clients enumerate skills, MCP, and
+   hooks at startup.
 2. Open **any** project folder and trust the workspace if prompted.
 3. Start a **new** Codex chat (old threads do not reload user config).
-4. Run `/hooks`. Review and **trust** the Mission Ledger for Codex command hooks.
+4. Confirm Settings → Hooks lists Mission Ledger `PreToolUse` /
+   `SubagentStart` / `SubagentStop` commands. If the page is still empty,
+   the App is still on the previous `config.toml`.
+5. Run `/hooks`. Review and **trust** the Mission Ledger for Codex command hooks.
    User-level command hooks are skipped until trusted; MCP can still work while
-   spawn policy, start injection, and stop checks are inactive.
-5. Run `/mcp` and confirm `hierarchical_codex` is connected. After a new
+   spawn policy, start injection, and stop checks are inactive. The command
+   hash changes when hooks move from `hooks.json` into `config.toml`, so
+   previous trust does not carry over.
+6. Run `/mcp` and confirm `hierarchical_codex` is connected. After a new
    chat, this server is pre-approved (`approve`); Guardian should not review
    `artifact_put` or other tools on it.
-6. Select `gpt-5.6-sol`.
-7. Invoke `$agent-trio <mission>`.
+7. Select `gpt-5.6-sol`.
+8. Invoke `$agent-trio <mission>`.
 
 `doctor:user` can PASS files/TOML while printing a WARN about untrusted hooks.
-That warning is expected until step 4.
+That warning is expected until step 5.
 
 CLI is the same: `codex` started in another repo loads `~/.codex` plus that repo's
 project files. Trust hooks with `/hooks` there as well.
@@ -95,7 +106,7 @@ project files. Trust hooks with `/hooks` there as well.
 | -------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
 | Skill          | `~/.agents/skills` and `~/.codex/skills`                                                         | VS Code/CLI discover user skills without the original repo as cwd     |
 | Agent profiles | `~/.codex/agents`                                                                                | native `agent_type=terra-coordinator` must resolve in every workspace |
-| Hooks          | `~/.codex/hooks/codex-mission-ledger` + `~/.codex/hooks.json`                                    | spawn policy and start/stop text                                      |
+| Hooks          | `~/.codex/hooks/codex-mission-ledger` + `[[hooks.*]]` in `~/.codex/config.toml`                  | spawn policy and start/stop text; ChatGPT App Settings lists TOML     |
 | MCP server     | `node <absolute>/dist/cli.js`                                                                    | tools available even when cwd is another project                      |
 | Task ledger    | `~/.local/share/codex-mission-ledger` (POSIX) or `%LOCALAPPDATA%\codex-mission-ledger` (Windows) | durable state; `~/.codex` is read-only inside Codex MCP sandboxes     |
 | Default model  | **not** installed                                                                                | pinning Sol globally would hijack every Codex session                 |

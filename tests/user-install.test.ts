@@ -64,6 +64,16 @@ command = "echo"
                 matcher: "^Shell$",
                 hooks: [{ type: "command", command: "true" }],
               },
+              {
+                matcher: "^(spawn_agent|Agent)$",
+                hooks: [
+                  {
+                    type: "command",
+                    command:
+                      "python3 '/tmp/hooks/codex-mission-ledger/pre_spawn_policy.py' --opt-in",
+                  },
+                ],
+              },
             ],
           },
         },
@@ -101,28 +111,32 @@ command = "echo"
     expect(countTomlKey(again, "features", "hooks")).toBe(1);
     expect(countTomlKey(again, "agents", "enabled")).toBe(1);
 
+    expect(toml).toContain("[[hooks.PreToolUse]]");
+    expect(toml).toContain("[[hooks.SubagentStart]]");
+    expect(toml).toContain("[[hooks.SubagentStop]]");
+    expect(toml).toContain("^(spawn_agent|Agent)$");
+    expect(toml).toContain("^(wait|Wait|list_agents|send_message|followup_task)$");
+    expect(toml).toContain("^wait_agent$");
+    expect(toml).toContain("--opt-in");
+    expect(toml).toContain("run_hook.mjs");
+    expect(toml).not.toContain("commandWindows");
+
     const hooks = JSON.parse(readFileSync(installed.layout.hooksJson, "utf8")) as {
       hooks: { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
     };
+    expect(hooks.hooks.PreToolUse).toHaveLength(1);
     expect(hooks.hooks.PreToolUse.some((entry) => entry.matcher === "^Shell$")).toBe(true);
     expect(
       hooks.hooks.PreToolUse.some(
         (entry) => entry.matcher === "^(wait|Wait|list_agents|send_message|followup_task)$",
       ),
-    ).toBe(true);
-    expect(hooks.hooks.PreToolUse.some((entry) => entry.matcher === "^wait_agent$")).toBe(true);
-    expect(
-      hooks.hooks.PreToolUse.some((entry) =>
-        entry.hooks.some(
-          (hook) => hook.command.includes("--opt-in") && hook.command.includes("run_hook.mjs"),
-        ),
-      ),
-    ).toBe(true);
+    ).toBe(false);
 
     uninstallUserScope(paths);
     const afterToml = readFileSync(join(paths.codexHome, "config.toml"), "utf8");
     expect(afterToml).toContain("[mcp_servers.other]");
     expect(afterToml).not.toContain("[mcp_servers.hierarchical_codex]");
+    expect(afterToml).not.toContain("[[hooks.PreToolUse]]");
     assertParses(join(paths.codexHome, "config.toml"));
     const afterHooks = JSON.parse(readFileSync(join(paths.codexHome, "hooks.json"), "utf8")) as {
       hooks: { PreToolUse: unknown[] };
@@ -325,10 +339,12 @@ hooks = true
     const installed = installUserScope(paths);
     const toml = readFileSync(installed.layout.configToml, "utf8");
     expect(textContainsPath(toml, layout.stateDirectory)).toBe(true);
-    const hooks = readFileSync(installed.layout.hooksJson, "utf8");
-    expect(hooks).toContain("run_hook.mjs");
-    expect(hooks).toContain("--opt-in");
-    expect(hooks).toContain('"');
+    expect(toml).toContain("[[hooks.PreToolUse]]");
+    expect(toml).toContain("run_hook.mjs");
+    expect(toml).toContain("--opt-in");
+    expect(toml).toContain("commandWindows");
+    expect(toml).toContain('"');
+    expect(existsSync(installed.layout.hooksJson)).toBe(false);
     expect(verifyUserInstall(paths).problems).toEqual([]);
   });
 });

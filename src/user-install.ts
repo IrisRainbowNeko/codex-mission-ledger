@@ -302,8 +302,14 @@ export function installUserScope(
     paths,
     layout,
   );
-  atomicWrite(layout.hooksJson, `${JSON.stringify(nextHooks, null, 2)}\n`);
-  written.push(layout.hooksJson);
+  if (hooksFileHasEntries(nextHooks)) {
+    atomicWrite(layout.hooksJson, `${JSON.stringify(nextHooks, null, 2)}\n`);
+    written.push(layout.hooksJson);
+  } else if (existsSync(layout.hooksJson)) {
+    // Empty leftover JSON plus inline [[hooks.*]] makes Codex warn and can hide
+    // Settings → Hooks. Delete the file when only our entries remained.
+    rmSync(layout.hooksJson, { force: true });
+  }
 
   const nextAgents = mergeUserAgentsMd(
     existsSync(layout.userAgentsMd) ? readFileSync(layout.userAgentsMd, "utf8") : "",
@@ -386,16 +392,13 @@ export function mergeUserHooks(
   paths: UserInstallPaths,
   layout: UserInstallLayout,
 ): HooksFile {
+  void paths;
+  void layout;
   const parsed = source.trim().length === 0 ? emptyHooksFile() : (JSON.parse(source) as HooksFile);
   const current = hooksFile(parsed.description, parsed.hooks ?? {});
-  const withoutOurs = removeOurHooks(current);
-  const ours = userHookDefinitions(paths, layout);
-  return hooksFile(withoutOurs.description ?? "User Codex hooks", {
-    ...withoutOurs.hooks,
-    PreToolUse: [...(withoutOurs.hooks.PreToolUse ?? []), ...ours.PreToolUse],
-    SubagentStart: [...(withoutOurs.hooks.SubagentStart ?? []), ...ours.SubagentStart],
-    SubagentStop: [...(withoutOurs.hooks.SubagentStop ?? []), ...ours.SubagentStop],
-  });
+  // ChatGPT App Settings → Hooks lists config.toml [[hooks.*]] and plugins, not
+  // ~/.codex/hooks.json. Keep JSON for other user hooks; our commands live in TOML.
+  return removeOurHooks(current);
 }
 
 export function mergeUserAgentsMd(source: string): string {
@@ -427,7 +430,6 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
     ...AGENT_FILES.map((name) => join(layout.agentDirectory, name)),
     ...HOOK_FILES.map((name) => join(layout.hookDirectory, name)),
     layout.configToml,
-    layout.hooksJson,
     layout.mcpEntrypoint,
     layout.manifestPath,
   ];
@@ -492,6 +494,27 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
         "User-level command hooks are not trusted yet. In a new Codex chat run /hooks and trust the Mission Ledger for Codex commands; until then spawn policy is skipped.",
       );
     }
+    if (!/\[\[hooks\.PreToolUse\]\]/.test(toml) || !toml.includes("--opt-in")) {
+      problems.push(
+        "config.toml is missing inline Mission Ledger for Codex hooks. Re-run npm run install:user so ChatGPT App Settings → Hooks can see them.",
+      );
+    }
+    const spawnPolicy = join(layout.hookDirectory, "pre_spawn_policy.py");
+    const coordinator = join(layout.hookDirectory, "pre_coordinator_tools.py");
+    if (
+      !textContainsPath(toml, spawnPolicy) &&
+      !collapsedPathText(toml).includes(HOOK_MARKER) &&
+      !collapsedPathText(toml).includes(LEGACY_HOOK_MARKER)
+    ) {
+      problems.push("config.toml is missing Mission Ledger for Codex hook commands");
+    }
+    if (
+      !textContainsPath(toml, coordinator) &&
+      !collapsedPathText(toml).includes(COORDINATOR_HOOK_MARKER) &&
+      !collapsedPathText(toml).includes(LEGACY_COORDINATOR_HOOK_MARKER)
+    ) {
+      problems.push("config.toml is missing coordinator babysit policy");
+    }
   }
 
   for (const name of AGENT_FILES) {
@@ -508,23 +531,14 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
 
   if (existsSync(layout.hooksJson)) {
     try {
-      JSON.parse(readFileSync(layout.hooksJson, "utf8"));
+      const parsed = JSON.parse(readFileSync(layout.hooksJson, "utf8")) as HooksFile;
+      if (hooksFileCommands(parsed).some((command) => isManagedHookCommand(command))) {
+        warnings.push(
+          "hooks.json still has Mission Ledger for Codex commands. Codex would run them twice with config.toml [[hooks.*]]. Re-run npm run install:user.",
+        );
+      }
     } catch {
       problems.push(`hooks.json is not valid JSON: ${layout.hooksJson}`);
-    }
-    const hooks = readFileSync(layout.hooksJson, "utf8");
-    const hooksNormalized = normalizePathSeparators(hooks);
-    if (!hooksNormalized.includes("--opt-in")) {
-      problems.push("user hooks.json must call pre_spawn_policy.py --opt-in");
-    }
-    if (!hooksNormalized.includes(HOOK_MARKER) && !hooksNormalized.includes(LEGACY_HOOK_MARKER)) {
-      problems.push("user hooks.json is missing Mission Ledger for Codex hook commands");
-    }
-    if (
-      !hooksNormalized.includes(COORDINATOR_HOOK_MARKER) &&
-      !hooksNormalized.includes(LEGACY_COORDINATOR_HOOK_MARKER)
-    ) {
-      problems.push("user hooks.json is missing coordinator babysit policy");
     }
   }
 
@@ -670,7 +684,43 @@ CODEX_MISSION_LEDGER_HOME = ${tomlString(layout.stateDirectory)}
 [[skills.config]]
 path = ${tomlString(layout.skillAgents)}
 enabled = true
+
+${renderManagedHookTables(paths, layout)}
 ${MANAGED_END}`;
+}
+
+function renderManagedHookTables(paths: UserInstallPaths, layout: UserInstallLayout): string {
+  const defs = userHookDefinitions(paths, layout);
+  const platform = paths.platform ?? process.platform;
+  const chunks: string[] = [];
+  const emit = (event: "PreToolUse" | "SubagentStart" | "SubagentStop", groups: HookMatcher[]) => {
+    for (const group of groups) {
+      chunks.push(`[[hooks.${event}]]`);
+      if (group.matcher !== undefined && group.matcher.length > 0) {
+        chunks.push(`matcher = ${tomlString(group.matcher)}`);
+      }
+      chunks.push("");
+      for (const hook of group.hooks) {
+        chunks.push(`[[hooks.${event}.hooks]]`);
+        chunks.push(`type = ${tomlString(hook.type)}`);
+        chunks.push(`command = ${tomlString(hook.command)}`);
+        if (hook.timeout !== undefined) {
+          chunks.push(`timeout = ${hook.timeout}`);
+        }
+        if (hook.statusMessage !== undefined && hook.statusMessage.length > 0) {
+          chunks.push(`statusMessage = ${tomlString(hook.statusMessage)}`);
+        }
+        if (platform === "win32") {
+          chunks.push(`commandWindows = ${tomlString(hook.command)}`);
+        }
+        chunks.push("");
+      }
+    }
+  };
+  emit("PreToolUse", defs.PreToolUse);
+  emit("SubagentStart", defs.SubagentStart);
+  emit("SubagentStop", defs.SubagentStop);
+  return chunks.join("\n").trimEnd();
 }
 
 function userHookDefinitions(
@@ -782,6 +832,16 @@ function hooksFile(description: string | undefined, hooks: HooksFile["hooks"]): 
 
 function emptyHooksFile(): HooksFile {
   return { description: "User Codex hooks", hooks: {} };
+}
+
+function hooksFileHasEntries(file: HooksFile): boolean {
+  return Object.values(file.hooks).some((entries) => (entries ?? []).length > 0);
+}
+
+function hooksFileCommands(file: HooksFile): string[] {
+  return Object.values(file.hooks).flatMap((entries) =>
+    (entries ?? []).flatMap((entry) => entry.hooks.map((hook) => hook.command)),
+  );
 }
 
 function removeOurHooks(file: HooksFile): HooksFile {
@@ -965,6 +1025,10 @@ function atomicWrite(path: string, contents: string): void {
 
 function tomlString(value: string): string {
   return JSON.stringify(value);
+}
+
+function collapsedPathText(text: string): string {
+  return normalizePathSeparators(text).replaceAll(/\/+/g, "/");
 }
 
 function escapeRegExp(value: string): string {

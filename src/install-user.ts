@@ -47,7 +47,9 @@ if (!uninstall) {
     process.exitCode = 1;
   } else {
     process.stdout.write("Verification passed for files and TOML.\n");
-    process.stdout.write("Restart VS Code, start a new Codex chat, run /hooks and trust the\n");
+    process.stdout.write(
+      "Restart VS Code or fully quit the ChatGPT app, start a new Codex chat, run /hooks and trust the\n",
+    );
     process.stdout.write(
       "Mission Ledger for Codex commands, then /mcp and $agent-trio <mission>.\n",
     );

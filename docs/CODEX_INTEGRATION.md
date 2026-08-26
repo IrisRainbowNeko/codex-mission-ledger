@@ -260,10 +260,14 @@ npm run doctor:user
 Details, hook `--opt-in` behavior, and uninstall are in
 [USER_INSTALL.md](USER_INSTALL.md).
 
-The installer merges `~/.codex/config.toml` and `~/.codex/hooks.json`. It does
-not copy this project's default `model = "gpt-5.6-sol"` into the user config.
-Re-running install is idempotent. Unmanaged same-named files abort unless
-`--force` is passed. After install, trust the new command hooks with `/hooks`.
+The installer merges `~/.codex/config.toml`, including inline `[[hooks.*]]`
+tables so ChatGPT App Settings → Hooks can list them. It strips leftover
+Mission Ledger commands from `~/.codex/hooks.json` (other user hooks stay)
+so CLI does not double-run. It does not copy this project's default
+`model = "gpt-5.6-sol"` into the user config. Re-running install is
+idempotent. Unmanaged same-named files abort unless `--force` is passed.
+After install, fully quit the ChatGPT app if you use it, start a new chat,
+and trust the new command hooks with `/hooks`.
 
 ## Unsupported expectations
 

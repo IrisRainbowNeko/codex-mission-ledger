@@ -17,6 +17,9 @@ versioning once releases begin.
 - Long training and remote jobs park with `task_block` (lease cleared) instead
   of holding `wait_agent` or an SSH exec open. `mission_close` no longer
   cancels parked `blocked` tasks; another worker `task_claim`s them on 继续.
+- User-global installer writes lifecycle hooks as inline `config.toml`
+  `[[hooks.*]]` so ChatGPT desktop Settings → Hooks can list them. Leftover
+  Mission Ledger commands are removed from `hooks.json` to avoid double-run.
 
 ### Planned
 
