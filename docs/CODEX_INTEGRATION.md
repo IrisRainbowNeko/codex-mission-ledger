@@ -213,11 +213,11 @@ the task.
 
 - Sol: create/wait/close the direct Terra only. One long `wait_agent`. No
   `list_agents` / `wait` / `send_message` poll loop. No `artifact_get`, no
-  workspace writes.
+  workspace writes. If the child is `blocked`, stop; do not `mission_close`.
 - Terra: create/wait/gate its direct Luna only. One long `wait_agent` then
   `children_status`. `send_message` and `followup_task` are denied. Read-only;
-  Luna synthesizer writes files.
-- Luna: no collaboration tools.
+  Luna synthesizer writes files. If a child parks on an external job, park too.
+- Luna: no collaboration tools. Detach training/remote jobs, `task_block`, exit.
 
 Terra must not `send_message` children. Recover by spawning a replacement Luna.
 Sol skill forbids the same poll tools; it cannot be hooked safely because Sol is

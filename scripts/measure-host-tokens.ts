@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { userHome } from "../src/platform.js";
 
 interface TokenUsage {
   input_tokens?: number;
@@ -190,7 +190,7 @@ function pct(part: number, whole: number): string {
 
 function main(): void {
   const parentFilter = process.argv[2];
-  const codexHome = process.env["CODEX_HOME"] ?? join(homedir(), ".codex");
+  const codexHome = process.env["CODEX_HOME"] ?? join(userHome(), ".codex");
   const files = walkJsonlDirs([join(codexHome, "sessions"), join(codexHome, "archived_sessions")]);
   const rows = loadRows(files);
   const byId = new Map(rows.map((row) => [row.id, row]));

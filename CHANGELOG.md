@@ -5,6 +5,19 @@ versioning once releases begin.
 
 ## [Unreleased]
 
+### Added
+
+- Windows install and runtime: `%LOCALAPPDATA%\codex-mission-ledger` state,
+  `USERPROFILE` / `py -3` / `python` discovery, quoted hook commands, and a
+  Node `run_hook.mjs` launcher so project and user hooks work without `python3`
+  on PATH.
+
+### Changed
+
+- Long training and remote jobs park with `task_block` (lease cleared) instead
+  of holding `wait_agent` or an SSH exec open. `mission_close` no longer
+  cancels parked `blocked` tasks; another worker `task_claim`s them on 继续.
+
 ### Planned
 
 - Historical success/cost router and remaining Phase 3 metrics.

@@ -69,6 +69,13 @@ def ledger_db_paths() -> list[Path]:
     if env_home:
         paths.append(Path(env_home).expanduser() / DB_NAME)
     paths.append(Path.cwd() / ".codex-mission-ledger" / DB_NAME)
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        paths.append(Path(local_app_data) / "codex-mission-ledger" / DB_NAME)
+        paths.append(Path(local_app_data) / "hierarchical-codex" / DB_NAME)
+    else:
+        paths.append(Path.home() / "AppData" / "Local" / "codex-mission-ledger" / DB_NAME)
+        paths.append(Path.home() / "AppData" / "Local" / "hierarchical-codex" / DB_NAME)
     paths.append(Path.home() / ".local" / "share" / "codex-mission-ledger" / DB_NAME)
     # Keep reading pre-rename ledgers so an upgrade never silently forks state.
     paths.append(Path.cwd() / ".hierarchical-codex" / DB_NAME)

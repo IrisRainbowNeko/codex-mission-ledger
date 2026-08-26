@@ -12,7 +12,7 @@ Requirements:
 
 - Node >=22.5;
 - npm matching the installed Node distribution;
-- Python 3 for hook tests.
+- Python 3 for hook tests (`python3`, `py -3`, or `python`).
 
 ## Source layout
 
@@ -27,6 +27,8 @@ src/infra/artifact-store.ts immutable content store
 src/mcp/server.ts           Zod schemas and MCP adapters
 src/cli.ts                  stdio entrypoint
 src/doctor.ts               installation diagnostics
+src/platform.ts             home/temp/quoting helpers for POSIX and Windows
+src/python.ts               Python 3 discovery (`python3`, `py -3`, `python`)
 src/user-install.ts         user-global ~/.codex installer
 src/install-user.ts         installer CLI
 ```
@@ -130,7 +132,7 @@ printf '%s' '{
     "fork_turns":"none",
     "prompt":"task_id: tsk_example"
   }
-}' | python3 .codex/hooks/pre_spawn_policy.py
+}' | node .codex/hooks/run_hook.mjs pre_spawn_policy.py
 ```
 
 Expected output is `{}`.

@@ -3,17 +3,31 @@ import {
   copyFileSync,
   cpSync,
   existsSync,
-  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir as osHomedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONTROL_PLANE_DB_NAME } from "./config.js";
+import {
+  defaultUserStateDirectory,
+  isManagedHookCommand,
+  mkdirPrivate,
+  normalizePathSeparators,
+  textContainsPath,
+  userHome,
+} from "./platform.js";
+import {
+  formatNodeHookCommand,
+  formatPythonInvocation,
+  resolvePythonInvocation,
+  spawnPython,
+  type PythonInvocation,
+} from "./python.js";
 
 export const MANAGED_BEGIN = "# >>> codex-mission-ledger";
 export const MANAGED_END = "# <<< codex-mission-ledger";
@@ -43,6 +57,7 @@ const HOOK_FILES = [
   "pre_coordinator_tools.py",
   "subagent_start.py",
   "subagent_stop.py",
+  "run_hook.mjs",
 ] as const;
 
 const FEATURE_KEYS = ["multi_agent", "hooks"] as const;
@@ -84,7 +99,8 @@ export interface UserInstallPaths {
   homeDirectory: string;
   codexHome: string;
   nodeExecutable: string;
-  pythonExecutable: string;
+  python: PythonInvocation;
+  platform?: NodeJS.Platform;
 }
 
 export interface UserInstallLayout {
@@ -135,14 +151,15 @@ export function packageRootFromModule(moduleUrl: string): string {
 
 export function defaultUserInstallPaths(
   packageRoot: string,
-  homeDirectory = process.env["HOME"] ?? osHomedir(),
+  homeDirectory = userHome(),
 ): UserInstallPaths {
   return {
     packageRoot,
     homeDirectory,
     codexHome: process.env["CODEX_HOME"] ?? join(homeDirectory, ".codex"),
     nodeExecutable: process.execPath,
-    pythonExecutable: "python3",
+    python: resolvePythonInvocation(),
+    platform: process.platform,
   };
 }
 
@@ -151,15 +168,28 @@ export function resolveUserLayout(paths: UserInstallPaths): UserInstallLayout {
   const manifestDirectory = join(paths.codexHome, "codex-mission-ledger");
   // Codex sandboxes ~/.codex as read-only for MCP processes, so the live ledger
   // must live outside that tree. The install manifest stays under ~/.codex.
-  const canonicalStateDirectory = join(
-    paths.homeDirectory,
-    ".local",
-    "share",
+  const platform = paths.platform ?? process.platform;
+  const stateEnv: NodeJS.ProcessEnv = {
+    HOME: paths.homeDirectory,
+    USERPROFILE: paths.homeDirectory,
+  };
+  if (platform === "win32") {
+    const redirected = process.env["LOCALAPPDATA"];
+    stateEnv["LOCALAPPDATA"] =
+      resolve(paths.homeDirectory) === userHome() &&
+      redirected !== undefined &&
+      redirected.trim().length > 0
+        ? redirected.trim()
+        : join(paths.homeDirectory, "AppData", "Local");
+  }
+  const canonicalStateDirectory = defaultUserStateDirectory(
     "codex-mission-ledger",
+    stateEnv,
+    platform,
   );
   const legacyHookDirectory = join(paths.codexHome, "hooks", "hierarchical-codex");
   const legacyManifestDirectory = join(paths.codexHome, "hierarchical-codex");
-  const legacyStateDirectory = join(paths.homeDirectory, ".local", "share", "hierarchical-codex");
+  const legacyStateDirectory = defaultUserStateDirectory("hierarchical-codex", stateEnv, platform);
   const stateDirectory =
     existsSync(join(canonicalStateDirectory, CONTROL_PLANE_DB_NAME)) ||
     !existsSync(join(legacyStateDirectory, CONTROL_PLANE_DB_NAME))
@@ -228,12 +258,12 @@ export function installUserScope(
     }
   }
 
-  mkdirSync(join(paths.homeDirectory, ".agents", "skills"), { recursive: true, mode: 0o700 });
-  mkdirSync(join(layout.codexHome, "skills"), { recursive: true, mode: 0o700 });
-  mkdirSync(layout.agentDirectory, { recursive: true, mode: 0o700 });
-  mkdirSync(layout.hookDirectory, { recursive: true, mode: 0o700 });
-  mkdirSync(layout.manifestDirectory, { recursive: true, mode: 0o700 });
-  mkdirSync(layout.stateDirectory, { recursive: true, mode: 0o700 });
+  mkdirPrivate(join(paths.homeDirectory, ".agents", "skills"));
+  mkdirPrivate(join(layout.codexHome, "skills"));
+  mkdirPrivate(layout.agentDirectory);
+  mkdirPrivate(layout.hookDirectory);
+  mkdirPrivate(layout.manifestDirectory);
+  mkdirPrivate(layout.stateDirectory);
 
   copySkill(paths.packageRoot, layout.skillAgents);
   copySkill(paths.packageRoot, layout.skillCodex);
@@ -376,7 +406,8 @@ agents, follow the agent-trio skill. Use native spawn_agent and the
 \`hierarchical_codex\` MCP tools. Do not spawn Luna from Sol. Allocate a control-plane
 task before spawning Terra or Luna. Coordinators must not poll with list_agents,
 wait, send_message, or followup_task; use one long wait_agent. After a timeout,
-children_status once — do not wait 1h three times.
+children_status once — do not wait 1h three times. Parked blocked training jobs
+stay on the ledger; the user says 继续 to resume.
 ${AGENTS_END}
 `;
   return stripped.length === 0 ? `${section}\n` : `${stripped}\n\n${section}\n`;
@@ -406,6 +437,13 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
     }
   }
 
+  const pythonCheck = spawnPython(["--version"], { encoding: "utf8" }, paths.python);
+  if (pythonCheck.status !== 0) {
+    problems.push(
+      `Python 3 is required for Codex hooks (${formatPythonInvocation(paths.python)} failed). On Windows install python.org Python or the py launcher.`,
+    );
+  }
+
   if (existsSync(layout.configToml)) {
     try {
       parseTomlFile(layout.configToml);
@@ -416,7 +454,7 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
     if (!toml.includes("[mcp_servers.hierarchical_codex]")) {
       problems.push("config.toml is missing [mcp_servers.hierarchical_codex]");
     }
-    if (!toml.includes(layout.mcpEntrypoint)) {
+    if (!textContainsPath(toml, layout.mcpEntrypoint)) {
       problems.push("config.toml MCP args do not point at dist/cli.js");
     }
     if (!/default_tools_approval_mode\s*=\s*"approve"/.test(toml)) {
@@ -424,9 +462,16 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
         'config.toml must set mcp_servers.hierarchical_codex.default_tools_approval_mode = "approve" so Codex Guardian skips this local ledger. Re-run npm run install:user.',
       );
     }
-    if (/HIERARCHICAL_CODEX_HOME\s*=\s*"[^"]*\.codex\/hierarchical-codex"/.test(toml)) {
+    if (
+      /HIERARCHICAL_CODEX_HOME\s*=\s*"[^"]*\.codex[/\\](?:hierarchical-codex|codex-mission-ledger)"/.test(
+        toml,
+      ) ||
+      /CODEX_MISSION_LEDGER_HOME\s*=\s*"[^"]*\.codex[/\\](?:hierarchical-codex|codex-mission-ledger)"/.test(
+        toml,
+      )
+    ) {
       warnings.push(
-        "MCP state is under ~/.codex, which Codex sandboxes as read-only. Re-run npm run install:user so the ledger moves to ~/.local/share/codex-mission-ledger.",
+        "MCP state is under ~/.codex, which Codex sandboxes as read-only. Re-run npm run install:user so the ledger moves outside that tree (%LOCALAPPDATA%\\codex-mission-ledger on Windows, ~/.local/share/codex-mission-ledger elsewhere).",
       );
     }
     if (/^\s*model\s*=\s*"gpt-5\.6-sol"/m.test(managedSection(toml))) {
@@ -468,15 +513,16 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
       problems.push(`hooks.json is not valid JSON: ${layout.hooksJson}`);
     }
     const hooks = readFileSync(layout.hooksJson, "utf8");
-    if (!hooks.includes("--opt-in")) {
+    const hooksNormalized = normalizePathSeparators(hooks);
+    if (!hooksNormalized.includes("--opt-in")) {
       problems.push("user hooks.json must call pre_spawn_policy.py --opt-in");
     }
-    if (!hooks.includes(HOOK_MARKER) && !hooks.includes(LEGACY_HOOK_MARKER)) {
+    if (!hooksNormalized.includes(HOOK_MARKER) && !hooksNormalized.includes(LEGACY_HOOK_MARKER)) {
       problems.push("user hooks.json is missing Mission Ledger for Codex hook commands");
     }
     if (
-      !hooks.includes(COORDINATOR_HOOK_MARKER) &&
-      !hooks.includes(LEGACY_COORDINATOR_HOOK_MARKER)
+      !hooksNormalized.includes(COORDINATOR_HOOK_MARKER) &&
+      !hooksNormalized.includes(LEGACY_COORDINATOR_HOOK_MARKER)
     ) {
       problems.push("user hooks.json is missing coordinator babysit policy");
     }
@@ -503,13 +549,15 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
 }
 
 export function parseTomlFile(path: string): void {
-  const result = spawnSync(
-    "python3",
+  const result = spawnPython(
     ["-c", "import tomllib, sys; tomllib.load(open(sys.argv[1], 'rb'))", path],
     { encoding: "utf8" },
   );
   if (result.status !== 0) {
-    throw new Error((result.stderr || result.stdout || `TOML parse failed: ${path}`).trim());
+    const detail = [result.stderr, result.stdout]
+      .map((value) => String(value ?? "").trim())
+      .find((value) => value.length > 0);
+    throw new Error(detail ?? `TOML parse failed: ${path}`);
   }
 }
 
@@ -591,7 +639,7 @@ function plannedManagedFiles(paths: UserInstallPaths, layout: UserInstallLayout)
 function copySkill(packageRoot: string, target: string): void {
   const source = join(packageRoot, ".codex", "skills", SKILL_NAME);
   rmSync(target, { recursive: true, force: true });
-  mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+  mkdirPrivate(dirname(target));
   cpSync(source, target, { recursive: true });
 }
 
@@ -629,12 +677,16 @@ function userHookDefinitions(
   paths: UserInstallPaths,
   layout: UserInstallLayout,
 ): Required<HooksFile["hooks"]> {
-  const py = (script: string, extra = ""): string => {
-    const file = join(layout.hookDirectory, script);
-    return extra.length > 0
-      ? `${paths.pythonExecutable} ${shellSingleQuote(file)} ${extra}`
-      : `${paths.pythonExecutable} ${shellSingleQuote(file)}`;
-  };
+  const platform = paths.platform ?? process.platform;
+  const runner = join(layout.hookDirectory, "run_hook.mjs");
+  const hookCommand = (script: string, extra: readonly string[] = []): string =>
+    formatNodeHookCommand(
+      paths.nodeExecutable,
+      runner,
+      join(layout.hookDirectory, script),
+      extra,
+      platform,
+    );
   return {
     PreToolUse: [
       {
@@ -642,7 +694,7 @@ function userHookDefinitions(
         hooks: [
           {
             type: "command",
-            command: py("pre_spawn_policy.py", "--opt-in"),
+            command: hookCommand("pre_spawn_policy.py", ["--opt-in"]),
             timeout: 10,
             statusMessage: "Checking hierarchical spawn policy",
           },
@@ -653,7 +705,7 @@ function userHookDefinitions(
         hooks: [
           {
             type: "command",
-            command: py("pre_coordinator_tools.py"),
+            command: hookCommand("pre_coordinator_tools.py"),
             timeout: 10,
             statusMessage: "Blocking Terra coordinator babysitting",
           },
@@ -664,7 +716,7 @@ function userHookDefinitions(
         hooks: [
           {
             type: "command",
-            command: py("pre_coordinator_tools.py"),
+            command: hookCommand("pre_coordinator_tools.py"),
             timeout: 10,
             statusMessage: "Requiring a long Terra wait_agent",
           },
@@ -677,7 +729,7 @@ function userHookDefinitions(
         hooks: [
           {
             type: "command",
-            command: py("subagent_start.py"),
+            command: hookCommand("subagent_start.py"),
             timeout: 10,
             statusMessage: "Injecting control-plane protocol",
           },
@@ -690,7 +742,7 @@ function userHookDefinitions(
         hooks: [
           {
             type: "command",
-            command: py("subagent_stop.py"),
+            command: hookCommand("subagent_stop.py"),
             timeout: 10,
             statusMessage: "Checking durable task handoff",
           },
@@ -737,11 +789,7 @@ function removeOurHooks(file: HooksFile): HooksFile {
     (entries ?? [])
       .map((entry) => ({
         ...entry,
-        hooks: entry.hooks.filter(
-          (hook) =>
-            !hook.command.includes("hooks/codex-mission-ledger/") &&
-            !hook.command.includes("hooks/hierarchical-codex/"),
-        ),
+        hooks: entry.hooks.filter((hook) => !isManagedHookCommand(hook.command)),
       }))
       .filter((entry) => entry.hooks.length > 0);
   return hooksFile(file.description, {
@@ -782,7 +830,7 @@ function splitLines(source: string): string[] {
   if (source.length === 0) {
     return [];
   }
-  return source.split("\n");
+  return source.split(/\r?\n/u);
 }
 
 function joinLines(lines: string[]): string {
@@ -889,7 +937,7 @@ function backupIfExists(path: string, layout: UserInstallLayout): string | null 
     return null;
   }
   const backupsDirectory = join(layout.manifestDirectory, "backups");
-  mkdirSync(backupsDirectory, { recursive: true, mode: 0o700 });
+  mkdirPrivate(backupsDirectory);
   let backup = join(backupsDirectory, `${basename(path)}.bak-codex-mission-ledger-${stamp()}`);
   let suffix = 1;
   while (existsSync(backup)) {
@@ -904,7 +952,7 @@ function backupIfExists(path: string, layout: UserInstallLayout): string | null 
 }
 
 function atomicWrite(path: string, contents: string): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirPrivate(dirname(path));
   const directory = mkdtempSync(join(tmpdir(), "codex-mission-ledger-write-"));
   const temporary = join(directory, "file");
   try {
@@ -917,10 +965,6 @@ function atomicWrite(path: string, contents: string): void {
 
 function tomlString(value: string): string {
   return JSON.stringify(value);
-}
-
-function shellSingleQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 function escapeRegExp(value: string): string {

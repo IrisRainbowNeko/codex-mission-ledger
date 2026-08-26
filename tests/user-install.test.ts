@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -13,11 +12,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { textContainsPath } from "../src/platform.js";
+import { resolvePythonInvocation, spawnPython } from "../src/python.js";
 import {
   countTomlKey,
   installUserScope,
   mergeUserConfig,
   parseTomlFile,
+  resolveUserLayout,
   uninstallUserScope,
   verifyUserInstall,
   type UserInstallPaths,
@@ -85,8 +87,8 @@ command = "echo"
     expect(toml).toContain("[mcp_servers.other]");
     expect(toml).toContain("[mcp_servers.hierarchical_codex]");
     expect(toml).toContain('default_tools_approval_mode = "approve"');
-    expect(toml).toContain(join(home, ".local", "share", "codex-mission-ledger"));
-    expect(toml).not.toMatch(/HIERARCHICAL_CODEX_HOME\s*=\s*"[^"]*\.codex\/hierarchical-codex"/);
+    expect(textContainsPath(toml, installed.layout.stateDirectory)).toBe(true);
+    expect(toml).not.toMatch(/HIERARCHICAL_CODEX_HOME\s*=\s*"[^"]*\.codex[/\\]hierarchical-codex"/);
     expect(existsSync(join(paths.codexHome, "codex-mission-ledger", "install-manifest.json"))).toBe(
       true,
     );
@@ -111,7 +113,9 @@ command = "echo"
     expect(hooks.hooks.PreToolUse.some((entry) => entry.matcher === "^wait_agent$")).toBe(true);
     expect(
       hooks.hooks.PreToolUse.some((entry) =>
-        entry.hooks.some((hook) => hook.command.includes("--opt-in")),
+        entry.hooks.some(
+          (hook) => hook.command.includes("--opt-in") && hook.command.includes("run_hook.mjs"),
+        ),
       ),
     ).toBe(true);
 
@@ -312,6 +316,21 @@ hooks = true
     expect(existsSync(stale)).toBe(false);
     expect(existsSync(join(first.layout.skillCodex, "SKILL.md"))).toBe(true);
   });
+
+  it("stores the ledger under LocalAppData for a Windows layout", () => {
+    home = mkdtempSync(join(tmpdir(), "codex-mission-ledger-win-"));
+    const paths: UserInstallPaths = { ...materialize(home), platform: "win32" };
+    const layout = resolveUserLayout(paths);
+    expect(layout.stateDirectory).toBe(join(home, "AppData", "Local", "codex-mission-ledger"));
+    const installed = installUserScope(paths);
+    const toml = readFileSync(installed.layout.configToml, "utf8");
+    expect(textContainsPath(toml, layout.stateDirectory)).toBe(true);
+    const hooks = readFileSync(installed.layout.hooksJson, "utf8");
+    expect(hooks).toContain("run_hook.mjs");
+    expect(hooks).toContain("--opt-in");
+    expect(hooks).toContain('"');
+    expect(verifyUserInstall(paths).problems).toEqual([]);
+  });
 });
 
 function materialize(home: string): UserInstallPaths {
@@ -332,16 +351,15 @@ function materialize(home: string): UserInstallPaths {
     homeDirectory: home,
     codexHome: join(home, ".codex"),
     nodeExecutable: process.execPath,
-    pythonExecutable: "python3",
+    python: resolvePythonInvocation(),
   };
 }
 
 function assertParses(path: string): void {
   parseTomlFile(path);
-  const result = spawnSync(
-    "python3",
+  const result = spawnPython(
     ["-c", "import tomllib, sys; tomllib.load(open(sys.argv[1], 'rb'))", path],
     { encoding: "utf8" },
   );
-  expect(result.status, result.stderr).toBe(0);
+  expect(result.status, String(result.stderr)).toBe(0);
 }

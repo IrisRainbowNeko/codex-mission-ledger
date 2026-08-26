@@ -50,15 +50,18 @@ MCP and hooks do not create native threads. The Sol or Terra model calls native
 - Producer/reviewer separation.
 - Request-hashed idempotent mutations and append-only audit events.
 - Recovery snapshots after restart or context compaction.
+- Parked long jobs (`task_block` clears the lease) so GPU/remote work outlives the Codex thread.
 - Project-scoped Codex Skill, Agent profiles, MCP configuration, and hooks.
 
 ## Requirements
 
 - Node.js 22.5 or newer. Node 26 is used in development.
-- Python 3.10 or newer for Codex lifecycle hooks.
+- Python 3.10 or newer for Codex lifecycle hooks (`python3`, Windows `py -3`,
+  or `python`).
 - Codex 0.148.0 or newer is the recommended production baseline, with native
   multi-agent tools, custom agents, MCP, and hooks.
 - A trusted Codex project so `.codex/config.toml` and project hooks are loaded.
+  Windows is a first-class install target (VS Code Codex + CLI).
 
 ## Quick start
 
@@ -102,6 +105,7 @@ npm run format       # Prettier
 npm run build        # Compile dist/
 npm run check          # Full local quality gate
 npm run install:user   # Install skill, agents, hooks, and MCP into ~/.codex
+                       # (Windows: %USERPROFILE%\.codex)
 npm run doctor:user    # Verify the user-global install
 npm run uninstall:user # Remove the managed user-global files
 ```
@@ -121,7 +125,9 @@ By default, state is project-local and ignored by Git:
 ```
 
 User-global install (`npm run install:user`) stores the ledger at
-`~/.local/share/codex-mission-ledger/` so Codex MCP sandboxes can write it.
+`~/.local/share/codex-mission-ledger/` on POSIX and
+`%LOCALAPPDATA%\codex-mission-ledger\` on Windows so Codex MCP sandboxes can
+write it.
 If that directory is not writable, the server falls back to a temp path and
 logs the chosen home on stderr.
 

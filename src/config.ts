@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { defaultUserStateDirectory, mkdirPrivate, processIdentity, tempRoot } from "./platform.js";
 
 export const CONTROL_PLANE_DB_NAME = "control-plane.sqlite";
 export const PRODUCT_NAME = "Mission Ledger for Codex";
@@ -39,39 +39,31 @@ export function defaultProjectHome(cwd: string): string {
   return resolve(cwd, PROJECT_STATE_DIRECTORY);
 }
 
-export function xdgStateHome(environment: NodeJS.ProcessEnv): string {
-  const xdg = environment["XDG_DATA_HOME"];
-  if (xdg !== undefined && xdg.trim().length > 0) {
-    return resolve(xdg, STATE_DIRECTORY);
-  }
-  const home = environment["HOME"] ?? homedir();
-  return resolve(home, ".local", "share", STATE_DIRECTORY);
+export function xdgStateHome(
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return defaultUserStateDirectory(STATE_DIRECTORY, environment, platform);
 }
 
 export function ephemeralStateHome(environment: NodeJS.ProcessEnv): string {
-  const root = environment["TMPDIR"] ?? environment["TMP"] ?? tmpdir();
-  const uid = typeof process.getuid === "function" ? String(process.getuid()) : "user";
-  return resolve(root, STATE_DIRECTORY, uid);
+  return resolve(tempRoot(environment), STATE_DIRECTORY, processIdentity(environment));
 }
 
-function legacyXdgStateHome(environment: NodeJS.ProcessEnv): string {
-  const xdg = environment["XDG_DATA_HOME"];
-  if (xdg !== undefined && xdg.trim().length > 0) {
-    return resolve(xdg, LEGACY_STATE_DIRECTORY);
-  }
-  const home = environment["HOME"] ?? homedir();
-  return resolve(home, ".local", "share", LEGACY_STATE_DIRECTORY);
+function legacyXdgStateHome(
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return defaultUserStateDirectory(LEGACY_STATE_DIRECTORY, environment, platform);
 }
 
 function legacyEphemeralStateHome(environment: NodeJS.ProcessEnv): string {
-  const root = environment["TMPDIR"] ?? environment["TMP"] ?? tmpdir();
-  const uid = typeof process.getuid === "function" ? String(process.getuid()) : "user";
-  return resolve(root, LEGACY_STATE_DIRECTORY, uid);
+  return resolve(tempRoot(environment), LEGACY_STATE_DIRECTORY, processIdentity(environment));
 }
 
 export function directoryAllowsWrites(directory: string): boolean {
   try {
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    mkdirPrivate(directory);
     const probe = join(directory, `.write-probe-${process.pid}`);
     writeFileSync(probe, "ok");
     unlinkSync(probe);

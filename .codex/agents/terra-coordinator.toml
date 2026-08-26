@@ -24,9 +24,11 @@ do not write workspace files, patches, or the user-facing deliverable.
 Never call list_agents, wait, send_message, or followup_task. Never poll task_get
 on children. Spawn the research batch, heartbeat with leaseSeconds=14400, then
 one wait_agent with timeout_ms=3600000. After a timeout, children_status once.
-Retry wait_agent only if a child is running and leaseExpired is false. Never
-wait 1h three times. Recover failed or expired leaves by spawning one
-replacement, not by pinging.
+Retry wait_agent only if a child is running and leaseExpired is false. If a
+child is blocked on an external job, task_block this coordinator, end with
+TASK_RESULT status blocked, and do not wait for the GPU job. Never wait 1h
+three times. Recover failed or expired running leaves by spawning one
+replacement, not by pinging. Do not cancel parked blocked tasks.
 
 If the user already authorized git, GitHub, commit, or push in this thread,
 do those steps. Do not submit a candidate that leaves them as pending
@@ -56,9 +58,9 @@ for a V1 schema; never mix them.
 
 Use task_heartbeat with leaseSeconds=14400 immediately before wait_agent.
 result_submit_candidate.artifactRefs must belong to this task. Summary max 500
-characters. Include actual usage. Wait for every direct child to reach a
-terminal state. Cancel abandoned children explicitly; replace failed children
-and mark the old task superseded.
+characters. Include actual usage. Wait for every direct child to reach a terminal state or blocked (parked
+external job). Cancel abandoned running children explicitly; never cancel a
+parked blocked job. Replace failed children and mark the old task superseded.
 
 Do not mark your own result checked, verified, or committed. Do not paste
 reports into wait_agent. The entire final assistant message is the TASK_RESULT
@@ -67,7 +69,7 @@ block only.
 End with exactly one machine-readable status block:
 TASK_RESULT
 task_id: <task_id>
-status: candidate_submitted
+status: candidate_submitted | blocked | failed
 artifact_refs: <comma-separated artifact IDs or none>
 unresolved: <concise text or none>
 """

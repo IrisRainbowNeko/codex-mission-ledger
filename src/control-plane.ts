@@ -469,11 +469,14 @@ export class ControlPlane {
       const now = this.clock();
       const leaseExpired =
         task.leaseExpiresAt !== null && Date.parse(task.leaseExpiresAt) <= now.getTime();
+      const liveLease =
+        task.leaseExpiresAt !== null && Date.parse(task.leaseExpiresAt) > now.getTime();
+      const parkedBlocked = task.status === "blocked" && !liveLease;
       const reclaimable =
         leaseExpired &&
         (task.status === "leased" || task.status === "running" || task.status === "blocked");
       assertCondition(
-        task.status === "ready" || reclaimable,
+        task.status === "ready" || reclaimable || parkedBlocked,
         "lease_conflict",
         "Task is not ready for a new lease.",
         {
@@ -596,7 +599,12 @@ export class ControlPlane {
       this.assertVersion(task.version, input.expectedVersion, "Task");
       this.assertLease(task, input.workerId, input.leaseToken);
       assertTransition(task.status, "blocked");
-      const updated = this.transitionTask(task, "blocked");
+      const updated = this.transitionTask(task, "blocked", {
+        leaseOwner: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        unresolved: [...task.unresolved, `Blocked: ${input.reason.trim()}`],
+      });
       this.repository.updateTask(updated, task.version);
       this.event(
         task.missionId,
@@ -1434,14 +1442,13 @@ export class ControlPlane {
     idempotencyKey: string,
   ): void {
     const now = this.now();
-    const stallable = new Set<TaskStatus>(["leased", "running", "blocked"]);
+    const stallable = new Set<TaskStatus>(["leased", "running"]);
     let progressed = true;
     while (progressed) {
       progressed = false;
       const tasks = this.repository.listTasks(mission.id);
       const stalled = tasks.filter(
-        (task) =>
-          stallable.has(task.status) && isLeaseExpired(task.leaseExpiresAt, now),
+        (task) => stallable.has(task.status) && isLeaseExpired(task.leaseExpiresAt, now),
       );
       for (const task of stalled) {
         const activeChildren = this.repository

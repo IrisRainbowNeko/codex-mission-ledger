@@ -58,13 +58,24 @@ Thin Sol. One Terra fans out.
 | Luna producer | `task_claim` → `task_start` → do the bounded work → `artifact_put` on this task → `result_submit_candidate`                                                                                                                                                                                                                                                                                                         |
 | Luna verifier | `task_get(review_target_task_id)` → truncated `artifact_get` → one `result_check`. Never claim, verify, or commit.                                                                                                                                                                                                                                                                                                  |
 
+If Terra returns `blocked`, Sol stops and tells the user to **继续**. Do not `mission_close`.
+
 ### `director_plan`
 
 Sol writes a **bounded** plan as a markdown file in the project folder (default `director-plan.md`, 750–8000 characters). Then `mission_create` with `directorPlan` set to that relative path. Do not paste the plan into MCP or into Terra `objective`. No child `artifact_get`, no babysit. Then the Terra path from `fanout`. Terra calls `mission_get` with `includeDetails=false`, reads the file at `directorPlan`, and follows it. Luna also reads that file. This is the only Sol workspace write.
 
 ### `pipeline`
 
-Sol allocates **one** Terra, same wait/close as `fanout`. Terra allocates Luna stages with `dependencies` so work is serial, then a synthesizer. Same gate rules. Same coordinator bans.
+Sol allocates **one** Terra, same wait/close as `fanout`. Terra allocates Luna stages with `dependencies` so work is serial, then a synthesizer. Same gate rules. Same coordinator bans. If a stage is a long job, Luna parks it (`task_block`); Terra parks too and returns `blocked` — Sol must **not** `mission_close` and must **not** wait overnight.
+
+## Long jobs and long chats
+
+Training, remote eval, multi-hour downloads, and overnight pipelines are **external jobs**. The ledger outlives the Codex thread. Do not keep `wait_agent` open across a GPU run.
+
+- Luna: never hold one `exec`/SSH open for more than about 10 minutes. Start the job detached (`tmux`/`nohup`/`sbatch` on POSIX; `Start-Process`/`Start-Job`/`schtasks` on Windows, or WSL `tmux`), `artifact_put` a short run handle (host, session/pid, log path, resume command), then `task_block` and `TASK_RESULT` `status: blocked`. Heartbeat is not a substitute for a 4-hour exec.
+- Terra: `wait_agent` only until Luna parks or finishes that short setup. If `children_status` shows `blocked`, `task_block` this coordinator with the child ids, `TASK_RESULT` `blocked`. Do not wait_agent for the GPU job. Do not `result_submit_candidate` while children are blocked.
+- Sol: after `blocked`, stop. Last message is a few lines plus `mission_id` / `task_id` and that the user can say **继续**. Do not `mission_close`. Do not `wait_agent` again for that job.
+- **继续** / after compaction: `recovery_snapshot` or `mission_get`, then spawn against the **same** parked `task_id`. Claim the blocked task, attach to the run handle, harvest or `task_block` again. Do not `mission_create` a duplicate. The chat may be long; the transcript is not the source of truth.
 
 Do **not** also memorize heartbeat, release, fail, or recovery unless a gate fails. Heartbeat with `leaseSeconds=14400` immediately before each `wait_agent`. If the attempt is dead, call `task_fail`. After interruption, call `recovery_snapshot` and resume from the latest version.
 
@@ -72,7 +83,7 @@ Do **not** also memorize heartbeat, release, fail, or recovery unless a gate fai
 
 These tools re-bill the cached prefix every time they return. Do not use them as a wait loop.
 
-- Sol: never `list_agents`, never native `wait` (including guessed `cell_id`s), never `send_message`, never `exec` `sleep`/`setTimeout`, never `sed`/`cat` SKILL.md. One `wait_agent` (`timeout_ms=3600000`). If it returns without `TASK_RESULT`, call `children_status` on the root Terra (or `task_get` on a `direct` Luna). Terminal or `candidate` → `mission_close`. Still running and `leaseExpired=false` → **one** more `wait_agent` only. `leaseExpired` or a second timeout → `task_cancel` the stalled tasks and `mission_close`. Never wait 1h three times.
+- Sol: never `list_agents`, never native `wait` (including guessed `cell_id`s), never `send_message`, never `exec` `sleep`/`setTimeout`, never `sed`/`cat` SKILL.md. One `wait_agent` (`timeout_ms=3600000`). If it returns without `TASK_RESULT`, call `children_status` on the root Terra (or `task_get` on a `direct` Luna). Terminal or `candidate` → `mission_close`. Any `blocked` child → stop and tell the user to **继续** later. Still running and `leaseExpired=false` → **one** more `wait_agent` only. `leaseExpired` or a second timeout → `task_cancel` the stalled **running** tasks (never parked `blocked` jobs) and `mission_close` only if nothing is blocked. Never wait 1h three times.
 - Terra: never `list_agents`, `send_message`, or `followup_task`. Never poll `task_get` on children. After `wait_agent` timeout, `children_status` once. Retry `wait_agent` only if a child is running and not `leaseExpired`. Recover a failed or expired leaf with one replacement Luna, then one more long `wait_agent`. `wait_agent` timeout must be ≥ 1800000 ms (hook-enforced). VS Code cell yield (`wait` with a real `cell_id` + `max_tokens`) is allowed; guessed cell ids and timeout-style `wait` are not. Do not deny `exec` — this client may wrap MCP as exec JS.
 
 ## Token placement

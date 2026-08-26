@@ -192,7 +192,9 @@ Required:
 - `expectedVersion`
 - `idempotencyKey`
 
-Optional `leaseSeconds`. Returns an opaque lease token.
+Optional `leaseSeconds`. Returns an opaque lease token. A `ready` task, an
+expired `leased`/`running`/`blocked` lease, or a parked `blocked` task with no
+live lease can be claimed.
 
 ### `task_start`
 
@@ -217,7 +219,10 @@ Uses lease fields plus `reason`. Clears the lease and returns the task to ready.
 
 ### `task_block`
 
-Uses lease fields plus `reason`. Records blocked state while retaining the lease.
+Uses lease fields plus `reason`. Parks the task, records the reason on
+`unresolved`, and **clears the lease** so the worker thread can exit. Resume
+with `task_claim` on the same `task_id`. Put the external run handle in an
+artifact before blocking.
 
 ### `task_fail`
 

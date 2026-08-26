@@ -100,7 +100,11 @@ describe("hierarchy policy", () => {
   it("treats tool and wall-clock overage as soft on candidate submit", () => {
     const usage = { tokens: 10, costUsd: 1, wallClockSeconds: 500, toolCalls: 80 };
     expect(() =>
-      assertHardUsageWithin(usage, { tokens: 20, costUsd: 2, wallClockSeconds: 10, toolCalls: 8 }, "task"),
+      assertHardUsageWithin(
+        usage,
+        { tokens: 20, costUsd: 2, wallClockSeconds: 10, toolCalls: 8 },
+        "task",
+      ),
     ).not.toThrow();
     expect(() => assertHardUsageWithin(usage, { tokens: 5, costUsd: 2 }, "task")).toThrowError(
       expect.objectContaining<Partial<ControlPlaneError>>({ code: "budget_exceeded" }),

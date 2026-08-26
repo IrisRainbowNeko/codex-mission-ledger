@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .codex/hooks/pre_spawn_policy.py",
+            "command": "node .codex/hooks/run_hook.mjs pre_spawn_policy.py",
             "timeout": 10,
             "statusMessage": "Checking hierarchical spawn policy"
           }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .codex/hooks/pre_coordinator_tools.py",
+            "command": "node .codex/hooks/run_hook.mjs pre_coordinator_tools.py",
             "timeout": 10,
             "statusMessage": "Blocking Terra coordinator babysitting"
           }
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .codex/hooks/pre_coordinator_tools.py",
+            "command": "node .codex/hooks/run_hook.mjs pre_coordinator_tools.py",
             "timeout": 10,
             "statusMessage": "Requiring a long Terra wait_agent"
           }
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .codex/hooks/subagent_start.py",
+            "command": "node .codex/hooks/run_hook.mjs subagent_start.py",
             "timeout": 10,
             "statusMessage": "Injecting control-plane protocol"
           }
@@ -55,7 +55,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .codex/hooks/subagent_stop.py",
+            "command": "node .codex/hooks/run_hook.mjs subagent_stop.py",
             "timeout": 10,
             "statusMessage": "Checking durable task handoff"
           }

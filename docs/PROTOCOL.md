@@ -179,15 +179,22 @@ and increments the task version.
 
 If blocked:
 
-- `task_block` records the reason while retaining the lease;
-- continue heartbeats if the same worker should resume;
-- otherwise call `task_release`, which clears the lease and returns the task to
-  `ready`.
+- `task_block` parks the task on an external job or a true blocker, records the
+  reason, and **clears the lease** so the Codex thread can exit;
+- put the run handle (host, session/pid, log, resume command) in an artifact
+  first;
+- do not hold an SSH/train `exec` open for hours hoping to heartbeat;
+- another worker resumes with `task_claim` on the parked `blocked` row.
+
+`wait_agent` is only for a native child thread to park or finish. It is not a
+handle on a GPU job. Overnight work stays `blocked` on the ledger; the user
+says 继续, Sol/Terra claim the same `task_id`, and a Luna attaches to the run.
 
 If the attempt definitively fails, the lease owner calls `task_fail` with the
 final usage and reason. The direct parent may allocate a viable sibling
 replacement and then call `task_supersede` on the failed task. Abandoned
-non-terminal work must be closed with `task_cancel`; child cancellation and
+**running** work must be closed with `task_cancel`; parked `blocked` jobs must
+not be cancelled just because the Codex thread ended. Child cancellation and
 supersession require direct-parent lease authority.
 
 After expiry, another worker may reclaim the task. The old token is fenced out.
@@ -275,10 +282,12 @@ review through `result_check`. Terra then calls `result_verify` and
 - Sol waits for and accepts its child (Terra, or the root Luna on `direct`)
   with one long `wait_agent`. It must not poll with `list_agents`, `wait`, or
   `send_message`. After a timeout it calls `children_status` once. It may
-  retry `wait_agent` once if a child is still live; expired-lease tasks are
-  cancelled instead of waited on again. On Terra paths Sol then `task_get`s
-  the summary and `mission_close`s; it does not gate Terra. `mission_close`
-  cancels stalled leased/running/blocked tasks whose lease has expired.
+  retry `wait_agent` once if a child is still live; expired-lease **running**
+  tasks are cancelled instead of waited on again. Parked `blocked` jobs are
+  left on the ledger. On Terra paths Sol then `task_get`s the summary and
+  `mission_close`s only when nothing is blocked. `mission_close` cancels
+  stalled leased/running tasks whose lease has expired; it does not cancel
+  `blocked` tasks.
 - Terra waits for the research batch with one long `wait_agent`, then the
   synthesizer with one more. It must not `wait_agent` per spawn, `send_message`,
   or `followup_task`. VS Code cell yield (`wait` with `cell_id` + `max_tokens`)

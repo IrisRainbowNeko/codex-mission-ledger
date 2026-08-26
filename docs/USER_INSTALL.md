@@ -25,6 +25,21 @@ npm run install:user
 npm run doctor:user
 ```
 
+Windows (PowerShell), after cloning the repo:
+
+```powershell
+cd "C:\path\to\hierarchical-codex"
+npm install
+npm run build
+npm run install:user
+npm run doctor:user
+```
+
+Python 3.10+ must be on PATH as `python3`, `py -3`, or `python`. The Windows
+installer from python.org (enable the `py` launcher) or `winget install Python.Python.3.12`
+is enough. Node 22.5+ is required. Hooks are launched with the same `node.exe`
+that ran the installer, so a missing `python3` name is not a blocker.
+
 If a same-named skill or agent profile already exists and was not installed by
 this tool, the installer **aborts**. Re-run with `--force` to back those files
 up under `~/.codex/codex-mission-ledger/backups/` (never as a sibling under
@@ -44,7 +59,9 @@ The installer:
 6. merges hook entries into `~/.codex/hooks.json` with `--opt-in` so ordinary `spawn_agent` still works;
 7. appends a short section to `~/.codex/AGENTS.md`;
 8. records owned paths in `~/.codex/codex-mission-ledger/install-manifest.json`;
-9. stores mission state in `~/.local/share/codex-mission-ledger/` (not under `~/.codex`, which Codex sandboxes as read-only for MCP);
+9. stores mission state in `~/.local/share/codex-mission-ledger/` on POSIX and
+   `%LOCALAPPDATA%\codex-mission-ledger\` on Windows (not under `~/.codex`, which
+   Codex sandboxes as read-only for MCP);
 10. backs up `config.toml` and unmanaged conflicts to `~/.codex/codex-mission-ledger/backups/` (first managed install for config; `--force` for conflicts). Codex loads every folder under `skills/`, so `.bak-codex-mission-ledger-*` skill copies must not stay there. `doctor:user` warns if leftover backup folders remain in `~/.codex/skills` or `~/.agents/skills`.
 
 Existing `hierarchical-codex` manifests, hook paths, backups, state, and managed
@@ -74,14 +91,14 @@ project files. Trust hooks with `/hooks` there as well.
 
 ## What must stay global vs local
 
-| Piece          | Location                                                      | Why                                                                   |
-| -------------- | ------------------------------------------------------------- | --------------------------------------------------------------------- |
-| Skill          | `~/.agents/skills` and `~/.codex/skills`                      | VS Code/CLI discover user skills without the original repo as cwd     |
-| Agent profiles | `~/.codex/agents`                                             | native `agent_type=terra-coordinator` must resolve in every workspace |
-| Hooks          | `~/.codex/hooks/codex-mission-ledger` + `~/.codex/hooks.json` | spawn policy and start/stop text                                      |
-| MCP server     | `node <absolute>/dist/cli.js`                                 | tools available even when cwd is another project                      |
-| Task ledger    | `~/.local/share/codex-mission-ledger`                         | durable state; `~/.codex` is read-only inside Codex MCP sandboxes     |
-| Default model  | **not** installed                                             | pinning Sol globally would hijack every Codex session                 |
+| Piece          | Location                                                                                         | Why                                                                   |
+| -------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| Skill          | `~/.agents/skills` and `~/.codex/skills`                                                         | VS Code/CLI discover user skills without the original repo as cwd     |
+| Agent profiles | `~/.codex/agents`                                                                                | native `agent_type=terra-coordinator` must resolve in every workspace |
+| Hooks          | `~/.codex/hooks/codex-mission-ledger` + `~/.codex/hooks.json`                                    | spawn policy and start/stop text                                      |
+| MCP server     | `node <absolute>/dist/cli.js`                                                                    | tools available even when cwd is another project                      |
+| Task ledger    | `~/.local/share/codex-mission-ledger` (POSIX) or `%LOCALAPPDATA%\codex-mission-ledger` (Windows) | durable state; `~/.codex` is read-only inside Codex MCP sandboxes     |
+| Default model  | **not** installed                                                                                | pinning Sol globally would hijack every Codex session                 |
 
 The MCP `cwd` is this package root so `dist/cli.js` resolves. Codex sandbox cwd
 remains the folder you opened; the control plane does not have to live there.
@@ -105,7 +122,8 @@ npm run doctor:user
 ```
 
 Confirm `CODEX_MISSION_LEDGER_HOME` in `~/.codex/config.toml` points at
-`~/.local/share/codex-mission-ledger`, not `~/.codex/codex-mission-ledger`. Then
+`~/.local/share/codex-mission-ledger` or `%LOCALAPPDATA%\codex-mission-ledger`,
+not a path under `~/.codex`. Then
 restart VS Code, open a new chat, run `/mcp`, and retry `$agent-trio`.
 
 `npm run install:user -- --force` is only needed if unmanaged skill/agent files
@@ -137,13 +155,15 @@ npm run uninstall:user
 
 This removes the managed config block, our hook entries, and files listed in
 `install-manifest.json`. It does not delete unrelated files in `~/.codex/agents`.
-It keeps `multi_agent` / `hooks` feature flags and `~/.local/share/codex-mission-ledger`
+It keeps `multi_agent` / `hooks` feature flags and the ledger under
+`~/.local/share/codex-mission-ledger` or `%LOCALAPPDATA%\codex-mission-ledger`
 SQLite state so you can reinstall without wiping missions.
 
 ## VS Code notes
 
 - The IDE extension uses its bundled Codex core, not necessarily the system
-  `codex` binary. User files under `~/.codex` and `~/.agents` are still shared.
+  `codex` binary. User files under `~/.codex` and `~/.agents` (`%USERPROFILE%`
+  on Windows) are still shared.
 - Codex plugins are not a VS Code distribution path.
 - If `$agent-trio` is missing, type `$` in a **new** chat after restart. The
   user `AGENTS.md` section still applies if the picker is empty.

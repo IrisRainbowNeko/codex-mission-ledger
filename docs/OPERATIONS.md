@@ -39,12 +39,14 @@ Project-local default (when `CODEX_MISSION_LEDGER_HOME` is unset):
 ```
 
 User-global install (`npm run install:user`) stores the ledger at
-`~/.local/share/codex-mission-ledger/`. That path is outside `~/.codex` because
-Codex MCP sandboxes treat `~/.codex` as read-only; `mission_create` cannot
-INSERT into a read-only SQLite file. If the configured home is not writable,
-the server falls back to `$TMPDIR/codex-mission-ledger/<uid>` and logs the
-chosen path on stderr. The pre-rename `hierarchical-codex` paths remain readable
-for compatibility with existing state.
+`~/.local/share/codex-mission-ledger/` on POSIX and
+`%LOCALAPPDATA%\codex-mission-ledger\` on Windows. That path is outside `~/.codex`
+because Codex MCP sandboxes treat `~/.codex` as read-only; `mission_create`
+cannot INSERT into a read-only SQLite file. If the configured home is not
+writable, the server falls back to `$TMPDIR/codex-mission-ledger/<uid>` (or
+`%TEMP%\codex-mission-ledger\<username>` on Windows) and logs the chosen path
+on stderr. The pre-rename `hierarchical-codex` paths remain readable for
+compatibility with existing state.
 
 Use environment variables to move state to a persistent encrypted volume.
 

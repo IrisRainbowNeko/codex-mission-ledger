@@ -118,38 +118,41 @@ describe("database migrations", () => {
     }
   });
 
-  it("maps read-only sqlite writes to a forbidden control-plane error", () => {
-    const directory = mkdtempSync(join(tmpdir(), "hierarchical-codex-readonly-"));
-    const path = join(directory, "control-plane.sqlite");
-    try {
-      const writable = new ControlPlaneDatabase(path);
-      writable.close();
-      chmodSync(path, 0o444);
+  it.skipIf(process.platform === "win32")(
+    "maps read-only sqlite writes to a forbidden control-plane error",
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), "hierarchical-codex-readonly-"));
+      const path = join(directory, "control-plane.sqlite");
       try {
-        const readonly = new ControlPlaneDatabase(path);
+        const writable = new ControlPlaneDatabase(path);
+        writable.close();
+        chmodSync(path, 0o444);
         try {
-          expect(() =>
-            readonly.transaction(() => {
-              readonly.handle.exec("CREATE TABLE readonly_probe(id INTEGER)");
-            }),
-          ).toThrow(ControlPlaneError);
-        } finally {
-          readonly.close();
+          const readonly = new ControlPlaneDatabase(path);
+          try {
+            expect(() =>
+              readonly.transaction(() => {
+                readonly.handle.exec("CREATE TABLE readonly_probe(id INTEGER)");
+              }),
+            ).toThrow(ControlPlaneError);
+          } finally {
+            readonly.close();
+          }
+        } catch (error) {
+          expect(error).toBeInstanceOf(ControlPlaneError);
+          expect((error as ControlPlaneError).code).toBe("forbidden");
+          expect((error as ControlPlaneError).message).toContain(path);
         }
-      } catch (error) {
-        expect(error).toBeInstanceOf(ControlPlaneError);
-        expect((error as ControlPlaneError).code).toBe("forbidden");
-        expect((error as ControlPlaneError).message).toContain(path);
+      } finally {
+        try {
+          chmodSync(path, 0o644);
+        } catch {
+          // The file may already be gone.
+        }
+        rmSync(directory, { recursive: true, force: true });
       }
-    } finally {
-      try {
-        chmodSync(path, 0o644);
-      } catch {
-        // The file may already be gone.
-      }
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
+    },
+  );
 
   it("maps a closed sqlite connection to a control-plane error", () => {
     const directory = mkdtempSync(join(tmpdir(), "hierarchical-codex-closed-"));

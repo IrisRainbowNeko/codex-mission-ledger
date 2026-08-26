@@ -363,7 +363,12 @@ export function assertBudgetWithin(
 }
 
 export function assertUsageWithin(usage: Usage, limit: BudgetLimits, label: string): void {
-  assertUsageFieldsWithin(usage, limit, label, ["tokens", "costUsd", "wallClockSeconds", "toolCalls"]);
+  assertUsageFieldsWithin(usage, limit, label, [
+    "tokens",
+    "costUsd",
+    "wallClockSeconds",
+    "toolCalls",
+  ]);
 }
 
 /** Candidate submit still enforces spend caps; tool/time overage must not block a finished result. */

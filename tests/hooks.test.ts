@@ -8,6 +8,7 @@ import { ControlPlane } from "../src/control-plane.js";
 import { ArtifactStore } from "../src/infra/artifact-store.js";
 import { ControlPlaneDatabase } from "../src/infra/database.js";
 import { Repository } from "../src/infra/repository.js";
+import { spawnPython } from "../src/python.js";
 import { baseMissionInput, lunaRootTaskInput, samplePortrait, terraTaskInput } from "./helpers.js";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -28,7 +29,7 @@ function invokeHook(
   if (options.env === undefined || !("HIERARCHICAL_CODEX_DB" in options.env)) {
     delete env["HIERARCHICAL_CODEX_DB"];
   }
-  return spawnSync("python3", [join(hookDirectory, script), ...args], {
+  return spawnPython([join(hookDirectory, script), ...args], {
     cwd: options.cwd ?? projectRoot,
     env,
     input: typeof payload === "string" ? payload : JSON.stringify(payload),
@@ -262,6 +263,28 @@ describe("Codex lifecycle hooks", () => {
     });
   });
 
+  it("launches Python hooks through the Node runner", () => {
+    const result = spawnSync(
+      process.execPath,
+      [join(hookDirectory, "run_hook.mjs"), "subagent_start.py"],
+      {
+        cwd: projectRoot,
+        encoding: "utf8",
+        env: { ...process.env, HIERARCHICAL_CODEX_HOME: isolatedHookHome },
+        input: JSON.stringify({
+          hook_event_name: "SubagentStart",
+          agent_type: "luna-producer",
+        }),
+      },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: "SubagentStart",
+      },
+    });
+  });
+
   it("injects start context and continues an incomplete stop only once", () => {
     const start = runHook("subagent_start.py", {
       hook_event_name: "SubagentStart",
@@ -270,6 +293,7 @@ describe("Codex lifecycle hooks", () => {
     expect(start).toMatchObject({
       hookSpecificOutput: {
         hookEventName: "SubagentStart",
+        additionalContext: expect.stringMatching(/You are a Luna leaf[\s\S]*task_block/),
       },
     });
 

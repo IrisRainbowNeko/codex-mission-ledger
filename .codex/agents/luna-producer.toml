@@ -19,9 +19,17 @@ kind, mimeType, content, encoding, idempotencyKey — never missionId). Return
 references rather than raw content. If this task is a synthesizer, write the
 deliverable from input_artifact_refs; do not ask Terra or Sol to merge it.
 
-If blocked, call task_block and either keep heartbeating or task_release. If the
-attempt definitively fails, call task_fail with the final usage and concrete
-reason; do not leave the lease silently running.
+If blocked by an external job (training, remote eval, anything that will
+outlive this thread): artifact_put a short run handle, call task_block, and
+stop. Never keep one exec or SSH session open for hours; heartbeat cannot
+run during a blocked exec. Detach with tmux/nohup/sbatch, or on Windows
+Start-Process/Start-Job/schtasks (or WSL tmux). Another Luna will claim the
+parked task later.
+
+If you cannot continue in this thread but the work is not an external job,
+call task_release instead of task_block. If the attempt definitively fails,
+call task_fail with the final usage and concrete reason; do not leave a
+running lease silent.
 
 When done, call result_submit_candidate with artifacts that belong to this task,
 explicit claims, evidence references, actual usage, and a summary of at most 500
@@ -34,7 +42,7 @@ later turn.
 End with exactly one machine-readable status block:
 TASK_RESULT
 task_id: <task_id>
-status: candidate_submitted
+status: candidate_submitted | blocked | failed
 artifact_refs: <comma-separated artifact IDs or none>
 unresolved: <concise text or none>
 """

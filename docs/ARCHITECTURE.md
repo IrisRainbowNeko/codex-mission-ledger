@@ -170,6 +170,9 @@ verified ──commit──> committed
 
 Supporting transitions:
 
+- running/leased → blocked to park an external job (training, remote eval); the
+  lease is cleared so the Codex thread can exit;
+- blocked → leased to resume the same `task_id`;
 - leased/running/blocked → ready for release or rejected rework;
 - ready/leased/running/blocked → failed or cancelled;
 - failed → superseded;

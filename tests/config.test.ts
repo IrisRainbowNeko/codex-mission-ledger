@@ -103,71 +103,80 @@ describe("loadConfig writable home", () => {
     expect(config.homeDirectory).not.toBe(join(cwd, ".codex-mission-ledger"));
   });
 
-  it("falls back to XDG when the configured home is not writable", () => {
-    root = mkdtempSync(join(tmpdir(), "hierarchical-codex-config-"));
-    const requested = join(root, "requested");
-    const xdg = join(root, "xdg");
-    mkdirSync(requested, { recursive: true });
-    chmodSync(requested, 0o555);
-    const warnings: string[] = [];
-    const config = loadConfig(
-      {
-        HOME: join(root, "home"),
-        HIERARCHICAL_CODEX_HOME: requested,
-        XDG_DATA_HOME: xdg,
-        TMPDIR: join(root, "tmp"),
-      },
-      join(root, "cwd"),
-      { warn: (message) => warnings.push(message) },
-    );
-    expect(config.homeDirectory).toBe(join(xdg, "codex-mission-ledger"));
-    expect(warnings.some((message) => message.includes(requested))).toBe(true);
-  });
+  it.skipIf(process.platform === "win32")(
+    "falls back to XDG when the configured home is not writable",
+    () => {
+      root = mkdtempSync(join(tmpdir(), "hierarchical-codex-config-"));
+      const requested = join(root, "requested");
+      const xdg = join(root, "xdg");
+      mkdirSync(requested, { recursive: true });
+      chmodSync(requested, 0o555);
+      const warnings: string[] = [];
+      const config = loadConfig(
+        {
+          HOME: join(root, "home"),
+          HIERARCHICAL_CODEX_HOME: requested,
+          XDG_DATA_HOME: xdg,
+          TMPDIR: join(root, "tmp"),
+        },
+        join(root, "cwd"),
+        { warn: (message) => warnings.push(message) },
+      );
+      expect(config.homeDirectory).toBe(join(xdg, "codex-mission-ledger"));
+      expect(warnings.some((message) => message.includes(requested))).toBe(true);
+    },
+  );
 
-  it("falls back to TMPDIR when configured home and XDG are not writable", () => {
-    root = mkdtempSync(join(tmpdir(), "hierarchical-codex-config-"));
-    const requested = join(root, "requested");
-    const xdg = join(root, "xdg");
-    const tmp = join(root, "tmp");
-    mkdirSync(requested, { recursive: true });
-    mkdirSync(xdg, { recursive: true });
-    mkdirSync(tmp, { recursive: true });
-    chmodSync(requested, 0o555);
-    chmodSync(xdg, 0o555);
-    const uid = typeof process.getuid === "function" ? String(process.getuid()) : "user";
-    const config = loadConfig(
-      {
-        HOME: join(root, "home"),
-        HIERARCHICAL_CODEX_HOME: requested,
-        XDG_DATA_HOME: xdg,
-        TMPDIR: tmp,
-      },
-      join(root, "cwd"),
-      { warn: () => undefined },
-    );
-    expect(config.homeDirectory).toBe(join(tmp, "codex-mission-ledger", uid));
-  });
+  it.skipIf(process.platform === "win32")(
+    "falls back to TMPDIR when configured home and XDG are not writable",
+    () => {
+      root = mkdtempSync(join(tmpdir(), "hierarchical-codex-config-"));
+      const requested = join(root, "requested");
+      const xdg = join(root, "xdg");
+      const tmp = join(root, "tmp");
+      mkdirSync(requested, { recursive: true });
+      mkdirSync(xdg, { recursive: true });
+      mkdirSync(tmp, { recursive: true });
+      chmodSync(requested, 0o555);
+      chmodSync(xdg, 0o555);
+      const uid = typeof process.getuid === "function" ? String(process.getuid()) : "user";
+      const config = loadConfig(
+        {
+          HOME: join(root, "home"),
+          HIERARCHICAL_CODEX_HOME: requested,
+          XDG_DATA_HOME: xdg,
+          TMPDIR: tmp,
+        },
+        join(root, "cwd"),
+        { warn: () => undefined },
+      );
+      expect(config.homeDirectory).toBe(join(tmp, "codex-mission-ledger", uid));
+    },
+  );
 
-  it("skips a home directory that contains sqlite but is not writable", () => {
-    root = mkdtempSync(join(tmpdir(), "hierarchical-codex-config-"));
-    const requested = join(root, "requested");
-    const xdg = join(root, "xdg");
-    mkdirSync(requested, { recursive: true });
-    const database = new ControlPlaneDatabase(join(requested, "control-plane.sqlite"));
-    database.close();
-    chmodSync(requested, 0o555);
-    const config = loadConfig(
-      {
-        HOME: join(root, "home"),
-        HIERARCHICAL_CODEX_HOME: requested,
-        XDG_DATA_HOME: xdg,
-        TMPDIR: join(root, "tmp"),
-      },
-      join(root, "cwd"),
-      { warn: () => undefined },
-    );
-    expect(config.homeDirectory).toBe(join(xdg, "codex-mission-ledger"));
-  });
+  it.skipIf(process.platform === "win32")(
+    "skips a home directory that contains sqlite but is not writable",
+    () => {
+      root = mkdtempSync(join(tmpdir(), "hierarchical-codex-config-"));
+      const requested = join(root, "requested");
+      const xdg = join(root, "xdg");
+      mkdirSync(requested, { recursive: true });
+      const database = new ControlPlaneDatabase(join(requested, "control-plane.sqlite"));
+      database.close();
+      chmodSync(requested, 0o555);
+      const config = loadConfig(
+        {
+          HOME: join(root, "home"),
+          HIERARCHICAL_CODEX_HOME: requested,
+          XDG_DATA_HOME: xdg,
+          TMPDIR: join(root, "tmp"),
+        },
+        join(root, "cwd"),
+        { warn: () => undefined },
+      );
+      expect(config.homeDirectory).toBe(join(xdg, "codex-mission-ledger"));
+    },
+  );
 });
 
 function chmodTreeWritable(directory: string): void {

@@ -268,7 +268,7 @@ export function createMcpServer(controlPlane: ControlPlane): McpServer {
     {
       title: "Claim task",
       description:
-        "Atomically claim a ready task using optimistic versioning. The returned lease token is required for worker mutations.",
+        "Atomically claim a ready task, reclaim an expired leased/running/blocked lease, or resume a parked blocked task with no live lease. The returned lease token is required for worker mutations.",
       inputSchema: z
         .object({
           taskId: id,
@@ -324,7 +324,7 @@ export function createMcpServer(controlPlane: ControlPlane): McpServer {
     {
       title: "Block task",
       description:
-        "Record a blocking dependency while retaining the lease. Continue heartbeats or release the task.",
+        "Park a task on an external job (training, remote eval) or a true blocker. Clears the lease so the Codex thread can exit. Put the run handle in an artifact first. Resume later with task_claim. Do not hold an SSH/train exec open for hours.",
       inputSchema: z.object({ ...leaseFields, reason: text }).strict(),
     },
     async (input) => run(() => controlPlane.blockTask(input as TaskBlockInput)),

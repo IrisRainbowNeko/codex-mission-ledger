@@ -36,6 +36,8 @@ unrecoverable state:
 - locked mission strategy (`direct` / `fanout` / `director_plan` / `pipeline`);
 - optimistic versions;
 - lease replay, expiry, and reclamation;
+- parked `blocked` claim and `mission_close` must not cancel blocked tasks;
+- Windows user-state and hook quoting (`tests/platform.test.ts`);
 - candidate/check/verify/commit workflow;
 - producer/reviewer separation;
 - dependency readiness after commit;
@@ -58,6 +60,7 @@ Tests use real in-memory SQLite and a temporary artifact directory.
 - mixed V1/V2 fork rejection;
 - required task ID;
 - start-context injection;
+- Node `run_hook.mjs` launcher (Windows `py`/`python` discovery);
 - one-time incomplete-stop continuation;
 - valid terminal handoff.
 

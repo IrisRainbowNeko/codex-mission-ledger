@@ -1160,7 +1160,9 @@ describe("ControlPlane", () => {
     harness = createTestHarness();
     const { controlPlane, advance } = harness;
     const mission = controlPlane.createMission(baseMissionInput("mission:close-stalled:1"));
-    const terra = controlPlane.allocateTask(terraTaskInput(mission.id, "task:terra:close-stalled:1"));
+    const terra = controlPlane.allocateTask(
+      terraTaskInput(mission.id, "task:terra:close-stalled:1"),
+    );
     const claimed = controlPlane.claimTask({
       taskId: terra.id,
       workerId: "terra-stalled",
@@ -1184,6 +1186,87 @@ describe("ControlPlane", () => {
     });
     expect(closed.status).toBe("completed");
     expect(controlPlane.getTask(terra.id).status).toBe("cancelled");
+  });
+
+  it("parks a blocked task without a lease and lets another worker claim it", () => {
+    harness = createTestHarness();
+    const { controlPlane } = harness;
+    const mission = controlPlane.createMission(baseMissionInput("mission:park-block:1"));
+    const { luna, lunaRunning } = startRunningTerraLuna(controlPlane, mission.id, "park-block");
+
+    const blocked = controlPlane.blockTask({
+      taskId: luna.id,
+      workerId: "luna-1",
+      leaseToken: lunaRunning.leaseToken!,
+      expectedVersion: lunaRunning.version,
+      reason: "GPU training detached on remote host",
+      idempotencyKey: "block:luna:park-block:1",
+    });
+    expect(blocked.status).toBe("blocked");
+    expect(blocked.leaseOwner).toBeNull();
+    expect(blocked.leaseToken).toBeNull();
+    expect(blocked.leaseExpiresAt).toBeNull();
+    expect(blocked.unresolved).toEqual(
+      expect.arrayContaining(["Blocked: GPU training detached on remote host"]),
+    );
+
+    const resumed = controlPlane.claimTask({
+      taskId: luna.id,
+      workerId: "luna-resume",
+      expectedVersion: blocked.version,
+      idempotencyKey: "claim:luna:park-block-resume:1",
+    });
+    expect(resumed.status).toBe("leased");
+    expect(resumed.leaseOwner).toBe("luna-resume");
+    expect(resumed.leaseToken).toBeTruthy();
+  });
+
+  it("does not cancel parked blocked tasks on mission_close", () => {
+    harness = createTestHarness();
+    const { controlPlane, advance } = harness;
+    const mission = controlPlane.createMission(baseMissionInput("mission:close-blocked:1"));
+    const { terra, terraRunning, luna, lunaRunning } = startRunningTerraLuna(
+      controlPlane,
+      mission.id,
+      "close-blocked",
+    );
+
+    const lunaBlocked = controlPlane.blockTask({
+      taskId: luna.id,
+      workerId: "luna-1",
+      leaseToken: lunaRunning.leaseToken!,
+      expectedVersion: lunaRunning.version,
+      reason: "training still running on GPU",
+      idempotencyKey: "block:luna:close-blocked:1",
+    });
+    const terraBlocked = controlPlane.blockTask({
+      taskId: terra.id,
+      workerId: "terra-1",
+      leaseToken: terraRunning.leaseToken!,
+      expectedVersion: terraRunning.version,
+      reason: "child parked on external job",
+      idempotencyKey: "block:terra:close-blocked:1",
+    });
+    expect(lunaBlocked.status).toBe("blocked");
+    expect(terraBlocked.status).toBe("blocked");
+
+    advance(61_000);
+
+    expect(() =>
+      controlPlane.closeMission({
+        missionId: mission.id,
+        actorId: "sol-root",
+        expectedVersion: 1,
+        idempotencyKey: "close:blocked:1",
+      }),
+    ).toThrowError(
+      expect.objectContaining<Partial<ControlPlaneError>>({
+        code: "invalid_state",
+      }),
+    );
+    expect(controlPlane.getTask(luna.id).status).toBe("blocked");
+    expect(controlPlane.getTask(terra.id).status).toBe("blocked");
+    expect(controlPlane.getMission(mission.id, false)).toMatchObject({ status: "active" });
   });
 
   it("accepts a stale expectedParentVersion when the parent lease is valid", () => {
@@ -1360,6 +1443,50 @@ describe("ControlPlane", () => {
     expect(synthesizer.status).toBe("ready");
   });
 });
+
+function startRunningTerraLuna(
+  controlPlane: TestHarness["controlPlane"],
+  missionId: string,
+  label: string,
+) {
+  const terra = controlPlane.allocateTask(terraTaskInput(missionId, `task:terra:${label}:1`));
+  const terraClaim = controlPlane.claimTask({
+    taskId: terra.id,
+    workerId: "terra-1",
+    expectedVersion: terra.version,
+    idempotencyKey: `claim:terra:${label}:1`,
+  });
+  const terraRunning = controlPlane.startTask({
+    taskId: terra.id,
+    workerId: "terra-1",
+    leaseToken: terraClaim.leaseToken!,
+    expectedVersion: terraClaim.version,
+    idempotencyKey: `start:terra:${label}:1`,
+  });
+  const luna = controlPlane.allocateTask(
+    lunaTaskInput(
+      missionId,
+      terra.id,
+      terraRunning.version,
+      terraRunning.leaseToken!,
+      `task:luna:${label}:1`,
+    ),
+  );
+  const lunaClaim = controlPlane.claimTask({
+    taskId: luna.id,
+    workerId: "luna-1",
+    expectedVersion: luna.version,
+    idempotencyKey: `claim:luna:${label}:1`,
+  });
+  const lunaRunning = controlPlane.startTask({
+    taskId: luna.id,
+    workerId: "luna-1",
+    leaseToken: lunaClaim.leaseToken!,
+    expectedVersion: lunaClaim.version,
+    idempotencyKey: `start:luna:${label}:1`,
+  });
+  return { terra, terraRunning, luna, lunaRunning };
+}
 
 function startTerraWithCandidateChild(
   controlPlane: TestHarness["controlPlane"],

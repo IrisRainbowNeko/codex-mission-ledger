@@ -16,15 +16,20 @@ CONTEXT_BY_PROFILE = {
         "with dependencies. Fan-out "
         "otherwise. Never list_agents, wait, send_message, or followup_task. "
         "Stay read-only. A synthesizer writes any user-facing file. "
+        "If a child parks (blocked) on training/remote work, task_block "
+        "yourself and return TASK_RESULT blocked; do not wait_agent overnight. "
         "results_gate_and_commit for low/medium; skip luna-verifier unless "
         "risk is high/critical or evidence is non-deterministic. End with "
         "TASK_RESULT only; never paste reports."
     ),
     "luna-producer": (
         "You are a Luna leaf. Extract task_id, claim and start it before work, "
-        "heartbeat long operations, artifact_put on this task, submit candidate "
-        "evidence with usage and a <=500 char summary, and never spawn. The "
-        "entire final message is TASK_RESULT only."
+        "heartbeat only between short execs, never during a multi-hour SSH. "
+        "For training/remote jobs: detach, artifact_put a run handle, "
+        "task_block, TASK_RESULT blocked. artifact_put on this task, submit "
+        "candidate evidence with usage and a <=500 char summary when the job "
+        "is actually done, and never spawn. The entire final message is "
+        "TASK_RESULT only."
     ),
     "luna-verifier": (
         "You are an independent Luna leaf. Review review_target_task_id. Never "

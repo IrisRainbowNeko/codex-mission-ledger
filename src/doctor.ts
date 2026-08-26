@@ -1,23 +1,16 @@
 #!/usr/bin/env node
 
-import {
-  accessSync,
-  constants,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-} from "node:fs";
+import { accessSync, constants, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
-import { spawnSync } from "node:child_process";
 import { loadConfig } from "./config.js";
 import { ControlPlane } from "./control-plane.js";
 import { ControlPlaneDatabase } from "./infra/database.js";
 import { ArtifactStore } from "./infra/artifact-store.js";
 import { Repository } from "./infra/repository.js";
 import { createMcpServer } from "./mcp/server.js";
+import { mkdirPrivate } from "./platform.js";
+import { formatPythonInvocation, resolvePythonInvocation, spawnPython } from "./python.js";
 import {
   defaultUserInstallPaths,
   packageRootFromModule,
@@ -67,6 +60,7 @@ check("Project layout", () => {
     ".codex/config.toml",
     ".codex/hooks.json",
     ".codex/hooks/pre_coordinator_tools.py",
+    ".codex/hooks/run_hook.mjs",
     ".codex/agents/terra-coordinator.toml",
     ".codex/agents/luna-producer.toml",
     ".codex/agents/luna-verifier.toml",
@@ -103,11 +97,12 @@ check("MCP project configuration", () => {
 });
 
 check("Python hook runtime", () => {
-  const result = spawnSync("python3", ["--version"], { encoding: "utf8" });
+  const python = resolvePythonInvocation();
+  const result = spawnPython(["--version"], { encoding: "utf8" }, python);
   if (result.status !== 0) {
-    throw new Error(result.stderr || "python3 is unavailable.");
+    throw new Error(String(result.stderr || result.error?.message || "Python is unavailable."));
   }
-  return (result.stdout || result.stderr).trim();
+  return `${formatPythonInvocation(python)} ${(result.stdout || result.stderr).toString().trim()}`;
 });
 
 if (userMode) {
@@ -147,7 +142,7 @@ if (userMode) {
   });
 
   check("User control-plane state directory", () => {
-    mkdirSync(layout.stateDirectory, { recursive: true, mode: 0o700 });
+    mkdirPrivate(layout.stateDirectory);
     accessSync(layout.stateDirectory, constants.R_OK | constants.W_OK);
     return layout.stateDirectory;
   });
@@ -187,9 +182,9 @@ check("Codex TOML syntax", () => {
     "    with open(path, 'rb') as stream:",
     "        tomllib.load(stream)",
   ].join("\n");
-  const result = spawnSync("python3", ["-c", source, ...files], { encoding: "utf8" });
+  const result = spawnPython(["-c", source, ...files], { encoding: "utf8" });
   if (result.status !== 0) {
-    throw new Error(result.stderr || "Failed to parse Codex TOML.");
+    throw new Error(String(result.stderr || "Failed to parse Codex TOML."));
   }
   return `${files.length} TOML files parsed`;
 });
@@ -207,7 +202,7 @@ check("SQLite runtime", () => {
 });
 
 check("Control-plane storage", () => {
-  mkdirSync(config.homeDirectory, { recursive: true, mode: 0o700 });
+  mkdirPrivate(config.homeDirectory);
   accessSync(config.homeDirectory, constants.R_OK | constants.W_OK);
   return config.homeDirectory;
 });
