@@ -80,9 +80,11 @@ Then:
    hooks at startup.
 2. Open **any** project folder and trust the workspace if prompted.
 3. Start a **new** Codex chat (old threads do not reload user config).
-4. Confirm Settings → Hooks lists Mission Ledger `PreToolUse` /
-   `SubagentStart` / `SubagentStop` commands. If the page is still empty,
-   the App is still on the previous `config.toml`.
+4. Confirm Settings → Hooks lists Mission Ledger commands under
+   **From Config**. ChatGPT only queries hooks after a **local project
+   folder** is open (step 2). The home / projectless screen stays on
+   “No hooks found” even when `config.toml` is correct; MCP can still
+   show. Click the Hooks refresh control. Rows may be labeled Hook 1…5.
 5. Run `/hooks`. Review and **trust** the Mission Ledger for Codex command hooks.
    User-level command hooks are skipped until trusted; MCP can still work while
    spawn policy, start injection, and stop checks are inactive. The command

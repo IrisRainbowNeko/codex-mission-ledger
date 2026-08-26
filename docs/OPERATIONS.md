@@ -194,15 +194,20 @@ enumerates skills at session start from the **workspace root**.
 
 ### ChatGPT App Settings shows no hooks
 
-Settings → Hooks lists inline `[[hooks.*]]` in `config.toml` and enabled
-plugin hooks. It does not list `~/.codex/hooks.json`. MCP can appear under
-Plugins while Hooks stays empty if only JSON hooks were installed.
+Mission Ledger hooks live in user `config.toml`. Codex `hooks/list` returns
+them for any folder. ChatGPT Settings → Hooks still stays empty on the
+home / projectless screen: that page only calls `hooks/list` after a
+**local project folder** is open. Plugins → MCPs does not have that
+requirement, so MCP can show while Hooks does not.
 
-1. From this repository run `npm run build` then `npm run install:user`.
-2. Confirm `~/.codex/config.toml` contains `[[hooks.PreToolUse]]` and
-   `run_hook.mjs` inside the `# >>> codex-mission-ledger` block.
-3. Fully quit the ChatGPT desktop app and reopen it. Start a **new** chat.
-4. Run `/hooks` and trust the Mission Ledger commands (the hash changed).
+1. Confirm `~/.codex/config.toml` contains `[[hooks.PreToolUse]]` inside
+   the `# >>> codex-mission-ledger` block.
+2. In the ChatGPT app, open a local workspace (this repo or any trusted
+   folder), not only the home composer.
+3. Open Settings → Hooks and click refresh. The five Mission Ledger
+   commands should appear under From Config (often labeled Hook 1…5).
+4. Start a **new** Codex chat in that folder, run `/hooks`, and trust
+   them. Until then they list as untrusted and spawn policy does not run.
 
 ### Spawn rejected by hook
 
