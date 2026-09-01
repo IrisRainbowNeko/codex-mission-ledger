@@ -66,8 +66,10 @@ may arrive after a request has started, and cancellation may not immediately sto
 ## User Installation
 
 The installer modifies user-level Codex configuration only when explicitly run. It registers one
-`[mcp_servers.agent_trio]` table and does not install a skill, agent profile, hook, global
-`AGENTS.md` instruction block, or root-model override.
+`[mcp_servers.agent_trio]` table and installs one explicit-only user skill that delegates to that
+tool. It does not install an agent profile, hook, global `AGENTS.md` instruction block, or
+root-model override. Child App Server threads exclude the skill and cannot recursively invoke the
+runtime.
 
 Known legacy Agent Trio files and configuration are backed up before removal. Unrelated user
 configuration must remain untouched. Review installer output and backups when migrating from V1 or

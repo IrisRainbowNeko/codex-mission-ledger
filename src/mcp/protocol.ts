@@ -236,7 +236,7 @@ export class AgentTrioMcpProtocol {
                 ? params["protocolVersion"]
                 : "2025-06-18",
             capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: "agent-trio", version: "3.0.0" },
+            serverInfo: { name: "agent-trio", version: "3.1.0" },
           });
           return;
         }

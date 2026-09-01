@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [3.1.0] - 2026-09-01
 
 ### Changed
 
@@ -49,6 +49,10 @@
 
 ### Added
 
+- An explicit-only `$agent-trio` user skill that delegates exactly once to the V3 MCP tool across
+  ChatGPT desktop, Codex IDE, and Codex CLI surfaces.
+- Paired installer, uninstaller, manifest, and doctor coverage for the MCP registration and its
+  user skill.
 - Strongly typed `thread/fork`, `thread/inject_items`, and `thread/revert` App Server bindings.
 - A non-empty coding diagnostic corpus covering a local direct task and a ten-module fanout task.
 - `strategy=auto|direct|fanout` on the MCP and CLI run requests.

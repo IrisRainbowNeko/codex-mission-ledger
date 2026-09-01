@@ -81,7 +81,12 @@ export async function runDoctor(
     if (/\$agent-trio|agent_trio|MISSION_ROUTE|task_claim/u.test(agents)) {
       throw new Error("project AGENTS.md still injects Agent Trio orchestration");
     }
-    return "no project skill, profile, or AGENTS trigger";
+    const packagedSkill = ["skills/agent-trio/SKILL.md", "skills/agent-trio/agents/openai.yaml"];
+    const missingSkill = packagedSkill.filter((path) => !existsSync(join(packageRoot, path)));
+    if (missingSkill.length > 0) {
+      throw new Error(`missing explicit user skill sources: ${missingSkill.join(", ")}`);
+    }
+    return "no recursive project integration; explicit user skill is packaged separately";
   });
 
   if (!argv.includes("--project-only")) {
@@ -135,7 +140,7 @@ export async function runDoctor(
       ok: report.problems.length === 0,
       detail:
         report.problems.length === 0
-          ? "one agent_trio MCP registration, no recursive skill/profile instructions"
+          ? "one agent_trio MCP registration and one explicit-only user skill"
           : report.problems.join("; "),
     });
     warnings.push(...report.warnings);

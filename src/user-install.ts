@@ -142,6 +142,7 @@ export function installUserScope(
   const layout = resolveUserLayout(paths);
   assertInstallable(paths);
   mkdirPrivate(layout.installDirectory);
+  const previousManifest = readManifest(layout.manifestPath);
 
   const backups: string[] = [];
 
@@ -177,17 +178,25 @@ export function installUserScope(
   }
 
   const removedLegacy = migrateLegacyFiles(layout, backups);
+  replaceUserSkill(
+    sourceSkillDirectory(paths.packageRoot),
+    layout.skillDirectory,
+    previousManifest?.files.includes(layout.skillDirectory) ?? false,
+    layout.backupDirectory,
+    backups,
+    removedLegacy,
+  );
   const manifest: InstallManifest = {
     version: 3,
     packageRoot: paths.packageRoot,
-    files: [],
+    files: [layout.skillDirectory],
     mcpExecutable: mcpExecutable(paths.packageRoot),
   };
   atomicWrite(layout.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
   return {
     layout,
-    written: [layout.configToml, layout.userAgentsMd, layout.manifestPath],
+    written: [layout.configToml, layout.skillDirectory, layout.userAgentsMd, layout.manifestPath],
     removedLegacy,
     backups,
   };
@@ -213,7 +222,9 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
   const layout = resolveUserLayout(paths);
   const problems: string[] = [];
   const warnings: string[] = [];
-  const required = [layout.configToml, layout.manifestPath];
+  const skillMd = join(layout.skillDirectory, "SKILL.md");
+  const skillMetadata = join(layout.skillDirectory, "agents", "openai.yaml");
+  const required = [layout.configToml, layout.manifestPath, skillMd, skillMetadata];
   for (const path of required) {
     if (!existsSync(path)) {
       problems.push(`missing ${path}`);
@@ -234,6 +245,25 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
     problems.push("mcp_servers.agent_trio must auto-approve its trusted local tool");
   }
 
+  const manifest = readManifest(layout.manifestPath);
+  if (!manifest?.files.includes(layout.skillDirectory)) {
+    problems.push("install manifest does not own the Agent Trio skill");
+  }
+  const skillText = readOptional(skillMd);
+  if (
+    !/^name:\s*agent-trio\s*$/mu.test(skillText) ||
+    !skillText.includes("`agent_trio` MCP tool exactly once")
+  ) {
+    problems.push("installed agent-trio skill does not delegate to the V3 MCP tool");
+  }
+  const metadataText = readOptional(skillMetadata);
+  if (!/^\s*allow_implicit_invocation:\s*false\s*$/mu.test(metadataText)) {
+    problems.push("installed agent-trio skill must be explicit-only");
+  }
+  if (!/^\s*value:\s*"agent_trio"\s*$/mu.test(metadataText)) {
+    problems.push("installed agent-trio skill must declare the agent_trio MCP dependency");
+  }
+
   const agentsText = readOptional(layout.userAgentsMd);
   if (containsAgentInstructions(agentsText)) {
     problems.push("AGENTS.md still contains Agent Trio orchestration instructions");
@@ -242,11 +272,7 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
   if (hasLegacyText(hooksText)) {
     problems.push("hooks.json still contains a legacy Agent Trio command");
   }
-  for (const path of [
-    layout.skillDirectory,
-    ...layout.legacySkillDirectories,
-    ...layout.legacyHookDirectories,
-  ]) {
+  for (const path of [...layout.legacySkillDirectories, ...layout.legacyHookDirectories]) {
     if (existsSync(path)) {
       problems.push(`legacy integration remains at ${path}`);
     }
@@ -364,6 +390,10 @@ function mcpExecutable(packageRoot: string): string {
   return join(packageRoot, "dist", "mcp", "server.js");
 }
 
+function sourceSkillDirectory(packageRoot: string): string {
+  return join(packageRoot, "skills", "agent-trio");
+}
+
 export function cleanupLegacyHooksJson(source: string): string {
   if (!hasLegacyText(source)) {
     return source;
@@ -458,6 +488,8 @@ function assertInstallable(paths: UserInstallPaths): void {
   const required = [
     join(paths.packageRoot, "package.json"),
     join(paths.packageRoot, "src", "mcp", "server.ts"),
+    join(sourceSkillDirectory(paths.packageRoot), "SKILL.md"),
+    join(sourceSkillDirectory(paths.packageRoot), "agents", "openai.yaml"),
   ];
   const missing = required.filter((path) => !existsSync(path));
   if (missing.length > 0) {
@@ -467,7 +499,6 @@ function assertInstallable(paths: UserInstallPaths): void {
 
 function migrateLegacyFiles(layout: UserInstallLayout, backups: string[]): string[] {
   const paths = [
-    layout.skillDirectory,
     ...layout.legacySkillDirectories,
     ...layout.legacyHookDirectories,
     ...layout.legacyManifestPaths,
@@ -483,6 +514,25 @@ function migrateLegacyFiles(layout: UserInstallLayout, backups: string[]): strin
     removed.push(path);
   }
   return removed;
+}
+
+function replaceUserSkill(
+  source: string,
+  destination: string,
+  previouslyManaged: boolean,
+  backupDirectory: string,
+  backups: string[],
+  removedLegacy: string[],
+): void {
+  if (existsSync(destination)) {
+    if (!previouslyManaged) {
+      backups.push(backupPath(destination, backupDirectory));
+      removedLegacy.push(destination);
+    }
+    rmSync(destination, { recursive: true, force: true });
+  }
+  mkdirPrivate(dirname(destination));
+  cpSync(source, destination, { recursive: true });
 }
 
 function splitTomlBlocks(source: string): TomlBlock[] {

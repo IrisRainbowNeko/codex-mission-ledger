@@ -37,6 +37,61 @@ replan, reviewer, protocol error, or user intervention.
 See [Benchmarking](docs/BENCHMARKING.md) for the corpus, paired runner, evidence format, and scoring
 rules.
 
+## Install
+
+Requirements:
+
+- Node.js 20 or newer.
+- `codex-cli 0.151.0` exactly.
+- Access to the configured Luna, Terra, and Sol models.
+- Git for isolated parallel writers.
+
+Install from the repository:
+
+```bash
+npm install
+npm run check
+npm run install:user
+npm run doctor:user
+```
+
+`install:user` performs two user-level changes:
+
+- registers one `[mcp_servers.agent_trio]` entry in `~/.codex/config.toml`;
+- installs the explicit-only skill at `~/.agents/skills/agent-trio`.
+
+It does not install hooks, native agent profiles, a global `AGENTS.md`, or change the selected root
+model. The skill contains no scheduler or planning logic; it delegates once to the MCP runtime and
+is not loaded for ordinary prompts.
+
+Restart the ChatGPT desktop app, reload the VS Code Codex extension, and start a new Codex CLI
+session after installation. The MCP registration is shared by all three local Codex clients.
+
+Verify `agent_trio` with `/mcp` in the ChatGPT desktop app or Codex CLI, or with **MCP servers** in
+the VS Code Codex extension. Then invoke it explicitly:
+
+```text
+# ChatGPT desktop app in Codex, VS Code Codex, or interactive Codex CLI
+$agent-trio implement this feature and run the relevant tests
+```
+
+For a non-interactive CLI run, keep the `$` inside single quotes:
+
+```bash
+codex exec '$agent-trio research these alternatives and produce a comparison'
+```
+
+ChatGPT Chat and Work use `@agent-trio` instead of the Codex `$agent-trio` mention. A prompt without
+the mention uses the normal Codex path, so the user decides when to pay the orchestration overhead.
+
+Useful installation commands:
+
+```bash
+npm run install:user -- --job-root /absolute/job/path
+npm run install:user -- --price-table /absolute/prices.json
+npm run uninstall:user
+```
+
 ## Execution Model
 
 ```text
@@ -103,42 +158,12 @@ Independent writers in a clean Git repository receive isolated temporary worktre
 are ownership-checked, combined, validated, and then applied to the original workspace. Read-only
 leaves share the request workspace. Dirty and non-Git workspaces use a single writer.
 
-## Requirements
-
-- Node.js 20 or newer.
-- `codex-cli 0.151.0` exactly.
-- Access to the configured Luna, Terra, and Sol models.
-- Git for isolated parallel writers.
-
 The default model map is:
 
 ```text
 luna  -> gpt-5.6-luna
 terra -> gpt-5.6-terra
 sol   -> gpt-5.6-sol
-```
-
-## Install
-
-```bash
-npm install
-npm run check
-npm run install:user
-npm run doctor:user
-```
-
-`install:user` registers one `[mcp_servers.agent_trio]` entry that runs the built MCP server. It
-does not install an orchestration skill, hooks, agent profiles, or a global `AGENTS.md`, and it does
-not change the selected root model.
-
-Restart Codex after changing the MCP registration.
-
-Useful installation commands:
-
-```bash
-npm run install:user -- --job-root /absolute/job/path
-npm run install:user -- --price-table /absolute/prices.json
-npm run uninstall:user
 ```
 
 ## CLI
@@ -161,9 +186,9 @@ agent-trio benchmark observations.json
 Use `--strategy auto|direct|fanout` to select routing behavior. `auto` is the default and applies
 the cost and latency gates before starting Sol Planner.
 
-## Desktop Tool
+## MCP Tool
 
-Desktop exposes one MCP tool named `agent_trio` with five actions:
+The local Codex clients expose one MCP tool named `agent_trio` with five actions:
 
 | Action   | Purpose                                                          |
 | -------- | ---------------------------------------------------------------- |

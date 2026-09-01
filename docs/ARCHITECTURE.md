@@ -395,13 +395,14 @@ coordination inside the aggregate.
 
 ## Public Boundary
 
-Desktop exposes exactly one MCP tool, `agent_trio`, with `run`, `submit`, `status`, `resume`,
-and `cancel` actions. The CLI provides the same five operations plus `benchmark`. Both call the
-same `AgentTrioService`; neither reimplements scheduling policy.
+Local Codex clients expose exactly one MCP tool, `agent_trio`, with `run`, `submit`, `status`,
+`resume`, and `cancel` actions. The CLI provides the same five operations plus `benchmark`. Both
+call the same `AgentTrioService`; neither reimplements scheduling policy.
 
-The user installer registers only that MCP server. V3 installs no orchestration skill, model
-profile, hook, or global `AGENTS.md` instructions, and it does not change the user's selected root
-model.
+The user installer registers that MCP server and installs one explicit-only user skill. The skill
+only delegates a user-selected request to the MCP and is excluded from child capability discovery.
+V3 installs no model profile, hook, or global `AGENTS.md` instructions, and it does not change the
+user's selected root model.
 
 ## Explicit Non-Goals
 

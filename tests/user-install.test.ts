@@ -69,7 +69,7 @@ enabled = true
     expect(mergeUserConfig(merged, options)).toBe(merged);
   });
 
-  it("migrates V1/V2 without installing skills, profiles, or AGENTS instructions", () => {
+  it("migrates V1/V2 to one explicit skill without profiles or AGENTS instructions", () => {
     const paths = temporaryPaths();
     const layout = resolveUserLayout(paths);
     mkdirSync(dirname(layout.configToml), { recursive: true });
@@ -95,7 +95,12 @@ enabled = true
     expect(config).toContain("[mcp_servers.notion]");
     expect(config).not.toContain("hierarchical_codex");
     expect(agents).toBe("Keep this user rule.\n");
-    expect(existsSync(layout.skillDirectory)).toBe(false);
+    expect(readFileSync(join(layout.skillDirectory, "SKILL.md"), "utf8")).toContain(
+      "`agent_trio` MCP tool exactly once",
+    );
+    expect(readFileSync(join(layout.skillDirectory, "agents", "openai.yaml"), "utf8")).toContain(
+      "allow_implicit_invocation: false",
+    );
     expect(PROFILE_FILES).toEqual([]);
     expect(existsSync(join(layout.profileDirectory, "luna-worker.toml"))).toBe(false);
   });
@@ -112,7 +117,7 @@ enabled = true
     expect(readFileSync(personal, "utf8")).toBe('name = "personal"\n');
   });
 
-  it("uninstalls only the V3 MCP table", () => {
+  it("uninstalls only the V3 MCP table and managed explicit skill", () => {
     const paths = temporaryPaths();
     const layout = resolveUserLayout(paths);
     mkdirSync(dirname(layout.configToml), { recursive: true });
@@ -128,7 +133,40 @@ enabled = true
     expect(config).toContain('model = "gpt-5.6-sol"');
     expect(config).toContain("[mcp_servers.notion]");
     expect(config).not.toContain("mcp_servers.agent_trio");
+    expect(existsSync(layout.skillDirectory)).toBe(false);
     expect(existsSync(layout.manifestPath)).toBe(false);
+  });
+
+  it("replaces its managed skill idempotently without reporting it as legacy", () => {
+    const paths = temporaryPaths();
+    const first = installUserScope(paths);
+    const second = installUserScope(paths);
+    const layout = resolveUserLayout(paths);
+
+    expect(first.written).toContain(layout.skillDirectory);
+    expect(second.removedLegacy).not.toContain(layout.skillDirectory);
+    expect(verifyUserInstall(paths).problems).toEqual([]);
+    expect(readFileSync(join(layout.skillDirectory, "SKILL.md"), "utf8")).toContain(
+      "name: agent-trio",
+    );
+  });
+
+  it("detects an implicitly invokable installed skill", () => {
+    const paths = temporaryPaths();
+    installUserScope(paths);
+    const layout = resolveUserLayout(paths);
+    const metadata = join(layout.skillDirectory, "agents", "openai.yaml");
+    writeFileSync(
+      metadata,
+      readFileSync(metadata, "utf8").replace(
+        "allow_implicit_invocation: false",
+        "allow_implicit_invocation: true",
+      ),
+    );
+
+    expect(verifyUserInstall(paths).problems).toContain(
+      "installed agent-trio skill must be explicit-only",
+    );
   });
 
   it("removes only managed legacy hook commands", () => {
