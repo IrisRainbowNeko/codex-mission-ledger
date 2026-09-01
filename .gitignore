@@ -4,6 +4,7 @@ coverage/
 .codex-mission-ledger/
 # Legacy state path retained during migration.
 .hierarchical-codex/
+.tmp/
 *.log
 .DS_Store
 .env

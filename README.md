@@ -1,229 +1,227 @@
-# Mission Ledger for Codex
+# Agent Trio V3
 
-`codex-mission-ledger` is a deterministic MCP control plane for native Codex
-subagents. Codex still creates UI-visible Sol → Terra → Luna threads with
-`spawn_agent`; this project supplies the durable state, policy gates, budgets,
-artifacts, evidence workflow, and recovery protocol around those threads.
+Agent Trio V3 is a cost-aware multi-agent runtime built on Codex App Server. It uses Sol for
+semantic planning, Luna for most parallel execution, Terra for genuinely coupled work, and a
+deterministic TypeScript scheduler for concurrency, dependencies, budgets, recovery, and patch
+integration.
 
-Status: engineering MVP. The control plane, Codex project integration, hooks,
-tests, and operating documentation are implemented. Validate model availability
-and the exact Codex core version on every target App/IDE deployment.
+The runtime is designed around three targets relative to direct `gpt-5.6-sol/ultra`:
 
-## Design choice
+- cost at or below 40%;
+- elapsed time at or below 70%;
+- quality at or above 95%, or within 3 points.
 
-The project follows one explicit route:
+The normal path contains no mission ledger, heartbeat loop, mandatory reviewer, audit chain, or
+user continuation gate.
 
-> Model-driven spawning; code-enforced constraints.
+## Results
+
+Percentages below are Agent Trio divided by direct Sol, so lower is better. Cost is calculated from
+real token usage and the configured model price table.
+
+| Task type              | Execution path                       | Time vs Sol | Cost vs Sol | Quality V3/Sol |
+| ---------------------- | ------------------------------------ | ----------: | ----------: | -------------: |
+| Small direct coding    | One Luna-low turn                    |       49.4% |        3.5% |        100/100 |
+| Cross-module coding    | Sol-low plan + 3 Luna-medium leaves  |       63.5% |       13.7% |        100/100 |
+| Exact algorithms       | Sol plan + Luna-medium leaves        |       46.5% |       24.6% |        100/100 |
+| Frozen-source research | Sol plan + parallel Luna research    |       34.5% |        6.1% |         100/67 |
+| Paper revision         | Sol plan + parallel Luna editing     |       36.3% |       20.9% |         97/100 |
+| Spreadsheet work       | Sol-low plan + 3 Luna-low leaves     |       60.7% |       25.9% |        100/100 |
+| Auto research          | Sol plan + multi-wave Luna execution |       34.9% |        6.2% |        100/100 |
+| Six-domain macro       | Automatic direct/fanout routing      |       46.1% |       16.2% |         97-100 |
+
+The three-sample direct fast path used zero planner turns and zero leaves. The three current coding
+fanout instances each used one compact Sol plan and three Luna workers, with no Terra promotion,
+replan, reviewer, protocol error, or user intervention.
+
+See [Benchmarking](docs/BENCHMARKING.md) for the corpus, paired runner, evidence format, and scoring
+rules.
+
+## Execution Model
 
 ```text
-Codex native execution plane
-  spawn_agent / wait_agent / Subagents UI
-                  |
-                  | task_id in TaskEnvelope
-                  v
-TypeScript MCP control plane
-  SQLite task ledger / leases / budgets / artifacts / evidence / audit
-                  ^
-                  |
-Codex Skills + Profiles + Hooks
-  orchestration policy / model-effort routing / spawn veto / stop checks
+request
+  |
+  v
+zero-model cost/latency router
+  |-- small, coupled, or uneconomic --> direct Luna/Terra result
+  |
+  `-- decomposable and profitable
+          |
+          v
+      Sol ExecutionPlan
+          |
+          v
+  deterministic DAG scheduler
+    |-- Luna leaves
+    |-- Terra leaves
+    `-- at most one Sol specialist
+          |
+          v
+  local reduction or Terra integration
+          |
+          `-- optional risk-triggered Sol review
 ```
 
-MCP and hooks do not create native threads. The Sol or Terra model calls native
-`spawn_agent`; code validates and records the surrounding workflow.
+Sol decides semantic boundaries, dependencies, model floors, and integration requirements. Code
+handles launches, joins, concurrency, budgets, cancellation, recovery, and message delivery without
+rewriting Sol's task boundaries.
 
-## Implemented capabilities
+Automatic fanout requires at least two independent work packages, enough expected work to repay the
+planning turn, estimated cost no greater than 40% of direct Sol, and estimated latency no greater
+than 70%. The router selects a 2-5 leaf ceiling before planning so Sol cannot over-decompose a small
+task.
 
-- Mission and task ledgers with optimistic versions.
-- Locked mission strategy (`direct` / `fanout` / `director_plan` / `pipeline`).
-- Direct-parent role policy: Sol director → Terra coordinator → Luna leaf,
-  with `direct` allowing one root Luna.
-- Model/effort matrix (coordinators cheap, Luna expensive):
-  - Sol: `high`, `xhigh`, `max` (do not raise the parent chat for orchestration)
-  - Terra: `high` default; `xhigh`, `max` allowed
-  - Luna: `high`, `xhigh`, `max`
-- Dependency-aware readiness and bounded child allocation.
-- Expiring worker leases, heartbeats, release, and safe reclamation.
-- Hierarchical token, cost, wall-time, tool-call, and child-count budgets.
-- Content-addressed artifact storage with bounded reads.
-- Candidate → checked → verified → committed evidence gates.
-- Producer/reviewer separation.
-- Request-hashed idempotent mutations and append-only audit events.
-- Recovery snapshots after restart or context compaction.
-- Parked long jobs (`task_block` clears the lease) so GPU/remote work outlives the Codex thread.
-- Project-scoped Codex Skill, Agent profiles, MCP configuration, and hooks.
+## Model Routing
+
+| Tier  | Primary responsibility                                                               |
+| ----- | ------------------------------------------------------------------------------------ |
+| Luna  | Search, extraction, data processing, focused implementation, tests, mechanical edits |
+| Terra | Coupled multi-file work, difficult debugging, semantic integration                   |
+| Sol   | Planning, difficult algorithms, architecture, security, hidden correctness risks     |
+
+Bounded work defaults to Luna. A leaf is promoted only when its own evidence shows that stronger
+reasoning is needed; successful sibling work is retained. Sol planning, optional replanning, and
+optional final review reuse the same planner identity.
+
+## Scheduler
+
+Foreground defaults:
+
+| Limit                 | Value |
+| --------------------- | ----: |
+| Concurrent leaves     |     5 |
+| Total leaves          |     8 |
+| Dependency waves      |     3 |
+| Sol specialist leaves |     1 |
+| Sol replans           |     1 |
+
+Durable auto-research jobs can raise the total-leaf limit to 20 while retaining the same five-way
+concurrency and three-wave ceiling.
+
+Independent writers in a clean Git repository receive isolated temporary worktrees. Their patches
+are ownership-checked, combined, validated, and then applied to the original workspace. Read-only
+leaves share the request workspace. Dirty and non-Git workspaces use a single writer.
 
 ## Requirements
 
-- Node.js 22.5 or newer. Node 26 is used in development.
-- Python 3.10 or newer for Codex lifecycle hooks (`python3`, Windows `py -3`,
-  or `python`).
-- Codex 0.148.0 or newer is the recommended production baseline, with native
-  multi-agent tools, custom agents, MCP, and hooks.
-- A trusted Codex project so `.codex/config.toml` and project hooks are loaded.
-  Windows is a first-class install target (VS Code Codex + CLI).
+- Node.js 20 or newer.
+- `codex-cli 0.151.0` exactly.
+- Access to the configured Luna, Terra, and Sol models.
+- Git for isolated parallel writers.
 
-## Quick start
+The default model map is:
+
+```text
+luna  -> gpt-5.6-luna
+terra -> gpt-5.6-terra
+sol   -> gpt-5.6-sol
+```
+
+## Install
 
 ```bash
-cd "/mnt/tools/others/codes/web project/hierarchical-codex"
 npm install
 npm run check
-npm run doctor
+npm run install:user
+npm run doctor:user
 ```
 
-Then:
+`install:user` registers one `[mcp_servers.agent_trio]` entry that runs the built MCP server. It
+does not install an orchestration skill, hooks, agent profiles, or a global `AGENTS.md`, and it does
+not change the selected root model.
 
-1. Open **this repository root** in Codex App, Codex CLI, or the Codex VS Code
-   extension. `npm run doctor` does not install the skill into ChatGPT; the App
-   must use this folder as its workspace.
-2. Trust the project when prompted. Untrusted projects hide `.codex` skills.
-3. Start a **new** root conversation with `gpt-5.6-sol` (skills load at startup).
-4. Type `$` and select `agent-trio`, or invoke `$agent-trio <mission>`.
-   If the picker is empty, `AGENTS.md` still instructs the root Sol.
-5. Inspect native child activity in the Subagents UI and durable state through
-   the MCP tools.
+Restart Codex after changing the MCP registration.
 
-To use the full stack from **other folders** in the VS Code Codex extension or
-CLI, run `npm run install:user` after `npm run build`. See
-[docs/USER_INSTALL.md](docs/USER_INSTALL.md). Do not copy this repo's
-`.codex/config.toml` into `~/.codex`; that would pin Sol as the default model
-and block ordinary subagents.
-
-The project MCP configuration launches `node dist/cli.js` with the repository
-root as its working directory. Run `npm run build` after source changes.
-
-## Development commands
+Useful installation commands:
 
 ```bash
-npm run dev          # Run the stdio MCP server from TypeScript
-npm run doctor       # Validate runtime and Codex integration files
-npm run test         # Unit and integration tests
-npm run typecheck    # Strict TypeScript checks
-npm run lint         # ESLint
-npm run format       # Prettier
-npm run build        # Compile dist/
-npm run check          # Full local quality gate
-npm run install:user   # Install skill, agents, hooks, and MCP into ~/.codex
-                       # (Windows: %USERPROFILE%\.codex)
-npm run doctor:user    # Verify the user-global install
-npm run uninstall:user # Remove the managed user-global files
+npm run install:user -- --job-root /absolute/job/path
+npm run install:user -- --price-table /absolute/prices.json
+npm run uninstall:user
 ```
 
-The MCP server writes protocol messages to stdout. Application logging must use
-stderr; stdout logging corrupts stdio MCP transport.
+## CLI
 
-## Runtime state
+The CLI and Desktop MCP tool use the same runtime core.
 
-By default, state is project-local and ignored by Git:
+```bash
+agent-trio run "implement the requested feature" -C /workspace
+agent-trio run "update the report" -C /workspace --skill documents
+agent-trio run "inspect the signed-in page" -C /workspace --plugin browser@openai-bundled
 
-```text
-.codex-mission-ledger/
-├── control-plane.sqlite
-└── artifacts/
-    └── <sha-prefix>/<sha256>
+agent-trio submit "build a research dossier" -C /workspace --run-id dossier-01
+agent-trio status dossier-01
+agent-trio resume dossier-01 --input "repository permission granted"
+agent-trio cancel dossier-01
+
+agent-trio benchmark observations.json
 ```
 
-User-global install (`npm run install:user`) stores the ledger at
-`~/.local/share/codex-mission-ledger/` on POSIX and
-`%LOCALAPPDATA%\codex-mission-ledger\` on Windows so Codex MCP sandboxes can
-write it.
-If that directory is not writable, the server falls back to a temp path and
-logs the chosen home on stderr.
+Use `--strategy auto|direct|fanout` to select routing behavior. `auto` is the default and applies
+the cost and latency gates before starting Sol Planner.
 
-Configuration environment variables:
+## Desktop Tool
 
-- `CODEX_MISSION_LEDGER_HOME`
-- `CODEX_MISSION_LEDGER_DB`
-- `CODEX_MISSION_LEDGER_ARTIFACTS`
-- `CODEX_MISSION_LEDGER_MAX_ARTIFACT_BYTES`
-- `CODEX_MISSION_LEDGER_DEFAULT_LEASE_SECONDS`
-- `CODEX_MISSION_LEDGER_MAX_LEASE_SECONDS`
-- `CODEX_MISSION_LEDGER_EVENT_PAGE_SIZE`
+Desktop exposes one MCP tool named `agent_trio` with five actions:
 
-Legacy `HIERARCHICAL_CODEX_*` variables and `.hierarchical-codex` state paths
-remain accepted while existing installations migrate.
+| Action   | Purpose                                                          |
+| -------- | ---------------------------------------------------------------- |
+| `run`    | Execute a foreground request                                     |
+| `submit` | Start a durable background request                               |
+| `status` | Read the latest persisted state                                  |
+| `resume` | Continue the original App Server thread with supplied input      |
+| `cancel` | Interrupt an active run without replaying completed side effects |
 
-## MCP tools
+Child App Server threads have project instruction loading, native multi-agent orchestration, and
+recursive Agent Trio access disabled.
 
-Mission:
+## Configuration
 
-- `mission_create`
-- `mission_get`
-- `mission_close`
+| Variable                          | Purpose                                            |
+| --------------------------------- | -------------------------------------------------- |
+| `AGENT_TRIO_JOB_ROOT`             | Durable snapshot and event directory               |
+| `AGENT_TRIO_PRICE_TABLE`          | Override model price table                         |
+| `AGENT_TRIO_MODEL_PROVIDER`       | App Server provider override                       |
+| `AGENT_TRIO_SERVICE_TIER`         | Shared service tier                                |
+| `AGENT_TRIO_CODEX_PATH`           | Path to the pinned Codex executable                |
+| `AGENT_TRIO_CODEX_HOME_MODE`      | Child home: `projected`, `temporary`, or `inherit` |
+| `AGENT_TRIO_LUNA_MODEL`           | Luna model override                                |
+| `AGENT_TRIO_TERRA_MODEL`          | Terra model override                               |
+| `AGENT_TRIO_SOL_MODEL`            | Sol model override                                 |
+| `AGENT_TRIO_ALLOW_PLUGINS=1`      | Enable explicitly selected plugin capabilities     |
+| `AGENT_TRIO_PLANNER_TRANSPORT`    | Planner: `auto`, `responses`, or `app-server`      |
+| `AGENT_TRIO_PLANNER_BASE_URL`     | Responses-compatible planner endpoint              |
+| `AGENT_TRIO_PLANNER_API_KEY`      | Planner bearer credential                          |
+| `AGENT_TRIO_PLANNER_MODEL`        | Planner model override                             |
+| `AGENT_TRIO_PLANNER_SERVICE_TIER` | Planner-only service tier                          |
 
-Task and lease:
+The bundled standard-context price table is
+[`config/openai-prices.standard.json`](config/openai-prices.standard.json). Custom model names or
+providers require an explicit price table so admission and hard cost limits can be calculated before
+execution.
 
-- `task_allocate`
-- `task_get`
-- `children_status`
-- `task_claim`
-- `task_start`
-- `task_heartbeat`
-- `task_release`
-- `task_block`
-- `task_fail`
-- `task_cancel`
-- `task_supersede`
-- `task_set_effort`
-- `task_commit`
-- `results_gate_and_commit`
+The planner transport defaults to `auto`: it uses a Responses-compatible provider when configured
+and falls back to Codex App Server. Responses planning is tool-free and uses strict structured
+output.
 
-Artifacts and evidence:
+## Development
 
-- `artifact_put`
-- `artifact_get`
-- `result_submit_candidate`
-- `result_check`
-- `result_verify`
-
-Accounting and recovery:
-
-- `budget_report`
-- `recovery_snapshot`
-
-See [docs/API.md](docs/API.md) for contracts and [docs/PROTOCOL.md](docs/PROTOCOL.md)
-for the orchestration sequence.
-
-## Repository structure
-
-```text
-.agents/skills/             Codex orchestration Skill
-.codex/agents/              Sol/Terra/Luna custom profiles
-.codex/hooks/               Python policy gates
-.codex/config.toml          MCP and native agent configuration
-src/domain/                 State and policy definitions
-src/infra/                  SQLite repository and artifact storage
-src/mcp/                    MCP tool registration
-tests/                      Control-plane, policy, and hook tests
-docs/                       Architecture, protocol, operations, ADRs, records
+```bash
+npm run format:check
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npm run doctor -- --project-only
 ```
 
-## Important boundaries
-
-- External MCP code cannot call the internal native `spawn_agent` registry.
-- Hooks can deny, rewrite, or add context, but `SubagentStart` cannot prevent a
-  subagent after creation.
-- Native UI state is observational; SQLite is the durable workflow source.
-- This MVP is single-host. SQLite serializes mutations but is not a distributed
-  consensus system.
-- Token usage is reported by agents/hosts; the MCP server cannot independently
-  meter model tokens.
-- The repository is currently `UNLICENSED`; add an explicit license before
-  external distribution.
+The normal test configuration uses one Vitest worker to keep App Server fixture memory bounded.
 
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
-- [Protocol](docs/PROTOCOL.md)
-- [MCP API](docs/API.md)
-- [Codex integration](docs/CODEX_INTEGRATION.md)
-- [User-global VS Code / CLI install](docs/USER_INSTALL.md)
-- [Operations](docs/OPERATIONS.md)
-- [Security model](docs/SECURITY.md)
-- [Development guide](docs/DEVELOPMENT.md)
-- [Test strategy](docs/TESTING.md)
-- [Roadmap](ROADMAP.md)
+- [Benchmarking](docs/BENCHMARKING.md)
+- [Benchmark sources](docs/BENCHMARK_SOURCES.md)
+- [Pricing](docs/PRICING.md)
 - [Changelog](CHANGELOG.md)
-- [Implementation record](docs/records/IMPLEMENTATION_LOG.md)
-- [Architecture decisions](docs/adr/)

@@ -1,34 +1,54 @@
 {
-  "name": "codex-mission-ledger",
-  "version": "0.3.0",
+  "name": "codex-agent-trio",
+  "version": "3.0.0",
   "private": true,
-  "description": "Mission Ledger for Codex: a deterministic MCP control plane for native Codex agents.",
+  "description": "A Sol-planned, cost-aware Codex App Server multi-agent runtime.",
   "type": "module",
   "bin": {
-    "codex-mission-ledger-mcp": "./dist/cli.js",
-    "codex-mission-ledger-doctor": "./dist/doctor.js",
-    "hierarchical-codex-mcp": "./dist/cli.js",
-    "hierarchical-codex-doctor": "./dist/doctor.js"
+    "agent-trio": "./dist/cli.js",
+    "agent-trio-doctor": "./dist/doctor.js",
+    "agent-trio-install": "./dist/install-user.js",
+    "agent-trio-mcp": "./dist/mcp/server.js"
   },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/server.d.ts",
+      "import": "./dist/mcp/server.js"
     }
   },
   "files": [
     "dist",
-    ".agents",
-    ".codex",
+    "config",
+    "AGENTS.md",
     "docs",
     "README.md",
     "CHANGELOG.md"
   ],
   "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "prebuild": "npm run clean",
     "build": "tsc -p tsconfig.build.json",
-    "dev": "tsx src/cli.ts",
-    "doctor": "tsx src/doctor.ts",
-    "start": "node dist/cli.js",
+    "benchmark": "node --import tsx src/cli.ts benchmark",
+    "benchmark:generate": "node --import tsx scripts/generate-development-benchmark.ts",
+    "benchmark:generate-cross-domain": "node --import tsx scripts/generate-cross-domain-diagnostic-benchmark.ts",
+    "benchmark:generate-diagnostic": "node --import tsx scripts/generate-diagnostic-coding-benchmark.ts",
+    "benchmark:generate-economic-coding": "node --import tsx scripts/generate-economic-coding-benchmark.ts",
+    "benchmark:generate-economic-cross-domain": "node --import tsx scripts/generate-economic-cross-domain-benchmark.ts",
+    "benchmark:generate-authored-core": "node --import tsx scripts/generate-authored-core-benchmark.ts",
+    "benchmark:audit-routes": "node --import tsx scripts/audit-authored-routing.ts",
+    "benchmark:real": "node --import tsx scripts/run-real-benchmark.ts",
+    "cli": "node --import tsx src/cli.ts",
+    "doctor": "node --import tsx src/doctor.ts",
+    "mcp": "node --import tsx src/mcp/server.ts",
+    "metrics": "node --import tsx src/metrics.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
@@ -36,19 +56,15 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build",
-    "measure:tokens": "tsx scripts/measure-host-tokens.ts",
-    "install:user": "tsx src/install-user.ts",
-    "uninstall:user": "tsx src/install-user.ts --uninstall",
-    "doctor:user": "tsx src/doctor.ts --user"
+    "measure:tokens": "node --import tsx src/metrics.ts",
+    "install:user": "node --import tsx src/install-user.ts",
+    "uninstall:user": "node --import tsx src/install-user.ts --uninstall",
+    "doctor:user": "node --import tsx src/doctor.ts --user"
   },
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=20.0.0"
   },
   "license": "UNLICENSED",
-  "dependencies": {
-    "@modelcontextprotocol/server": "^2.0.0",
-    "zod": "^4.4.3"
-  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.2.0",
@@ -58,5 +74,8 @@
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.67.0",
     "vitest": "^4.1.11"
+  },
+  "dependencies": {
+    "smol-toml": "^1.8.0"
   }
 }

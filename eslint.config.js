@@ -3,7 +3,7 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["dist/**", "coverage/**", ".codex-mission-ledger/**", ".hierarchical-codex/**"],
+    ignores: ["dist/**", "coverage/**"],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,

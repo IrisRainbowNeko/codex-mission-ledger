@@ -7,35 +7,39 @@ import {
   uninstallUserScope,
   verifyUserInstall,
 } from "./user-install.js";
-import { formatPythonInvocation } from "./python.js";
 
 const packageRoot = packageRootFromModule(import.meta.url);
 const paths = defaultUserInstallPaths(packageRoot);
-const uninstall = process.argv.includes("--uninstall");
-const force = process.argv.includes("--force");
+const valueAfter = (name: string): string | undefined => {
+  const index = process.argv.indexOf(name);
+  return index < 0 ? undefined : process.argv[index + 1];
+};
+const jobRoot = valueAfter("--job-root");
+const priceTable = valueAfter("--price-table");
 
-if (uninstall) {
+if (process.argv.includes("--uninstall")) {
   const layout = uninstallUserScope(paths);
-  process.stdout.write(`Removed Mission Ledger for Codex managed files from ${layout.codexHome}\n`);
-  process.stdout.write(`Feature flags and ${layout.stateDirectory} state were kept.\n`);
+  process.stdout.write(`Removed the Agent Trio V3 MCP registration from ${layout.codexHome}.\n`);
+  process.stdout.write("Unrelated Codex settings and migration backups were preserved.\n");
 } else {
-  const result = installUserScope(paths, { force });
+  const result = installUserScope(paths, {
+    force: process.argv.includes("--force"),
+    ...(jobRoot === undefined ? {} : { jobRoot }),
+    ...(priceTable === undefined ? {} : { priceTable }),
+  });
+  process.stdout.write("Registered the single Agent Trio V3 MCP tool.\n");
   process.stdout.write(
-    "Installed Mission Ledger for Codex for Codex CLI and the VS Code extension.\n",
+    "Root model, native agent profiles, skills, and AGENTS.md were not changed.\n",
   );
-  process.stdout.write(`MCP entrypoint: ${result.layout.mcpEntrypoint}\n`);
-  process.stdout.write(`Skill: ${result.layout.skillAgents}\n`);
-  process.stdout.write(`State: ${result.layout.stateDirectory}\n`);
-  process.stdout.write(`Python: ${formatPythonInvocation(paths.python)}\n`);
-  if (result.backedUpConfig !== null) {
-    process.stdout.write(`Config backup: ${result.backedUpConfig}\n`);
+  if (result.removedLegacy.length > 0) {
+    process.stdout.write(
+      `Removed ${result.removedLegacy.length} legacy runtime paths after backup.\n`,
+    );
   }
-  for (const backup of result.backedUpConflicts) {
-    process.stdout.write(`Conflict backup: ${backup}\n`);
+  for (const backup of result.backups) {
+    process.stdout.write(`Backup: ${backup}\n`);
   }
-}
 
-if (!uninstall) {
   const report = verifyUserInstall(paths);
   for (const warning of report.warnings) {
     process.stdout.write(`WARN  ${warning}\n`);
@@ -46,12 +50,6 @@ if (!uninstall) {
     }
     process.exitCode = 1;
   } else {
-    process.stdout.write("Verification passed for files and TOML.\n");
-    process.stdout.write(
-      "Restart VS Code or fully quit the ChatGPT app, start a new Codex chat, run /hooks and trust the\n",
-    );
-    process.stdout.write(
-      "Mission Ledger for Codex commands, then /mcp and $agent-trio <mission>.\n",
-    );
+    process.stdout.write("Verification passed. Restart Codex before using Agent Trio V3.\n");
   }
 }

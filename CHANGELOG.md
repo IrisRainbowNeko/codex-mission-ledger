@@ -1,145 +1,130 @@
 # Changelog
 
-All notable changes are documented here. The project follows semantic
-versioning once releases begin.
-
-## [Unreleased]
-
-### Added
-
-- Windows install and runtime: `%LOCALAPPDATA%\codex-mission-ledger` state,
-  `USERPROFILE` / `py -3` / `python` discovery, quoted hook commands, and a
-  Node `run_hook.mjs` launcher so project and user hooks work without `python3`
-  on PATH.
+## Unreleased
 
 ### Changed
 
-- Long training and remote jobs park with `task_block` (lease cleared) instead
-  of holding `wait_agent` or an SSH exec open. `mission_close` no longer
-  cancels parked `blocked` tasks; another worker `task_claim`s them on 继续.
-- User-global installer writes lifecycle hooks as inline `config.toml`
-  `[[hooks.*]]` so ChatGPT desktop Settings → Hooks can list them. Leftover
-  Mission Ledger commands are removed from `hooks.json` to avoid double-run.
-
-### Planned
-
-- Historical success/cost router and remaining Phase 3 metrics.
-- End-to-end compatibility matrix for Codex App, CLI, and VS Code.
-- Host-authoritative token accounting.
-- Retention and artifact garbage collection.
-- Exported observability metrics.
-
-## [0.3.0] - 2026-08-23
+- Explicit low-risk independent roots now use a boundary-only Sol schema. Sol returns only the
+  path partition; TypeScript supplies independent dependencies, Luna defaults, duration, risk,
+  and deterministic integration. Ordinary and dependent DAGs keep the full semantic protocol.
+- Mechanical MCP dispatch after deterministic fanout admission now uses Luna. Direct fast-path
+  turns still choose Luna or Terra from task difficulty.
+- Low-complexity office writer leaves use Luna-low; coding writers and exact algorithms retain
+  Luna-medium.
+- The frozen dossier validator accepts an equivalent `Rank: #1, the only eligible applicant`
+  form instead of treating correct eligibility work as a quality failure.
+- Added the host-Sol fast path: a compact caller-supplied semantic plan skips the second Sol
+  planner, disables replanning, and uses deterministic reduction for low-risk fanout.
+- Clear host-planned Luna leaves now use low effort; explicit Terra and Sol floors remain
+  unchanged.
+- The real paired runner now evaluates both arms on one warm root thread and uses
+  `thread/revert` between arms, avoiding unreliable sibling-fork cache affinity.
+- Benchmark quality now has a 60-point absolute floor, so equal low-quality outputs cannot satisfy
+  the relative quality gate.
+- Replaced routine Terra admission with a zero-model economic router. Automatic fanout now requires
+  both the 40% cost and 70% latency estimates to pass; callers can still force direct or fanout.
+- The router selects a 2-5 leaf ceiling before Sol planning, and that ceiling is applied to the
+  strict output schema so oversized plans do not consume tokens before runtime compaction.
+- Luna is the default effective worker for bounded, validated leaves. Terra and Sol remain semantic
+  minimums for work that actually needs stronger reasoning.
+- Bounded direct coding/general work now uses Luna, while difficult and capability-dependent direct
+  work remains on Terra.
+- Low-risk independent read-only results can use deterministic reduction instead of a Terra
+  integration turn. Leaves without communication edges no longer load the message tool.
+- Planner workspace context, JSON prompts, leaf contracts, dependency payloads, and non-leaf budget
+  envelopes are smaller.
+- The default OpenAI model map loads the bundled standard-context price table; custom model names
+  still require explicit pricing.
+- Validator infrastructure failures are now reported as transient runtime failures. They do not
+  promote a Luna leaf, wake Sol for a semantic replan, or rerun successful sibling leaves.
+- A real validation failure retries only its failed leaf once. Same-ID `PlanPatch` replacements
+  retain the attempt count, and a capacity-invalid patch is consumed without discarding terminal
+  leaf evidence.
+- Clean-Git worktrees now live under a private temporary runtime root by default instead of inside
+  the repository's `.git` directory, keeping App Server `command/exec` compatible with bubblewrap.
+- Writer worktrees survive plan updates that change execution metadata without changing ownership,
+  dependencies, access, or the workspace contract.
+- Completed leaf status now wins over provider-filled nullable failure placeholders, while malformed
+  terminal writer payloads retain already captured model usage and timing in indeterminate results.
 
 ### Added
 
-- Adaptive mission routing: `mission_create` locks `direct`, `fanout`
-  (default), `director_plan`, or `pipeline` from a Sol `MISSION_ROUTE`
-  portrait. `direct` allows one root Luna; `fanout` caps Terra objectives at
-  2000 characters; `director_plan` stores a workspace-relative markdown path
-  (`directorPlan`) to a plan file Sol wrote in the project folder;
-  `pipeline` allows one Terra with serial Luna dependencies. Spawn policy
-  permits Sol→Luna only when the ledger row is that direct root operator.
+- Strongly typed `thread/fork`, `thread/inject_items`, and `thread/revert` App Server bindings.
+- A non-empty coding diagnostic corpus covering a local direct task and a ten-module fanout task.
+- `strategy=auto|direct|fanout` on the MCP and CLI run requests.
+- Route decisions and skipped planner/integration stages in result metrics.
+
+## [3.0.0] - 2026-08-29
+
+### Added
+
+- A TypeScript runtime over the `codex-cli 0.151.0` App Server schema.
+- Terra admission with a direct fast path and ordinary result integration.
+- Sol-generated, strict `ExecutionPlan` and one optional same-thread `PlanPatch`.
+- A deterministic three-wave DAG scheduler with five-way concurrency, deadline and cost limits,
+  bounded communication, and one-step model escalation.
+- Luna, Terra, and at most one Sol specialist leaf through concurrent App Server turns.
+- Clean-Git worktree isolation for disjoint parallel writers and single-writer enforcement for
+  dirty or non-Git workspaces.
+- Delayed application of isolated writer patches until aggregate validation and any required Sol
+  final review succeed.
+- Atomic job snapshots, remote thread/turn checkpoints, safe conditional reattachment,
+  cancellation, and a detached per-job supervisor for CLI and MCP durable submissions.
+- Same-thread `waiting_input` continuation for Terra admission/direct work, leaves, and Terra
+  integration, with optional bounded resume input and writer workspace retention.
+- Stable remote-turn usage attribution so continuation costs are neither omitted nor counted
+  twice across repeated recovery.
+- A single public `agent_trio` MCP tool with `run`, `submit`, `status`, `resume`, and `cancel`.
+- Matching `agent-trio run/submit/status/resume/cancel/benchmark` CLI commands.
+- App Server usage accounting with a user-configured price-table fallback.
+- Exact skill/plugin capability discovery, opt-in plugin support, and isolated App Server
+  processes for plugin-owned capabilities.
+- An 18-family paired A/B evaluator covering coding, algorithms, research, papers, office work,
+  and auto research.
 
 ### Changed
 
-- Product-facing package and defaults are Mission Ledger for Codex
-  (`codex-mission-ledger`). Legacy `hierarchical-codex` CLI bins, environment
-  variables, state paths, installer markers, and manifests remain accepted for
-  upgrade compatibility. The `hierarchical_codex` MCP key and `$agent-trio`
-  trigger remain stable protocol identifiers.
-- Sol/Terra wait recovery is one timeout check, not three 1-hour waits.
-  Default mission risk is `medium` unless the user asked for irreversible
-  damage. `result_submit_candidate` no longer rejects tool/time overage, and
-  `mission_close` cancels stalled tasks whose lease has expired.
-- User-global and project MCP config set
-  `default_tools_approval_mode = "approve"` so Codex Guardian skips this
-  local stdio ledger. Prompt text cannot authorize those tools.
-- `mission_close` auto-finalizes one low/medium root Terra candidate on
-  `fanout` / `director_plan` / `pipeline` after descendants are terminal, and
-  retries a stale mission `expectedVersion` once. Sol no longer needs
-  `results_gate_and_commit` to close those missions.
-- Child allocate/cancel/supersede accept a stale `expectedParentVersion` when
-  the parent lease is still valid.
-- Parent-owned running siblings reserve remaining budget, not the full original
-  reservation, so a replacement plus synthesizer can fit after a cancelled leaf.
-- Terra `wait` hook allows VS Code cell yield (`cell_id` + `max_tokens`) and
-  still denies timeout-style polls.
+- Complex planning is owned by Sol; Terra is limited to admission, direct work, and routine
+  integration.
+- Scheduling code now controls launches, dependencies, joins, budgets, recovery, cancellation, and
+  message routing without changing the plan's semantic boundaries.
+- The normal critical path is Sol planning, parallel leaves, Terra integration, and optional
+  risk-triggered review on the same Sol thread.
+- User installation now registers only `[mcp_servers.agent_trio]`. It does not change the root
+  model, native agents, skills, hooks, profiles, or global `AGENTS.md`.
+- Legacy V1 and V2 configuration is removed surgically after backup while unrelated user settings
+  are retained.
 
-## [0.2.0] - 2026-08-21
+### Removed
 
-### Added
+- The V2 prompt-only skill, model profiles, and native model-driven fanout.
+- The V1 mission ledger, SQLite workflow, leases, heartbeats, claims, evidence gates, mandatory
+  reviewers, forced synthesizer, and user continuation protocol.
+- Recursive Agent Trio access and project instruction loading from child App Server threads.
 
-- Terra PreToolUse hook blocks coordinator babysitting (`wait`, `list_agents`,
-  `send_message`, `followup_task`) and short `wait_agent` polls. Sol stays
-  skill-only so ordinary root chats keep those tools.
-- Compact `children_status` MCP tool for one post-wait child snapshot.
-- `results_gate_and_commit` records check + verify + commit in one call for
-  low/medium risk only. Gates are not skipped.
-- Host token measurer: `npx tsx scripts/measure-host-tokens.ts <parent-session-id>`.
+### Release Status
+
+- The implementation and benchmark evaluator are present.
+- The 70% time, 40% cost, and 95%-or-3-point quality thresholds remain release acceptance targets;
+  this changelog does not claim that a complete paired benchmark has passed.
+
+## [2.0.0] - 2026-08-28
 
 ### Changed
 
-- Coordinators are cheap: Terra spawn effort defaults to `high` (still may
-  use `xhigh`/`max`). Terra sandbox is read-only; a Luna synthesizer writes
-  the user-facing deliverable. Sol `artifact_get` / file I/O is out of the
-  happy path. Target host token mass is Luna 82 · Terra 13 · Sol 5.
-- `result_submit_candidate.summary` is capped at 500 characters. SubagentStop
-  accepts only a compact `TASK_RESULT` block so `wait_agent` does not re-inject
-  reports into parent transcripts.
-- Luna verifier is default-off for low/medium deterministic work.
-- Coordinator leases: default remains 15 minutes; maximum default is 4 hours
-  so Terra can `wait_agent` without a heartbeat poll loop. Terra should pass
-  `leaseSeconds=14400` on claim/start/pre-wait heartbeat.
-- Luna verifier protocol is now one path: Terra does not allocate a verifier
-  task; spawn with `review_target_task_id`, and the verifier only
-  `result_check`s the producer candidate. Spawn policy requires that field.
-- `artifact_put` and `result_submit_candidate` tool text now match the schema
-  (no extra `missionId`; same-task artifact refs; report actual `usage`).
-- User-install backups go to `~/.codex/hierarchical-codex/backups/` instead of
-  sibling `.bak-*` folders under `skills/`, which Codex was loading.
-- Skill invocation is `$agent-trio` (was `$prism` / `$sol-terra-luna`). Reinstall
-  removes the old skill folders so Codex does not list both.
-
-### Fixed
-
-- Codex MCP sandboxes treat `~/.codex` as read-only, so `mission_create` failed
-  with a generic `internal_error` (`attempt to write a readonly database`).
-  User-global state now lives under `~/.local/share/hierarchical-codex`, the
-  server falls back to a temp directory when that path is not writable, and
-  SQLite write failures return `forbidden` with the database path.
-- `serveStdio()` returns a connection handle, not a Promise. The MCP entrypoint
-  awaited it and closed SQLite in `finally` before any tool call, so
-  `mission_create` failed with `database is not open`.
-
-## [0.1.0] - 2026-08-20
+- Replaced the V1 durable mission ledger with a thin prompt-driven native fanout experiment.
+- Routed routine packages to Luna and Terra while reserving difficult reasoning for Sol.
+- Changed optimization from a fixed model token ratio to measured time, model-priced cost, and
+  quality constraints.
 
 ### Added
 
-- Native-Codex hierarchical orchestration Skill.
-- Sol, Terra, Luna producer, and Luna verifier Agent profiles.
-- Spawn-policy, subagent-start, and durable-stop hooks.
-- TypeScript MCP v2 stdio server.
-- SQLite mission/task/evidence/audit schema.
-- Direct parent-child role and model/effort policy.
-- Optimistic versions, leases, heartbeats, reclaim, and idempotency.
-- Explicit fail, cancel, and supersede lifecycle operations.
-- Parent-authorized per-task reasoning-effort adjustment.
-- Hierarchical budget reservation and reported usage enforcement.
-- Content-addressed artifact storage.
-- Candidate/check/verify/commit evidence gates.
-- Dependency readiness and recovery snapshots.
-- Automated policy, control-plane, and hook tests.
-- Doctor command and complete engineering documentation.
-- Dual skill discovery paths (`.codex/skills` and `.agents/skills`) plus root `AGENTS.md`.
-- User-global installer for Codex CLI / VS Code (`npm run install:user`) with
-  idempotent TOML merge, an install manifest, and hook-trust documentation.
-- V1/V2-aware no-context fork validation and fail-closed malformed hook input.
-- Idempotency request hashes with a schema v1 → v2 migration.
+- Host session-tree metrics and an initial controlled benchmark protocol.
+- Precise legacy migration intended to preserve unrelated Codex configuration.
 
-### Security
+V2 is retired and is not compatible with the V3 App Server runtime.
 
-- Bounded artifact input and reads.
-- No arbitrary filesystem artifact registration.
-- Producer/reviewer separation.
-- Strict Luna leaf enforcement at the spawn hook.
+## [0.x] - Retired
+
+The 0.x series implemented the mission-ledger architecture. Its lifecycle tools, database, hooks,
+and orchestration protocol are migration inputs only and are not part of V3.

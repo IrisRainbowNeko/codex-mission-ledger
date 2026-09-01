@@ -1,597 +1,169 @@
-import { McpServer } from "@modelcontextprotocol/server";
-import * as z from "zod/v4";
-import type {
-  ArtifactPutInput,
-  BudgetReportInput,
-  ClaimTaskInput,
-  CommitTaskInput,
-  GateAndCommitInput,
-  LeaseActionInput,
-  MissionCloseInput,
-  MissionCreateInput,
-  ReviewInput,
-  SubmitCandidateInput,
-  TaskAllocateInput,
-  TaskBlockInput,
-  TaskCancelInput,
-  TaskEffortInput,
-  TaskFailInput,
-  TaskHeartbeatInput,
-  TaskReleaseInput,
-  TaskSupersedeInput,
-} from "../control-plane.js";
-import type { ControlPlane } from "../control-plane.js";
-import { isControlPlaneError } from "../domain/errors.js";
-import { mapSqliteError } from "../infra/database.js";
-import {
-  AGENT_ROLES,
-  MISSION_STRATEGIES,
-  MODEL_TIERS,
-  PORTRAIT_LEVELS,
-  REASONING_EFFORTS,
-  RISK_LEVELS,
-  VALIDATOR_STRENGTHS,
-} from "../domain/types.js";
+import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
+import type { Readable, Writable } from "node:stream";
+import { fileURLToPath } from "node:url";
+import { isMainThread } from "node:worker_threads";
+import type { AgentTrioRequest, BatchResult } from "../core/contracts.js";
+import type { AgentTrioService } from "../core/service.js";
+import { launchDetachedSupervisor, type SubmitRequest } from "../supervisor.js";
+import { AgentTrioMcpProtocol } from "./protocol.js";
+import { MCP_ROOT_DISPATCH_CONSTRAINT } from "../core/router.js";
 
-const id = z.string().trim().min(1).max(200);
-const idempotencyKey = z.string().trim().min(8).max(200);
-const text = z.string().trim().min(1).max(20_000);
-const shortText = z.string().trim().min(1).max(500);
-const stringList = z.array(z.string().trim().min(1).max(2_000)).max(500);
-const risk = z.enum(RISK_LEVELS);
-const strategy = z.enum(MISSION_STRATEGIES);
-const portrait = z
-  .object({
-    ambiguity: z.enum(PORTRAIT_LEVELS),
-    coupling: z.enum(PORTRAIT_LEVELS),
-    parallelism: z.enum(PORTRAIT_LEVELS),
-    validator: z.enum(VALIDATOR_STRENGTHS),
-  })
-  .strict();
-const role = z.enum(AGENT_ROLES);
-const model = z.enum(MODEL_TIERS);
-const effort = z.enum(REASONING_EFFORTS);
-const jsonObject = z.record(z.string(), z.json());
-const budget = z
-  .object({
-    tokens: z.number().nonnegative().optional(),
-    costUsd: z.number().nonnegative().optional(),
-    wallClockSeconds: z.number().nonnegative().optional(),
-    toolCalls: z.number().nonnegative().optional(),
-    maxChildren: z.number().int().nonnegative().optional(),
-  })
-  .strict();
-const usage = z
-  .object({
-    tokens: z.number().nonnegative().optional(),
-    costUsd: z.number().nonnegative().optional(),
-    wallClockSeconds: z.number().nonnegative().optional(),
-    toolCalls: z.number().nonnegative().optional(),
-  })
-  .strict();
-const leaseFields = {
-  taskId: id,
-  workerId: id,
-  leaseToken: id,
-  expectedVersion: z.number().int().positive(),
-  idempotencyKey,
-};
-const reviewFields = {
-  taskId: id,
-  reviewerId: id,
-  expectedVersion: z.number().int().positive(),
-  approved: z.boolean(),
-  evidenceRefs: z.array(id).max(500).optional(),
-  notes: text,
-  idempotencyKey,
-};
+export type McpService = Pick<AgentTrioService, "handle">;
 
-function success(data: unknown) {
-  const body = { ok: true, data };
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify(body) }],
-    structuredContent: body,
-  };
+export interface AgentTrioMcpRuntime {
+  service: McpService;
+  close?: () => void | Promise<void>;
 }
 
-function failure(error: unknown) {
-  const mapped = mapSqliteError(error, "control-plane sqlite");
-  if (isControlPlaneError(mapped)) {
-    const body = {
-      ok: false,
-      error: {
-        code: mapped.code,
-        message: mapped.message,
-        details: mapped.details,
-      },
-    };
-    return {
-      content: [{ type: "text" as const, text: JSON.stringify(body) }],
-      structuredContent: body,
-      isError: true,
-    };
-  }
+export type CreateDefaultMcpRuntime = () => AgentTrioMcpRuntime | Promise<AgentTrioMcpRuntime>;
 
-  console.error("Unexpected Mission Ledger for Codex control-plane error:", error);
-  const message = error instanceof Error ? error.message : String(error);
-  const code =
-    error !== null && typeof error === "object" && "code" in error ? String(error.code) : "";
-  const body = {
-    ok: false,
-    error: {
-      code: "internal_error",
-      message:
-        message.length > 0
-          ? `The control plane encountered an unexpected internal error: ${message}`
-          : "The control plane encountered an unexpected internal error.",
-      details: code.length > 0 ? { errorCode: code } : {},
-    },
-  };
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify(body) }],
-    structuredContent: body,
-    isError: true,
-  };
+export type McpSupervisorLauncher = (request: SubmitRequest) => Promise<BatchResult>;
+export type McpRunIdGenerator = () => string;
+
+export interface McpDispatchOptions {
+  launchSupervisor?: McpSupervisorLauncher;
+  generateRunId?: McpRunIdGenerator;
+  workspaceRoots?: readonly string[];
 }
 
-function run(operation: () => unknown) {
-  try {
-    return success(operation());
-  } catch (error) {
-    return failure(error);
-  }
+export interface RunMcpStdioOptions extends McpDispatchOptions {
+  createRuntime?: CreateDefaultMcpRuntime;
+  input?: Readable;
+  output?: Writable;
+  errorOutput?: Pick<Writable, "write">;
 }
 
-export function createMcpServer(controlPlane: ControlPlane): McpServer {
-  const server = new McpServer({
-    name: "Mission Ledger for Codex",
-    version: "0.2.0",
+/** Create the V3 stdio protocol around the shared service instance. */
+export function createMcpServer(
+  service: McpService,
+  input: Readable = process.stdin,
+  output: Writable = process.stdout,
+  errorOutput: Pick<Writable, "write"> = process.stderr,
+  dispatchOptions: McpDispatchOptions = {},
+): AgentTrioMcpProtocol {
+  return new AgentTrioMcpProtocol({
+    service: createDispatchService(service, dispatchOptions),
+    input,
+    output,
+    onError: (error) => errorOutput.write(`${error.stack ?? error.message}\n`),
+    ...(dispatchOptions.workspaceRoots === undefined
+      ? {}
+      : { workspaceRoots: dispatchOptions.workspaceRoots }),
   });
+}
 
-  server.registerTool(
-    "mission_create",
-    {
-      title: "Create mission",
-      description:
-        "Create the durable mission record before spawning agents. strategy is locked at create (default fanout). directorPlan is required only for director_plan: a workspace-relative .md path to the plan file Sol wrote in the project folder. Forbidden otherwise.",
-      inputSchema: z
-        .object({
-          objective: text,
-          constraints: stringList.optional(),
-          successCriteria: stringList.min(1),
-          risk,
-          strategy: strategy.optional(),
-          portrait: portrait.optional(),
-          directorPlan: z.string().max(200).optional(),
-          budget: budget.optional(),
-          actorId: id,
-          idempotencyKey,
-        })
-        .strict(),
-    },
-    async (input) => run(() => controlPlane.createMission(input as MissionCreateInput)),
+interface RuntimeModule {
+  createDefaultRuntime: CreateDefaultMcpRuntime;
+}
+
+export async function loadDefaultMcpRuntime(): Promise<AgentTrioMcpRuntime> {
+  // Keep construction in the runtime module so CLI and MCP share one service core.
+  const runtimeModuleUrl = new URL("../runtime.js", import.meta.url).href;
+  const loaded: unknown = await import(runtimeModuleUrl);
+  if (!isRuntimeModule(loaded)) {
+    throw new Error("src/runtime.ts must export createDefaultRuntime()");
+  }
+  return normalizeRuntime(await loaded.createDefaultRuntime());
+}
+
+export async function runMcpStdio(options: RunMcpStdioOptions = {}): Promise<void> {
+  const runtime = normalizeRuntime(await (options.createRuntime ?? loadDefaultMcpRuntime)());
+  try {
+    const protocol = createMcpServer(
+      runtime.service,
+      options.input ?? process.stdin,
+      options.output ?? process.stdout,
+      options.errorOutput ?? process.stderr,
+      options,
+    );
+    await protocol.run();
+  } finally {
+    await runtime.close?.();
+  }
+}
+
+export const main = runMcpStdio;
+
+function isRuntimeModule(value: unknown): value is RuntimeModule {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "createDefaultRuntime" in value &&
+    typeof value.createDefaultRuntime === "function"
   );
+}
 
-  server.registerTool(
-    "mission_get",
-    {
-      title: "Get mission",
-      description:
-        "Read a mission and optionally its task, artifact, claim, and review state. Treat this result as authoritative over chat summaries. The mission row includes strategy, portrait, and directorPlan (workspace-relative plan file path) even when includeDetails is false.",
-      inputSchema: z
-        .object({
-          missionId: id,
-          includeDetails: z.boolean().default(true),
-        })
-        .strict(),
+function normalizeRuntime(value: AgentTrioMcpRuntime): AgentTrioMcpRuntime {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    typeof value.service !== "object" ||
+    value.service === null ||
+    typeof value.service.handle !== "function"
+  ) {
+    throw new Error("createDefaultRuntime() must return { service, close? }");
+  }
+  if (value.close !== undefined && typeof value.close !== "function") {
+    throw new Error("createDefaultRuntime() close must be a function when provided");
+  }
+  return value;
+}
+
+function createDispatchService(service: McpService, options: McpDispatchOptions): McpService {
+  const launchSupervisor = options.launchSupervisor ?? defaultSupervisorLauncher;
+  const generateRunId = options.generateRunId ?? randomUUID;
+  return {
+    handle: async (request: AgentTrioRequest): Promise<BatchResult> => {
+      if (request.action !== "submit") {
+        return service.handle(markInternalPlannerDispatch(request));
+      }
+      const dispatched = markInternalPlannerDispatch(request);
+      const runId = request.runId ?? generateRunId();
+      if (runId.trim().length === 0 || runId.length > 128) {
+        throw new Error("generated runId must be a non-empty string up to 128 characters");
+      }
+      return launchSupervisor({ ...dispatched, action: "submit", runId });
     },
-    async ({ missionId, includeDetails }) =>
-      run(() => controlPlane.getMission(missionId, includeDetails)),
-  );
+  };
+}
 
-  server.registerTool(
-    "mission_close",
-    {
-      title: "Close mission",
-      description:
-        "Complete a mission only after every task is terminal. Failed tasks require an explicit acceptance decision.",
-      inputSchema: z
-        .object({
-          missionId: id,
-          actorId: id,
-          expectedVersion: z.number().int().positive(),
-          acceptFailedTasks: z.boolean().optional(),
-          idempotencyKey,
-        })
-        .strict(),
-    },
-    async (input) => run(() => controlPlane.closeMission(input as MissionCloseInput)),
-  );
+export function markInternalPlannerDispatch<T extends AgentTrioRequest>(request: T): T {
+  if (
+    (request.action !== "run" && request.action !== "submit") ||
+    request.strategy === "direct" ||
+    request.semanticPlan !== undefined
+  ) {
+    return request;
+  }
+  const constraints = request.constraints ?? [];
+  if (constraints.includes(MCP_ROOT_DISPATCH_CONSTRAINT)) {
+    return request;
+  }
+  return { ...request, constraints: [...constraints, MCP_ROOT_DISPATCH_CONSTRAINT] } as T;
+}
 
-  server.registerTool(
-    "task_allocate",
-    {
-      title: "Allocate task",
-      description:
-        "Allocate a policy-checked work package before native spawn_agent. Put the returned task_id into the child's prompt. Root role depends on mission.strategy: fanout/director_plan/pipeline require Terra; direct allows one root Luna. fanout Terra objective max 2000 characters.",
-      inputSchema: z
-        .object({
-          missionId: id,
-          parentTaskId: id.nullable().optional(),
-          expectedParentVersion: z.number().int().positive().optional(),
-          parentLeaseToken: id.optional(),
-          objective: text,
-          role,
-          model,
-          reasoningEffort: effort,
-          maxEffort: effort.optional(),
-          capabilityPack: shortText,
-          dependencies: z.array(id).max(500).optional(),
-          inputArtifactRefs: z.array(id).max(500).optional(),
-          allowedTools: stringList.optional(),
-          doneCriteria: stringList.min(1),
-          outputSchema: jsonObject.nullable().optional(),
-          risk,
-          budget: budget.optional(),
-          actorId: id,
-          idempotencyKey,
-        })
-        .strict(),
-    },
-    async (input) => run(() => controlPlane.allocateTask(input as TaskAllocateInput)),
-  );
+function defaultSupervisorLauncher(request: SubmitRequest): Promise<BatchResult> {
+  return launchDetachedSupervisor(request, {
+    modulePath: fileURLToPath(new URL("../cli.js", import.meta.url)),
+  });
+}
 
-  server.registerTool(
-    "task_get",
-    {
-      title: "Get task",
-      description:
-        "Read the authoritative task version, lease, assignment, inputs, budget, and status before mutating it.",
-      inputSchema: z.object({ taskId: id }).strict(),
-    },
-    async ({ taskId }) => run(() => controlPlane.getTask(taskId)),
-  );
+function isEntrypoint(): boolean {
+  if (!isMainThread || process.argv[1] === undefined) {
+    return false;
+  }
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
 
-  server.registerTool(
-    "children_status",
-    {
-      title: "List compact child status",
-      description:
-        "Read direct children of a coordinator task as compact status rows (ids, status, version, summary, leaseExpired). Call once after wait_agent. Do not poll with task_get. If leaseExpired, cancel instead of waiting again.",
-      inputSchema: z.object({ parentTaskId: id }).strict(),
-    },
-    async ({ parentTaskId }) => run(() => controlPlane.childrenStatus(parentTaskId)),
-  );
-
-  server.registerTool(
-    "task_claim",
-    {
-      title: "Claim task",
-      description:
-        "Atomically claim a ready task, reclaim an expired leased/running/blocked lease, or resume a parked blocked task with no live lease. The returned lease token is required for worker mutations.",
-      inputSchema: z
-        .object({
-          taskId: id,
-          workerId: id,
-          expectedVersion: z.number().int().positive(),
-          leaseSeconds: z.number().int().positive().optional(),
-          idempotencyKey,
-        })
-        .strict(),
-    },
-    async (input) => run(() => controlPlane.claimTask(input as ClaimTaskInput)),
-  );
-
-  server.registerTool(
-    "task_start",
-    {
-      title: "Start task",
-      description: "Move a leased task to running and establish its result producer.",
-      inputSchema: z.object(leaseFields).strict(),
-    },
-    async (input) => run(() => controlPlane.startTask(input as LeaseActionInput)),
-  );
-
-  server.registerTool(
-    "task_heartbeat",
-    {
-      title: "Renew task lease",
-      description:
-        "Renew an active lease. Use this during long tool calls; an expired lease may be reclaimed by another worker.",
-      inputSchema: z
-        .object({
-          ...leaseFields,
-          leaseSeconds: z.number().int().positive().optional(),
-        })
-        .strict(),
-    },
-    async (input) => run(() => controlPlane.heartbeatTask(input as TaskHeartbeatInput)),
-  );
-
-  server.registerTool(
-    "task_release",
-    {
-      title: "Release task",
-      description:
-        "Return a leased/running/blocked task to ready when the current worker cannot continue. Include a concrete reason.",
-      inputSchema: z.object({ ...leaseFields, reason: text }).strict(),
-    },
-    async (input) => run(() => controlPlane.releaseTask(input as TaskReleaseInput)),
-  );
-
-  server.registerTool(
-    "task_block",
-    {
-      title: "Block task",
-      description:
-        "Park a task on an external job (training, remote eval) or a true blocker. Clears the lease so the Codex thread can exit. Put the run handle in an artifact first. Resume later with task_claim. Do not hold an SSH/train exec open for hours.",
-      inputSchema: z.object({ ...leaseFields, reason: text }).strict(),
-    },
-    async (input) => run(() => controlPlane.blockTask(input as TaskBlockInput)),
-  );
-
-  server.registerTool(
-    "task_fail",
-    {
-      title: "Fail task",
-      description:
-        "Record a definitive worker failure, clear its lease, and charge final usage. Future sibling allocation counts actual failed usage instead of the full reservation.",
-      inputSchema: z
-        .object({
-          ...leaseFields,
-          reason: text,
-          usage: usage.optional(),
-        })
-        .strict(),
-    },
-    async (input) => run(() => controlPlane.failTask(input as TaskFailInput)),
-  );
-
-  server.registerTool(
-    "task_cancel",
-    {
-      title: "Cancel task",
-      description:
-        "Cancel a non-terminal task after its direct children are terminal. Child cancellation requires the running direct parent's version and lease token.",
-      inputSchema: z
-        .object({
-          taskId: id,
-          actorId: id,
-          expectedVersion: z.number().int().positive(),
-          reason: text,
-          expectedParentVersion: z.number().int().positive().optional(),
-          parentLeaseToken: id.optional(),
-          idempotencyKey,
-        })
-        .strict(),
-    },
-    async (input) => run(() => controlPlane.cancelTask(input as TaskCancelInput)),
-  );
-
-  server.registerTool(
-    "task_supersede",
-    {
-      title: "Supersede failed task",
-      description:
-        "Link a failed task to a viable sibling replacement for audit and closure. Child supersession requires direct-parent authority.",
-      inputSchema: z
-        .object({
-          taskId: id,
-          replacementTaskId: id,
-          actorId: id,
-          expectedVersion: z.number().int().positive(),
-          reason: text,
-          expectedParentVersion: z.number().int().positive().optional(),
-          parentLeaseToken: id.optional(),
-          idempotencyKey,
-        })
-        .strict(),
-    },
-    async (input) => run(() => controlPlane.supersedeTask(input as TaskSupersedeInput)),
-  );
-
-  server.registerTool(
-    "task_set_effort",
-    {
-      title: "Set task reasoning effort",
-      description:
-        "Change model reasoning effort while a task is ready and unleased, within its recorded maximum. Child changes require direct-parent authority.",
-      inputSchema: z
-        .object({
-          taskId: id,
-          actorId: id,
-          expectedVersion: z.number().int().positive(),
-          reasoningEffort: effort,
-          reason: text,
-          expectedParentVersion: z.number().int().positive().optional(),
-          parentLeaseToken: id.optional(),
-          idempotencyKey,
-        })
-        .strict(),
-    },
-    async (input) => run(() => controlPlane.setTaskEffort(input as TaskEffortInput)),
-  );
-
-  server.registerTool(
-    "artifact_put",
-    {
-      title: "Store artifact",
-      description:
-        "Store bounded content in the content-addressed artifact store. Required fields are taskId, actorId, kind, mimeType, content, encoding, and idempotencyKey. Do not send missionId. Return artifact references instead of copying large content into agent messages.",
-      inputSchema: z
-        .object({
-          taskId: id,
-          actorId: id,
-          kind: shortText,
-          mimeType: shortText,
-          content: z.string().max(8_000_000),
-          encoding: z.enum(["utf8", "base64"]),
-          metadata: jsonObject.optional(),
-          idempotencyKey,
-        })
-        .strict(),
-    },
-    async (input) => run(() => controlPlane.putArtifact(input as ArtifactPutInput)),
-  );
-
-  server.registerTool(
-    "artifact_get",
-    {
-      title: "Read artifact",
-      description:
-        "Read a bounded prefix of an artifact by ID. Prefer targeted retrieval over loading full artifacts.",
-      inputSchema: z
-        .object({
-          artifactId: id,
-          encoding: z.enum(["utf8", "base64"]).default("utf8"),
-          maxBytes: z.number().int().positive().max(1_000_000).default(65_536),
-        })
-        .strict(),
-    },
-    async ({ artifactId, encoding, maxBytes }) =>
-      run(() => controlPlane.getArtifact(artifactId, encoding, maxBytes)),
-  );
-
-  server.registerTool(
-    "result_submit_candidate",
-    {
-      title: "Submit candidate result",
-      description:
-        "Submit a worker result as candidate only. This closes the producer lease; a different reviewer must check it. artifactRefs must belong to this taskId — call artifact_put on the same task first, and do not attach child-task artifacts. Include actual usage when known. summary max 500 characters.",
-      inputSchema: z
-        .object({
-          ...leaseFields,
-          summary: shortText,
-          artifactRefs: z.array(id).max(500),
-          claims: z
-            .array(
-              z
-                .object({
-                  statement: text,
-                  confidence: z.number().min(0).max(1).nullable().optional(),
-                  evidenceRefs: z.array(id).max(500).optional(),
-                  artifactId: id.nullable().optional(),
-                })
-                .strict(),
-            )
-            .max(500),
-          unresolved: stringList.optional(),
-          usage: usage.optional(),
-        })
-        .strict(),
-    },
-    async (input) => run(() => controlPlane.submitCandidate(input as SubmitCandidateInput)),
-  );
-
-  server.registerTool(
-    "result_check",
-    {
-      title: "Check candidate result",
-      description:
-        "Independently check a candidate. The reviewer cannot be the producer. Luna verifiers call this on review_target_task_id without claiming. Rejection returns the task to ready.",
-      inputSchema: z.object(reviewFields).strict(),
-    },
-    async (input) => run(() => controlPlane.checkResult(input as ReviewInput)),
-  );
-
-  server.registerTool(
-    "result_verify",
-    {
-      title: "Verify checked result",
-      description:
-        "Apply the second evidence gate to a checked result. Approval produces verified, not committed.",
-      inputSchema: z.object(reviewFields).strict(),
-    },
-    async (input) => run(() => controlPlane.verifyResult(input as ReviewInput)),
-  );
-
-  server.registerTool(
-    "task_commit",
-    {
-      title: "Commit verified task",
-      description:
-        "Commit a verified task after every direct child is terminal. This may unlock dependent tasks.",
-      inputSchema: z
-        .object({
-          taskId: id,
-          actorId: id,
-          expectedVersion: z.number().int().positive(),
-          idempotencyKey,
-        })
-        .strict(),
-    },
-    async (input) => run(() => controlPlane.commitTask(input as CommitTaskInput)),
-  );
-
-  server.registerTool(
-    "results_gate_and_commit",
-    {
-      title: "Gate and commit low-risk children",
-      description:
-        "For low or medium risk only, record check and verify reviews then commit in one call. Does not skip gates. High or critical work must use luna-verifier plus result_check, result_verify, and task_commit. Children must already be candidate. On a direct mission, Sol (not the Luna producer) may be the reviewer without parentTaskId.",
-      inputSchema: z
-        .object({
-          reviewerId: id,
-          parentTaskId: id.optional(),
-          decisions: z
-            .array(
-              z
-                .object({
-                  taskId: id,
-                  expectedVersion: z.number().int().positive(),
-                  approved: z.boolean(),
-                  evidenceRefs: z.array(id).max(500).optional(),
-                  notes: text,
-                })
-                .strict(),
-            )
-            .min(1)
-            .max(500),
-          idempotencyKey,
-        })
-        .strict(),
-    },
-    async (input) => run(() => controlPlane.gateAndCommitResults(input as GateAndCommitInput)),
-  );
-
-  server.registerTool(
-    "budget_report",
-    {
-      title: "Report resource usage",
-      description:
-        "Atomically add token, cost, wall-time, and tool-call usage to a mission and optionally a task. Hard limits are enforced.",
-      inputSchema: z
-        .object({
-          missionId: id,
-          taskId: id.nullable().optional(),
-          actorId: id,
-          expectedMissionVersion: z.number().int().positive(),
-          expectedTaskVersion: z.number().int().positive().optional(),
-          usage,
-          idempotencyKey,
-        })
-        .strict(),
-    },
-    async (input) => run(() => controlPlane.reportBudget(input as BudgetReportInput)),
-  );
-
-  server.registerTool(
-    "recovery_snapshot",
-    {
-      title: "Get recovery snapshot",
-      description:
-        "Read durable mission state and a bounded audit-event page after interruption, compaction, or client restart.",
-      inputSchema: z
-        .object({
-          missionId: id,
-          afterSequence: z.number().int().nonnegative().default(0),
-          eventLimit: z.number().int().positive().max(1_000).optional(),
-        })
-        .strict(),
-    },
-    async ({ missionId, afterSequence, eventLimit }) =>
-      run(() => controlPlane.recoverySnapshot(missionId, afterSequence, eventLimit)),
-  );
-
-  return server;
+if (isEntrypoint()) {
+  void main().catch((error: unknown) => {
+    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    process.stderr.write(`${message}\n`);
+    process.exitCode = 1;
+  });
 }
