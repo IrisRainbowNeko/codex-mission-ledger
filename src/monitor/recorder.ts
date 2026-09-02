@@ -6,10 +6,10 @@ import type { RemoteTurnRef } from "../core/contracts.js";
 import type { MonitorEvent, MonitorRecorderPort } from "./types.js";
 
 const DEFAULT_FLUSH_MS = 250;
-const DEFAULT_MAX_PENDING_BYTES = 2 * 1024 * 1024;
-const DEFAULT_MAX_LOG_BYTES = 24 * 1024 * 1024;
-const MAX_EVENT_BYTES = 128 * 1024;
-const MAX_STRING_BYTES = 64 * 1024;
+const DEFAULT_MAX_PENDING_BYTES = 512 * 1024;
+const DEFAULT_MAX_LOG_BYTES = 8 * 1024 * 1024;
+const MAX_EVENT_BYTES = 16 * 1024;
+const MAX_STRING_BYTES = 12 * 1024;
 const MAX_ARRAY_ITEMS = 200;
 const MAX_OBJECT_KEYS = 200;
 const MAX_JSON_DEPTH = 10;
@@ -29,7 +29,6 @@ interface BufferedLine {
   event: MonitorEvent;
   line: string;
   bytes: number;
-  deltaKey?: string;
 }
 
 interface ThreadContext {
@@ -109,7 +108,7 @@ export class MonitorRecorder implements MonitorRecorderPort {
   }
 
   recordNotification(runId: string, notification: AppServerNotification): void {
-    if (this.#closed) {
+    if (this.#closed || notificationIsDeltaMethod(notification.method)) {
       return;
     }
     const params = jsonSafe(notification.params);
@@ -144,6 +143,9 @@ export class MonitorRecorder implements MonitorRecorderPort {
   }
 
   #capture(notification: AppServerNotification): void {
+    if (notificationIsDeltaMethod(notification.method)) {
+      return;
+    }
     const params = jsonSafe(notification.params);
     const threadId = extractThreadId(params);
     if (threadId === undefined) {
@@ -172,37 +174,13 @@ export class MonitorRecorder implements MonitorRecorderPort {
       buffer.dropped += 1;
       return;
     }
-    const deltaKey = monitorDeltaKey(event);
-    const previous = buffer.lines.at(-1);
-    if (deltaKey !== undefined && previous?.deltaKey === deltaKey) {
-      const merged = mergeMonitorDelta(previous.event, event);
-      if (merged !== null) {
-        const line = boundedEventLine(merged);
-        const bytes = Buffer.byteLength(line, "utf8");
-        const growth = bytes - previous.bytes;
-        if (buffer.pendingBytes + growth <= this.#maxPendingBytes) {
-          previous.event = merged;
-          previous.line = line;
-          previous.bytes = bytes;
-          buffer.bufferedBytes += growth;
-          buffer.pendingBytes += growth;
-          this.#scheduleFlush(runId, buffer);
-          return;
-        }
-        buffer.dropped += 1;
-        return;
-      }
-    }
     const line = boundedEventLine(event);
     const bytes = Buffer.byteLength(line, "utf8");
     if (buffer.pendingBytes + bytes > this.#maxPendingBytes) {
       buffer.dropped += 1;
-      if (notificationIsDelta(event)) {
-        return;
-      }
       void this.#flush(runId);
     }
-    buffer.lines.push({ event, line, bytes, ...(deltaKey === undefined ? {} : { deltaKey }) });
+    buffer.lines.push({ event, line, bytes });
     buffer.bufferedBytes += bytes;
     buffer.pendingBytes += bytes;
     this.#scheduleFlush(runId, buffer);
@@ -383,43 +361,8 @@ function extractId(
   return undefined;
 }
 
-function notificationIsDelta(event: MonitorEvent): boolean {
-  return event.type === "app_server" && event.method?.toLowerCase().endsWith("delta") === true;
-}
-
-function monitorDeltaKey(event: MonitorEvent): string | undefined {
-  if (!notificationIsDelta(event) || !isJsonRecord(event.data)) {
-    return undefined;
-  }
-  const itemId = event.data["itemId"];
-  if (typeof itemId !== "string" || itemId.length === 0) {
-    return undefined;
-  }
-  return [event.method, event.threadId ?? "", event.turnId ?? "", itemId].join("\u0000");
-}
-
-function mergeMonitorDelta(previous: MonitorEvent, incoming: MonitorEvent): MonitorEvent | null {
-  if (!isJsonRecord(previous.data) || !isJsonRecord(incoming.data)) {
-    return null;
-  }
-  const previousDelta = previous.data["delta"];
-  const incomingDelta = incoming.data["delta"];
-  if (typeof previousDelta !== "string" || typeof incomingDelta !== "string") {
-    return null;
-  }
-  const delta = previousDelta + incomingDelta;
-  if (Buffer.byteLength(delta, "utf8") > MAX_STRING_BYTES) {
-    return null;
-  }
-  return {
-    ...previous,
-    at: incoming.at,
-    data: { ...previous.data, delta },
-  };
-}
-
-function isJsonRecord(value: unknown): value is Record<string, JsonValue> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function notificationIsDeltaMethod(method: string): boolean {
+  return method.toLowerCase().endsWith("delta");
 }
 
 function timestamp(emittedAtMs: number | undefined, now: () => Date): string {

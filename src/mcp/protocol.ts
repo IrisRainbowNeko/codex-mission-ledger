@@ -12,10 +12,13 @@ import type {
   TaskDomain,
 } from "../core/contracts.js";
 import type { AgentTrioService } from "../core/service.js";
+import type { MonitorDataQuery, MonitorDataUpdate } from "../monitor/data.js";
 import { hostSemanticPlanJsonSchemaForRoute, parseHostSemanticPlan } from "../core/planner.js";
 import { FANOUT_MIN_TASK_SECONDS } from "../core/policy.js";
+import { AGENT_TRIO_MONITOR_RESOURCE_URI, MCP_APP_MIME_TYPE, MCP_MONITOR_HTML } from "./app.js";
 
 const MAX_RESULT_BYTES = 64 * 1024;
+const MAX_MONITOR_STRUCTURED_BYTES = 48 * 1024;
 const ROOTS_TIMEOUT_MS = 5_000;
 const DOMAIN_VALUES: readonly TaskDomain[] = [
   "coding",
@@ -35,6 +38,9 @@ export const AGENT_TRIO_TOOL_SCHEMA = {
     runId: { type: "string", minLength: 1, maxLength: 128 },
     monitorFirst: { type: "boolean" },
     wait: { type: "boolean" },
+    monitorCursor: { type: "integer", minimum: 0 },
+    monitorRevision: { type: "string", maxLength: 128 },
+    monitorWaitMs: { type: "integer", minimum: 0, maximum: 20_000 },
     input: { type: "string", maxLength: 4_096 },
     objective: { type: "string", minLength: 1, maxLength: 200_000 },
     cwd: { type: "string", minLength: 1, maxLength: 4_096 },
@@ -114,13 +120,26 @@ export const AGENT_TRIO_TOOL_SCHEMA = {
       then: { properties: { action: { const: "status" } }, required: ["action"] },
     },
     {
+      if: {
+        anyOf: [
+          { required: ["monitorCursor"] },
+          { required: ["monitorRevision"] },
+          { required: ["monitorWaitMs"] },
+        ],
+      },
+      then: {
+        properties: { action: { const: "status" } },
+        required: ["action", "monitorCursor"],
+      },
+    },
+    {
       if: { required: ["directTier"] },
       then: { properties: { strategy: { const: "direct" } }, required: ["strategy"] },
     },
   ],
 } as const;
 
-export const AGENT_TRIO_TOOL_DESCRIPTION = `Run, submit, inspect, resume, or cancel Agent Trio. The result is the complete user-visible delivery; after success, do not repeat finalResponse. For run or submit, pass hostAccess and hostApproval as the calling Codex task's current permission and approval modes; copy them exactly and never request stronger access or approval. Use hostApproval=approveForMe only when the caller uses Approve for me; otherwise use never. Explicit Monitor-first clients call submit with monitorFirst=true, immediately show the returned monitorUrl, then call status with the same runId and wait=true exactly once; this preserves foreground execution and waits locally without model polling. For nontrivial work use objective, cwd, and strategy=auto without semanticPlan: the runtime selects cheap direct execution or invokes its internal Sol planner before Luna-first fanout. The root handles one-turn work itself, using its normal workspace tools when needed. One local fix, a finite exact calculation over a handful of local inputs, a targeted rewrite, or another single-deliverable task is direct; a domain label such as algorithm or research is not by itself a reason to call this tool. Do not call merely because partitions exist: call when at least two useful independent leaves are expected to take over ${String(FANOUT_MIN_TASK_SECONDS)} seconds of actual Luna wall time and the predicted complete plan remains below 40% cost and 70% latency. The economic gate, not a fixed total-duration threshold, decides whether several smaller Luna leaves repay Sol planning. A current Sol root may instead supply strategy=fanout and a semanticPlan fast path. Plan from the objective and workspace file index; leave file inspection to the leaves. Use 2-5 independent leaves, preferring finer partitions only when they shorten the critical path. Host plans use exactly semanticPlan={"access":"readOnly","merge":"deterministic","risk":"low","tasks":[{"goal":"short bounded goal","paths":["relative/path"],"after":[],"floor":null,"expectedSeconds":90}]}. Tasks never contain id, task, tier, model, effort, checks, or the repeated full objective. Omit capabilities unless exact structured capability objects were supplied. status/resume/cancel require runId.`;
+export const AGENT_TRIO_TOOL_DESCRIPTION = `Run, submit, inspect, resume, or cancel Agent Trio. The result is the complete user-visible delivery; after success, do not repeat finalResponse. For UI-capable foreground work, generate a unique runId and make one action=run call; the attached monitor uses that runId without model polling. Legacy Monitor-first clients may call submit with monitorFirst=true, then status with wait=true exactly once. For run or submit, pass hostAccess and hostApproval as the calling Codex task's current permission and approval modes; copy them exactly and never request stronger access or approval. Use hostApproval=approveForMe only when the caller uses Approve for me; otherwise use never. For nontrivial work use objective, cwd, and strategy=auto without semanticPlan: the runtime selects cheap direct execution or invokes its internal Sol planner before Luna-first fanout. The root handles one-turn work itself, using its normal workspace tools when needed. One local fix, a finite exact calculation over a handful of local inputs, a targeted rewrite, or another single-deliverable task is direct; a domain label such as algorithm or research is not by itself a reason to call this tool. Do not call merely because partitions exist: call when at least two useful independent leaves are expected to take over ${String(FANOUT_MIN_TASK_SECONDS)} seconds of actual Luna wall time and the predicted complete plan remains below 40% cost and 70% latency. The economic gate, not a fixed total-duration threshold, decides whether several smaller Luna leaves repay Sol planning. A current Sol root may instead supply strategy=fanout and a semanticPlan fast path. Plan from the objective and workspace file index; leave file inspection to the leaves. Use 2-5 independent leaves, preferring finer partitions only when they shorten the critical path. Host plans use exactly semanticPlan={"access":"readOnly","merge":"deterministic","risk":"low","tasks":[{"goal":"short bounded goal","paths":["relative/path"],"after":[],"floor":null,"expectedSeconds":90}]}. Tasks never contain id, task, tier, model, effort, checks, or the repeated full objective. Omit capabilities unless exact structured capability objects were supplied. monitorCursor, monitorRevision, and monitorWaitMs are reserved for the embedded UI. status/resume/cancel require runId.`;
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -148,6 +167,7 @@ export interface McpProtocolOptions {
   /** Trusted fixed roots for an isolated embedding; normal Desktop MCP negotiates roots. */
   workspaceRoots?: readonly string[];
   monitorUrlForRun?: (runId: string) => string | undefined;
+  monitorDataForRun?: (runId: string, query: MonitorDataQuery) => Promise<MonitorDataUpdate>;
   createRunId?: () => string;
 }
 
@@ -158,6 +178,8 @@ export class AgentTrioMcpProtocol {
   readonly #onError: (error: Error) => void;
   readonly #workspaceRoots: string[] | null;
   readonly #monitorUrlForRun: ((runId: string) => string | undefined) | undefined;
+  readonly #monitorDataForRun:
+    ((runId: string, query: MonitorDataQuery) => Promise<MonitorDataUpdate>) | undefined;
   readonly #createRunId: () => string;
   #clientSupportsRoots = false;
   #roots: string[] | null = null;
@@ -176,6 +198,7 @@ export class AgentTrioMcpProtocol {
         ? null
         : options.workspaceRoots.map((root) => resolve(root));
     this.#monitorUrlForRun = options.monitorUrlForRun;
+    this.#monitorDataForRun = options.monitorDataForRun;
     this.#createRunId = options.createRunId ?? randomUUID;
   }
 
@@ -264,7 +287,10 @@ export class AgentTrioMcpProtocol {
               typeof params["protocolVersion"] === "string"
                 ? params["protocolVersion"]
                 : "2025-06-18",
-            capabilities: { tools: { listChanged: false } },
+            capabilities: {
+              tools: { listChanged: false },
+              resources: { subscribe: false, listChanged: false },
+            },
             serverInfo: { name: "agent-trio", version: "3.2.0" },
           });
           return;
@@ -273,8 +299,36 @@ export class AgentTrioMcpProtocol {
           this.#writeResult(request.id, {});
           return;
         case "resources/list":
-          this.#writeResult(request.id, { resources: [] });
+          this.#writeResult(request.id, {
+            resources: [
+              {
+                uri: AGENT_TRIO_MONITOR_RESOURCE_URI,
+                name: "Agent Trio run monitor",
+                title: "Agent Trio Monitor",
+                description: "Live execution DAG, subagent state, conversations, and usage.",
+                mimeType: MCP_APP_MIME_TYPE,
+              },
+            ],
+          });
           return;
+        case "resources/read": {
+          const params = requireRecord(request.params, "resources/read params");
+          if (params["uri"] !== AGENT_TRIO_MONITOR_RESOURCE_URI) {
+            this.#writeError(request.id, -32002, "Resource not found");
+            return;
+          }
+          this.#writeResult(request.id, {
+            contents: [
+              {
+                uri: AGENT_TRIO_MONITOR_RESOURCE_URI,
+                mimeType: MCP_APP_MIME_TYPE,
+                text: MCP_MONITOR_HTML,
+                _meta: { ui: { prefersBorder: true } },
+              },
+            ],
+          });
+          return;
+        }
         case "resources/templates/list":
           this.#writeResult(request.id, { resourceTemplates: [] });
           return;
@@ -289,6 +343,12 @@ export class AgentTrioMcpProtocol {
                 // Codex converts this extension into ResponsesApiTool.defer_loading so direct
                 // turns do not pay the schema/reasoning cost unless orchestration is relevant.
                 defer_loading: true,
+                _meta: {
+                  ui: { resourceUri: AGENT_TRIO_MONITOR_RESOURCE_URI },
+                  "openai/outputTemplate": AGENT_TRIO_MONITOR_RESOURCE_URI,
+                  "openai/toolInvocation/invoking": "Running Agent Trio",
+                  "openai/toolInvocation/invoked": "Agent Trio finished",
+                },
               },
             ],
           });
@@ -376,6 +436,20 @@ export class AgentTrioMcpProtocol {
           ? { ...handled, monitorUrl }
           : handled;
       const result = compactResult(withMonitorLink(monitored));
+      const monitor =
+        parsed.action === "status" &&
+        parsed.monitorCursor !== undefined &&
+        this.#monitorDataForRun !== undefined
+          ? await this.#monitorDataForRun(parsed.runId, {
+              cursor: parsed.monitorCursor,
+              ...(parsed.monitorRevision === undefined
+                ? {}
+                : { afterRevision: parsed.monitorRevision }),
+              ...(parsed.monitorWaitMs === undefined ? {} : { waitMs: parsed.monitorWaitMs }),
+              maxEventBytes: 16 * 1024,
+            })
+          : undefined;
+      const structuredContent = monitor === undefined ? result : monitorToolResult(result, monitor);
       this.#writeResult(request.id, {
         content: [
           {
@@ -384,13 +458,17 @@ export class AgentTrioMcpProtocol {
               runId: result.runId,
               status: result.status,
               monitorUrl: result.monitorUrl ?? monitorUrl ?? null,
-              finalResponse: result.finalResponse,
-              needsAction: result.needsAction ?? null,
-              error: result.error ?? null,
+              finalResponse: monitor === undefined ? result.finalResponse : null,
+              needsAction:
+                monitor === undefined
+                  ? (result.needsAction ?? null)
+                  : boundedBytes(result.needsAction, 1_000),
+              error:
+                monitor === undefined ? (result.error ?? null) : boundedBytes(result.error, 1_000),
             }),
           },
         ],
-        structuredContent: result,
+        structuredContent,
         // The MCP request succeeded even when the managed job reached a failed terminal state.
         // Preserve that state as data so the caller does not redo the task outside the scheduler.
         isError: false,
@@ -435,7 +513,13 @@ export class AgentTrioMcpProtocol {
   }
 }
 
-export function parseAgentTrioRequest(value: unknown): AgentTrioRequest {
+export type ParsedAgentTrioRequest = AgentTrioRequest & {
+  monitorCursor?: number;
+  monitorRevision?: string;
+  monitorWaitMs?: number;
+};
+
+export function parseAgentTrioRequest(value: unknown): ParsedAgentTrioRequest {
   const input = requireRecord(value, "agent_trio arguments");
   const action = input["action"];
   if (
@@ -455,7 +539,7 @@ export function parseAgentTrioRequest(value: unknown): AgentTrioRequest {
       action === "resume"
         ? ["action", "runId", "input"]
         : action === "status"
-          ? ["action", "runId", "wait"]
+          ? ["action", "runId", "wait", "monitorCursor", "monitorRevision", "monitorWaitMs"]
           : ["action", "runId"],
     );
     rejectUnknownArgument(input, allowed);
@@ -464,10 +548,26 @@ export function parseAgentTrioRequest(value: unknown): AgentTrioRequest {
       if (input["wait"] !== undefined && typeof input["wait"] !== "boolean") {
         throw new Error("wait must be boolean");
       }
+      const monitorCursor = optionalSafeInteger(
+        input["monitorCursor"],
+        "monitorCursor",
+        Number.MAX_SAFE_INTEGER,
+      );
+      const monitorWaitMs = optionalSafeInteger(input["monitorWaitMs"], "monitorWaitMs", 20_000);
+      const monitorRevision = optionalString(input["monitorRevision"], "monitorRevision", 128);
+      if (
+        (monitorRevision !== undefined || monitorWaitMs !== undefined) &&
+        monitorCursor === undefined
+      ) {
+        throw new Error("monitorRevision and monitorWaitMs require monitorCursor");
+      }
       return {
         action,
         runId,
         ...(input["wait"] === undefined ? {} : { wait: input["wait"] as boolean }),
+        ...(monitorCursor === undefined ? {} : { monitorCursor }),
+        ...(monitorRevision === undefined ? {} : { monitorRevision }),
+        ...(monitorWaitMs === undefined ? {} : { monitorWaitMs }),
       };
     }
     if (action === "cancel") {
@@ -709,6 +809,221 @@ function compactResult(result: BatchResult): BatchResult {
   return compact;
 }
 
+function monitorToolResult(
+  result: BatchResult,
+  update: MonitorDataUpdate,
+): Record<string, unknown> {
+  const stored = isRecord(update.snapshot) ? update.snapshot : {};
+  const request = isRecord(stored["request"]) ? stored["request"] : {};
+  const requestProjection = {
+    objective: boundedText(
+      typeof request["objective"] === "string" ? request["objective"] : "",
+      1_500,
+    ),
+  };
+  const base = {
+    runId: result.runId,
+    status: result.status,
+    finalResponse: null,
+    needsAction: boundedBytes(result.needsAction, 2_000),
+    error: boundedBytes(result.error, 2_000),
+  };
+  const detailed = {
+    ...base,
+    monitor: {
+      snapshot: {
+        request: requestProjection,
+        result: monitorResultProjection(result),
+        remoteTurns: monitorRemoteTurns(stored["remoteTurns"]),
+        updatedAt: update.revision,
+      },
+      events: update.events.map(compactMonitorEvent),
+      nextCursor: update.nextCursor,
+      hasMore: update.hasMore,
+      revision: update.revision,
+    },
+  };
+  if (serializedBytes(detailed) <= MAX_MONITOR_STRUCTURED_BYTES) {
+    return detailed;
+  }
+
+  const events = update.events.map((event) => compactMonitorEvent(event, 2_000));
+  const compact = {
+    ...base,
+    monitor: {
+      snapshot: {
+        request: { objective: boundedText(requestProjection.objective, 500) },
+        result: monitorResultProjection(result, true),
+        remoteTurns: monitorRemoteTurns(stored["remoteTurns"], true),
+        updatedAt: update.revision,
+      },
+      events,
+      nextCursor: update.nextCursor,
+      hasMore: update.hasMore,
+      revision: update.revision,
+    },
+  };
+  let omitted = 0;
+  while (events.length > 0 && serializedBytes(compact) > MAX_MONITOR_STRUCTURED_BYTES) {
+    events.shift();
+    omitted += 1;
+  }
+  if (omitted > 0) {
+    events.unshift({
+      type: "monitor",
+      data: { truncated: true, omittedEvents: omitted },
+    });
+  }
+  if (serializedBytes(compact) <= MAX_MONITOR_STRUCTURED_BYTES) {
+    return compact;
+  }
+  return {
+    ...base,
+    monitor: {
+      snapshot: {
+        request: { objective: boundedBytes(requestProjection.objective, 500) ?? "" },
+        result: {
+          runId: result.runId,
+          status: result.status,
+          plan: null,
+          leaves: [],
+          finalResponse: null,
+          metrics:
+            result.metrics === null
+              ? null
+              : {
+                  startedAt: result.metrics.startedAt,
+                  elapsedMs: result.metrics.elapsedMs,
+                  estimatedCostUsd: result.metrics.estimatedCostUsd,
+                  peakConcurrency: result.metrics.peakConcurrency,
+                  routeReason: boundedBytes(result.metrics.routeReason, 500) ?? "",
+                },
+          needsAction: base.needsAction,
+          error: base.error,
+        },
+        remoteTurns: [],
+        updatedAt: boundedBytes(update.revision, 128) ?? "",
+      },
+      events: [{ type: "monitor", data: { truncated: true, omittedEvents: update.events.length } }],
+      nextCursor: update.nextCursor,
+      hasMore: update.hasMore,
+      revision: boundedBytes(update.revision, 128) ?? "",
+    },
+  };
+}
+
+function compactMonitorEvent(value: unknown, maxBytes = 12 * 1024): unknown {
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined || Buffer.byteLength(serialized, "utf8") <= maxBytes) {
+    return value;
+  }
+  if (!isRecord(value)) {
+    return { type: "monitor", data: { truncated: true } };
+  }
+  return {
+    ...value,
+    data: {
+      truncated: true,
+      preview: boundedText(serialized, Math.max(0, maxBytes - 512)),
+    },
+  };
+}
+
+function monitorResultProjection(result: BatchResult, compact = false): Record<string, unknown> {
+  const plan =
+    result.plan === null
+      ? null
+      : {
+          planId: boundedText(result.plan.planId, 128),
+          domain: result.plan.domain,
+          risk: result.plan.risk,
+          origin: result.plan.origin,
+          tasks: result.plan.tasks.slice(0, 20).map((task) => ({
+            id: boundedText(task.id, compact ? 96 : 128),
+            objective: boundedText(task.objective, compact ? 160 : 400),
+            tier: task.tier,
+            effort: task.effort,
+            ownedPaths: compact
+              ? []
+              : task.ownedPaths.slice(0, 3).map((path) => boundedText(path, 160)),
+            dependsOn: compact ? [] : task.dependsOn.slice(0, 8).map((id) => boundedText(id, 128)),
+            validation: compact
+              ? []
+              : task.validation.slice(0, 2).map((item) => ({
+                  command: boundedText(item.command, 240),
+                })),
+          })),
+          integration: {
+            requiredOutputs: result.plan.integration.requiredOutputs
+              .slice(0, compact ? 4 : 8)
+              .map((output) => boundedText(output, compact ? 120 : 240)),
+          },
+        };
+  const metrics =
+    result.metrics === null
+      ? null
+      : {
+          startedAt: result.metrics.startedAt,
+          elapsedMs: result.metrics.elapsedMs,
+          estimatedCostUsd: result.metrics.estimatedCostUsd,
+          peakConcurrency: result.metrics.peakConcurrency,
+          routeReason: boundedText(result.metrics.routeReason ?? "", 500),
+          totalTokens: result.metrics.usage.reduce(
+            (sum, item) => sum + Number(item.totalTokens ?? 0),
+            0,
+          ),
+        };
+  return {
+    runId: result.runId,
+    status: result.status,
+    plan,
+    leaves: result.leaves.slice(0, 20).map((leaf) => ({
+      taskId: boundedText(leaf.taskId, 128),
+      status: leaf.status,
+      confidence: leaf.confidence,
+    })),
+    finalResponse: null,
+    metrics,
+    needsAction: boundedText(result.needsAction ?? "", compact ? 500 : 2_000) || null,
+    error: boundedText(result.error ?? "", compact ? 500 : 2_000) || null,
+  };
+}
+
+function monitorRemoteTurns(value: unknown, compact = false): unknown[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const latest = new Map<string, Record<string, unknown>>();
+  for (const entry of value) {
+    if (!isRecord(entry) || typeof entry["role"] !== "string") {
+      continue;
+    }
+    const role = boundedText(entry["role"], 32);
+    const taskId = typeof entry["taskId"] === "string" ? boundedText(entry["taskId"], 128) : "";
+    latest.set(`${role}\u0000${taskId}`, {
+      role,
+      ...(taskId.length === 0 ? {} : { taskId }),
+      threadId: typeof entry["threadId"] === "string" ? boundedText(entry["threadId"], 160) : "",
+      turnId: typeof entry["turnId"] === "string" ? boundedText(entry["turnId"], 160) : null,
+      state: typeof entry["state"] === "string" ? boundedText(entry["state"], 32) : "running",
+      updatedAt: typeof entry["updatedAt"] === "string" ? boundedText(entry["updatedAt"], 64) : "",
+    });
+  }
+  return [...latest.values()].slice(compact ? -24 : -32);
+}
+
+function serializedBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+function boundedBytes(value: string | undefined, maxBytes: number): string | null {
+  return value === undefined ? null : truncate(value, maxBytes);
+}
+
+function boundedText(value: string, maxLength: number): string {
+  return value.length <= maxLength ? value : `${value.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
 function withMonitorLink(result: BatchResult): BatchResult {
   if (
     result.monitorUrl === undefined ||
@@ -736,6 +1051,26 @@ function truncate(value: string | null, maxBytes: number): string | null {
   return `${Buffer.from(value, "utf8")
     .subarray(0, maxBytes - 3)
     .toString("utf8")}...`;
+}
+
+function optionalSafeInteger(value: unknown, name: string, maximum: number): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > maximum) {
+    throw new Error(`${name} must be an integer between 0 and ${String(maximum)}`);
+  }
+  return value as number;
+}
+
+function optionalString(value: unknown, name: string, maxLength: number): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string" || value.length > maxLength) {
+    throw new Error(`${name} must be a string up to ${String(maxLength)} characters`);
+  }
+  return value;
 }
 
 function resolveRoot(root: RootEntry): string[] {

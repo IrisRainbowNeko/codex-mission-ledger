@@ -26,5 +26,9 @@ export interface MonitorRuntimePort {
   attach(server: AppServer): void;
   recordRemoteTurn(runId: string, turn: RemoteTurnRef): void;
   urlForRun(runId: string): string | undefined;
+  readData(runId: string, query: MonitorDataQuery): Promise<MonitorDataUpdate>;
   close(): Promise<void>;
 }
+
+export type { MonitorDataQuery, MonitorDataUpdate } from "./data.js";
+import type { MonitorDataQuery, MonitorDataUpdate } from "./data.js";

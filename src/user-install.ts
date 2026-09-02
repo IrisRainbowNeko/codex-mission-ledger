@@ -281,10 +281,10 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
   if (
     !/^name:\s*agent-trio\s*$/mu.test(skillText) ||
     !skillText.includes("`agent_trio` MCP runtime") ||
-    !skillText.includes("monitorFirst=true") ||
-    !skillText.includes("wait=true")
+    !skillText.includes("exactly one `action=run` call") ||
+    !skillText.includes("MCP Apps monitor")
   ) {
-    problems.push("installed agent-trio skill does not implement Monitor-first V3 delegation");
+    problems.push("installed agent-trio skill does not implement embedded Monitor delegation");
   }
   const metadataText = readOptional(skillMetadata);
   if (!/^\s*allow_implicit_invocation:\s*false\s*$/mu.test(metadataText)) {
@@ -297,8 +297,8 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
   if (
     !/^name:\s*agent-trio-session\s*$/mu.test(sessionSkillText) ||
     !sessionSkillText.includes("`agent_trio` MCP runtime") ||
-    !sessionSkillText.includes("monitorFirst=true") ||
-    !sessionSkillText.includes("wait=true") ||
+    !sessionSkillText.includes("exactly one `action=run` call") ||
+    !sessionSkillText.includes("MCP Apps monitor") ||
     !sessionSkillText.includes("previously invoked $agent-trio-session")
   ) {
     problems.push(

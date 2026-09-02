@@ -22,10 +22,9 @@ Trio for this conversation.
 
 ## Invocation
 
-- For a foreground request, first call `action=submit` with `monitorFirst=true`. As soon as it
-  returns, show the returned `monitorUrl` as a Markdown link in a commentary update. Then call
-  `action=status` with the same `runId` and `wait=true` exactly once. This second call waits for the
-  original foreground-equivalent run; it is not polling and must not be repeated.
+- For a foreground request, generate a unique UUID-style `runId` in the tool arguments and make
+  exactly one `action=run` call. The attached MCP Apps monitor uses the supplied ID to render while
+  the call is running; do not make model-driven status calls or open a separate monitor page.
 - Use `strategy=auto` unless the user explicitly selects `direct` or `fanout`.
 - On the activating turn, pass the complete user goal without the `$agent-trio-session` marker as
   `objective`.
@@ -48,11 +47,11 @@ Trio for this conversation.
 When the user explicitly asks for a durable background job, use ordinary `action=submit` without
 `monitorFirst`, show the Monitor link after acceptance, and stop without waiting.
 
-Treat the blocking status call's `finalResponse` as the complete foreground delivery. Do not redo
+Treat the blocking run call's `finalResponse` as the complete foreground delivery. Do not redo
 the work, invoke another orchestrator, or add a second substantive summary after a successful call.
 
-When `monitorUrl` is present, keep the Monitor link that already prefixes `finalResponse`. Do not
-remove, rewrite, or hide it.
+When the client cannot render MCP Apps and `monitorUrl` is present, keep the Monitor link that
+already prefixes `finalResponse` as the compatibility fallback.
 
 If the MCP call itself fails, report the exact integration error and stop. Do not complete the
 objective directly or silently switch to another execution path unless the user explicitly asks.

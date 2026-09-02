@@ -1,12 +1,10 @@
 import { createServer, type Server as HttpServer, type ServerResponse } from "node:http";
 import { existsSync, readFileSync, readdirSync, watch, type FSWatcher } from "node:fs";
-import { open, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import { MONITOR_APP_JS, MONITOR_HTML, MONITOR_STYLES } from "./ui.js";
+import { readJobSnapshot, readMonitorEvents } from "./data.js";
 
-const MAX_JOB_BYTES = 8 * 1024 * 1024;
-const MAX_EVENT_CHUNK_BYTES = 512 * 1024;
 const MAX_LISTED_RUNS = 100;
 
 export interface MonitorServerOptions {
@@ -135,124 +133,6 @@ function listRuns(jobRoot: string): unknown[] {
     .slice(0, MAX_LISTED_RUNS);
 }
 
-async function readJobSnapshot(jobRoot: string, runId: string): Promise<unknown> {
-  const path = join(jobRoot, runId, "job.json");
-  const metadata = await stat(path);
-  if (!metadata.isFile() || metadata.size > MAX_JOB_BYTES) {
-    throw new Error("job snapshot is unavailable or too large for the monitor");
-  }
-  return JSON.parse(await readFile(path, "utf8")) as unknown;
-}
-
-async function readMonitorEvents(
-  jobRoot: string,
-  runId: string,
-  requestedCursor: number,
-): Promise<{ events: unknown[]; nextCursor: number; hasMore: boolean }> {
-  const path = join(jobRoot, runId, "monitor.jsonl");
-  let size: number;
-  try {
-    size = (await stat(path)).size;
-  } catch (error) {
-    if (isMissing(error)) {
-      return { events: [], nextCursor: 0, hasMore: false };
-    }
-    throw error;
-  }
-  const cursor = requestedCursor > size ? 0 : requestedCursor;
-  if (cursor === size) {
-    return { events: [], nextCursor: cursor, hasMore: false };
-  }
-  const length = Math.min(MAX_EVENT_CHUNK_BYTES, size - cursor);
-  const handle = await open(path, "r");
-  let bytesRead: number;
-  const buffer = Buffer.allocUnsafe(length);
-  try {
-    ({ bytesRead } = await handle.read(buffer, 0, length, cursor));
-  } finally {
-    await handle.close();
-  }
-  const chunk = buffer.subarray(0, bytesRead);
-  const lastNewline = chunk.lastIndexOf(0x0a);
-  if (lastNewline < 0) {
-    return { events: [], nextCursor: cursor, hasMore: true };
-  }
-  const consumed = lastNewline + 1;
-  const events = coalesceEventPage(
-    chunk
-      .subarray(0, consumed)
-      .toString("utf8")
-      .split("\n")
-      .filter((line) => line.length > 0)
-      .flatMap((line) => {
-        try {
-          return [JSON.parse(line) as unknown];
-        } catch {
-          return [];
-        }
-      }),
-  );
-  const nextCursor = cursor + consumed;
-  return { events, nextCursor, hasMore: nextCursor < size };
-}
-
-function coalesceEventPage(events: unknown[]): unknown[] {
-  const result: unknown[] = [];
-  const streams = new Map<string, number>();
-  for (const event of events) {
-    const key = deltaEventKey(event);
-    if (key === null) {
-      result.push(event);
-      continue;
-    }
-    const existingIndex = streams.get(key);
-    if (existingIndex === undefined) {
-      streams.set(key, result.length);
-      result.push(event);
-      continue;
-    }
-    const existing = result[existingIndex];
-    if (!isRecord(existing) || !isRecord(existing["data"]) || !isRecord(event)) {
-      result.push(event);
-      continue;
-    }
-    const data = event["data"];
-    if (!isRecord(data)) {
-      result.push(event);
-      continue;
-    }
-    const previousDelta = existing["data"]["delta"];
-    const delta = data["delta"];
-    if (typeof previousDelta !== "string" || typeof delta !== "string") {
-      result.push(event);
-      continue;
-    }
-    result[existingIndex] = {
-      ...existing,
-      at: event["at"] ?? existing["at"],
-      data: { ...existing["data"], delta: previousDelta + delta },
-    };
-  }
-  return result;
-}
-
-function deltaEventKey(value: unknown): string | null {
-  if (!isRecord(value) || !isRecord(value["data"])) {
-    return null;
-  }
-  const method = value["method"];
-  const itemId = value["data"]["itemId"];
-  if (
-    typeof method !== "string" ||
-    !method.toLowerCase().endsWith("delta") ||
-    typeof itemId !== "string" ||
-    itemId.length === 0
-  ) {
-    return null;
-  }
-  return [method, value["threadId"] ?? "", value["turnId"] ?? "", itemId].join("\u0000");
-}
-
 function streamChanges(jobRoot: string, runId: string, response: ServerResponse): void {
   const directory = join(jobRoot, runId);
   if (!existsSync(directory)) {
@@ -350,10 +230,6 @@ function validRunId(value: string): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isMissing(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
 function listen(server: HttpServer, port: number, host: string): Promise<void> {

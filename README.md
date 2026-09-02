@@ -92,13 +92,13 @@ through Agent Trio. Say to stop using Agent Trio, ask for normal Codex, switch t
 or start a new conversation to leave session mode. Ordinary conversations never start session mode
 implicitly.
 
-For foreground invocations, the selected skill starts a foreground-equivalent run,
-immediately shows its local `monitorUrl`, and waits once for the persisted result. Open the link
-while the task runs to inspect the live DAG and select any planner, leaf, direct agent, integrator,
-or final-review thread. The view includes public agent messages, reasoning summaries emitted by
-Codex, tool and command activity, file changes, token usage, cost, and validation state. It does not
-expose private hidden model reasoning. The wait is driven by filesystem events, not model calls or
-polling. Completed MCP results also prefix `finalResponse` with the Monitor link.
+For foreground invocations, the selected skill supplies a unique run ID and makes one blocking
+`run` call. ChatGPT and Codex clients with MCP Apps support render the live Monitor directly beside
+that tool call; no separate browser tab is required. Select any planner, leaf, direct agent,
+integrator, or final-review thread to inspect its completed messages, reasoning summaries, commands,
+file changes, token usage, cost, and validation state. The component reads cursor-based updates by
+calling `status` through the MCP Apps bridge. Those calls stay inside the component and never invoke
+a model. Clients without MCP Apps support keep the local `monitorUrl` text fallback.
 
 Both skills also pass the current Codex task permission and approval modes to Agent Trio. A Full
 access task gives direct agents and execution leaves Full access, including network access;
@@ -219,9 +219,10 @@ agent-trio benchmark observations.json
 Use `--strategy auto|direct|fanout` to select routing behavior. `auto` is the default and applies
 the cost and latency gates before starting Sol Planner.
 
-The CLI prints the Monitor URL before a foreground model run starts and includes it in submitted
-and status results. MCP clients that support progress notifications receive the same URL as soon as
-the run ID is assigned; every final structured result also contains `monitorUrl`.
+The CLI prints the local Monitor URL before a foreground model run starts and includes it in
+submitted and status results. MCP Apps clients use the embedded view; clients that only support
+progress notifications receive the local URL as a fallback. Final structured results retain
+`monitorUrl` for compatibility.
 
 ## MCP Tool
 
@@ -235,17 +236,16 @@ The local Codex clients expose one MCP tool named `agent_trio` with five actions
 | `resume` | Continue the original App Server thread with supplied input      |
 | `cancel` | Interrupt an active run without replaying completed side effects |
 
-Both installed skills implement their visible foreground flow with two calls to this same tool:
+Both installed skills implement their foreground flow with one model-visible tool call:
 
 ```text
-submit(monitorFirst=true) -> show monitorUrl -> status(runId, wait=true)
+generate unique runId -> run(runId) with embedded live Monitor
 ```
 
-`monitorFirst` changes only how the caller receives the Monitor URL. The supervisor executes the
-normal foreground `run` contract, and `wait=true` blocks on snapshot file events until the run
-completes, fails, is cancelled, needs input, or becomes indeterminate. It adds no planner turn,
-leaf, reviewer, model polling, or change to routing and execution limits. Ordinary durable
-background submissions omit `monitorFirst` and return after acceptance.
+The component performs cursor-based `status` long polling over the MCP Apps bridge while the
+original `run` call is active. Component calls do not enter the model context and add no planner
+turn, leaf, reviewer, or model token. `monitorFirst` plus `status(wait=true)` remains accepted for
+older clients. Ordinary durable background submissions return after acceptance.
 
 Child App Server threads have project instruction loading, native multi-agent orchestration, and
 recursive Agent Trio access disabled.
@@ -283,18 +283,18 @@ output.
 
 ## Monitor
 
-The Monitor is a local read-only web UI. It does not start agents, poll models, review results, or
-participate in scheduling. App Server `turn/*` and `item/*` notifications are written to a separate
-bounded `monitor.jsonl` stream, while `job.json` remains the authoritative run snapshot.
+The primary Monitor is a self-contained MCP Apps resource attached to the existing `agent_trio`
+tool. It renders inside compatible ChatGPT and Codex clients and calls the same tool with private
+cursor and revision fields for bounded long polling. The local loopback web UI remains available to
+the CLI and clients without MCP Apps support. Neither presentation starts agents, reviews results,
+or participates in scheduling.
 
-The monitor process listens only on `127.0.0.1`. Each job root has a private token stored with the
-same user-only permissions as Agent Trio job state. Consecutive text deltas for the same App Server
-item are coalesced in a bounded 250 ms write batch instead of storing one JSON record per token
-fragment. The browser then renders one conversation entry per logical message, reasoning item, tool
-call, command, or file change. Existing logs receive the same coalescing when read, so no migration
-is required. The runtime never retains an unbounded conversation in memory. Browser updates use
-filesystem notifications and SSE rather than model-driven status loops, and the entire Monitor path
-adds no model calls or tokens.
+App Server completed items and lifecycle notifications are written to a separate bounded
+`monitor.jsonl` stream, while `job.json` remains authoritative. Token delta notifications are not
+stored. The recorder uses a 512 KiB pending-memory ceiling, a 16 KiB per-event ceiling, and an 8 MiB
+per-run log ceiling. Both views render one conversation entry per completed message, reasoning item,
+tool call, command, or file change, retain bounded UI state, and add no model calls or tokens. The
+loopback fallback still listens only on `127.0.0.1` and uses a private per-job-root token.
 
 ## Development
 

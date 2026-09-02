@@ -8,6 +8,7 @@ import type { AppServer } from "../app-server/types.js";
 import type { RemoteTurnRef } from "../core/contracts.js";
 import type { JobStore } from "../core/job-store.js";
 import { MonitorRecorder } from "./recorder.js";
+import { readMonitorData, type MonitorDataQuery, type MonitorDataUpdate } from "./data.js";
 import type { MonitorDaemonReadyMessage } from "./daemon.js";
 import type { MonitorRuntimePort } from "./types.js";
 
@@ -68,6 +69,10 @@ export class AgentTrioMonitorRuntime implements MonitorRuntimePort {
     }
     void this.ensureStarted().catch(() => undefined);
     return `http://127.0.0.1:${String(this.#port)}/runs/${encodeURIComponent(runId)}?token=${encodeURIComponent(this.#token)}`;
+  }
+
+  readData(runId: string, query: MonitorDataQuery): Promise<MonitorDataUpdate> {
+    return readMonitorData(this.#jobRoot, runId, query);
   }
 
   ensureStarted(): Promise<void> {

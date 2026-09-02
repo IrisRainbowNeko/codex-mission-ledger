@@ -61,7 +61,12 @@ import { LocalRouteOptimizer, recommendDirectTier, type RouteOptimizer } from ".
 import { userHome } from "./platform.js";
 import { ResponsesPlannerTransport } from "./responses-planner.js";
 import { resolvePlannerTransport } from "./planner-transport-config.js";
-import { AgentTrioMonitorRuntime, type MonitorRuntimePort } from "./monitor/index.js";
+import {
+  AgentTrioMonitorRuntime,
+  type MonitorDataQuery,
+  type MonitorDataUpdate,
+  type MonitorRuntimePort,
+} from "./monitor/index.js";
 
 const DEFAULT_MODELS: Readonly<Record<ModelTier, string>> = Object.freeze({
   luna: "gpt-5.6-luna",
@@ -167,6 +172,7 @@ export interface DefaultRuntime {
   service: AgentTrioService;
   appServer: AppServer;
   monitorUrlForRun(runId: string): string | undefined;
+  monitorDataForRun(runId: string, query: MonitorDataQuery): Promise<MonitorDataUpdate>;
   close(): Promise<void>;
 }
 
@@ -407,6 +413,7 @@ export function createDefaultRuntime(options: DefaultRuntimeOptions = {}): Defau
     service,
     appServer,
     monitorUrlForRun: (runId) => monitor.urlForRun(runId),
+    monitorDataForRun: (runId, query) => monitor.readData(runId, query),
     close: async () => {
       let closeError: unknown;
       try {

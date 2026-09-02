@@ -2,6 +2,7 @@ import { PassThrough } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { BatchResult } from "../src/core/contracts.js";
+import { AGENT_TRIO_MONITOR_RESOURCE_URI, MCP_APP_MIME_TYPE } from "../src/mcp/app.js";
 import {
   AGENT_TRIO_TOOL_DESCRIPTION,
   AGENT_TRIO_TOOL_SCHEMA,
@@ -101,6 +102,210 @@ describe("AgentTrioMcpProtocol", () => {
     expect(() => parseAgentTrioRequest({ action: "cancel", runId: "run-1", wait: true })).toThrow(
       "unknown agent_trio argument: wait",
     );
+  });
+
+  it("parses component-only incremental monitor status fields", () => {
+    expect(
+      parseAgentTrioRequest({
+        action: "status",
+        runId: "run-1",
+        monitorCursor: 42,
+        monitorRevision: "revision-1",
+        monitorWaitMs: 15_000,
+      }),
+    ).toEqual({
+      action: "status",
+      runId: "run-1",
+      monitorCursor: 42,
+      monitorRevision: "revision-1",
+      monitorWaitMs: 15_000,
+    });
+    expect(() =>
+      parseAgentTrioRequest({ action: "status", runId: "run-1", monitorWaitMs: 100 }),
+    ).toThrow("require monitorCursor");
+    expect(() =>
+      parseAgentTrioRequest({ action: "status", runId: "run-1", monitorCursor: -1 }),
+    ).toThrow("monitorCursor");
+  });
+
+  it("advertises and serves the embedded MCP Apps monitor from the single tool", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let text = "";
+    output.setEncoding("utf8");
+    output.on("data", (chunk: string) => {
+      text += chunk;
+    });
+    const protocol = new AgentTrioMcpProtocol({
+      service: { handle: vi.fn() },
+      input,
+      output,
+    });
+    const running = protocol.run();
+    input.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { capabilities: {} } })}\n`,
+    );
+    input.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "resources/list", params: {} })}\n`,
+    );
+    input.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: 3, method: "resources/read", params: { uri: AGENT_TRIO_MONITOR_RESOURCE_URI } })}\n`,
+    );
+    input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/list", params: {} })}\n`);
+    input.end();
+    await running;
+
+    const messages = text
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(messages.find((message) => message["id"] === 1)).toMatchObject({
+      result: { capabilities: { resources: { subscribe: false, listChanged: false } } },
+    });
+    expect(messages.find((message) => message["id"] === 2)).toMatchObject({
+      result: {
+        resources: [{ uri: AGENT_TRIO_MONITOR_RESOURCE_URI, mimeType: MCP_APP_MIME_TYPE }],
+      },
+    });
+    expect(messages.find((message) => message["id"] === 3)).toMatchObject({
+      result: {
+        contents: [
+          {
+            uri: AGENT_TRIO_MONITOR_RESOURCE_URI,
+            mimeType: MCP_APP_MIME_TYPE,
+            _meta: { ui: { prefersBorder: true } },
+          },
+        ],
+      },
+    });
+    expect(messages.find((message) => message["id"] === 4)).toMatchObject({
+      result: {
+        tools: [
+          {
+            name: "agent_trio",
+            _meta: { ui: { resourceUri: AGENT_TRIO_MONITOR_RESOURCE_URI } },
+          },
+        ],
+      },
+    });
+  });
+
+  it("returns compact incremental monitor data without exposing it as final output", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let text = "";
+    output.setEncoding("utf8");
+    output.on("data", (chunk: string) => {
+      text += chunk;
+    });
+    const monitorDataForRun = vi.fn(async () => ({
+      snapshot: {
+        request: { objective: "inspect the project" },
+        remoteTurns: [
+          {
+            role: "leaf",
+            taskId: "leaf-1",
+            threadId: "thread-1",
+            turnId: "turn-1",
+            state: "running",
+            updatedAt: "2026-09-02T00:00:01.000Z",
+          },
+        ],
+      },
+      events: [{ type: "remote_turn", taskId: "leaf-1" }],
+      nextCursor: 123,
+      hasMore: false,
+      revision: "2026-09-02T00:00:01.000Z",
+    }));
+    const protocol = new AgentTrioMcpProtocol({
+      service: { handle: vi.fn(async () => result()) },
+      input,
+      output,
+      monitorDataForRun,
+    });
+    const running = protocol.run();
+    input.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agent_trio", arguments: { action: "status", runId: "run-1", monitorCursor: 7, monitorRevision: "old", monitorWaitMs: 10 } } })}\n`,
+    );
+    input.end();
+    await running;
+
+    expect(monitorDataForRun).toHaveBeenCalledWith("run-1", {
+      cursor: 7,
+      afterRevision: "old",
+      waitMs: 10,
+      maxEventBytes: 16 * 1024,
+    });
+    const response = text
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .find((message) => message["id"] === 1) as {
+      result: { content: Array<{ text: string }>; structuredContent: Record<string, unknown> };
+    };
+    expect(response.result.structuredContent).toMatchObject({
+      runId: "run-1",
+      status: "completed",
+      finalResponse: null,
+      monitor: {
+        nextCursor: 123,
+        revision: "2026-09-02T00:00:01.000Z",
+        snapshot: { request: { objective: "inspect the project" } },
+      },
+    });
+    expect(JSON.parse(response.result.content[0]!.text)).toMatchObject({ finalResponse: null });
+  });
+
+  it("keeps dense embedded monitor updates below the MCP transport limit", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let text = "";
+    output.setEncoding("utf8");
+    output.on("data", (chunk: string) => {
+      text += chunk;
+    });
+    const denseResult = result();
+    denseResult.error = "e".repeat(30_000);
+    denseResult.needsAction = "n".repeat(30_000);
+    const protocol = new AgentTrioMcpProtocol({
+      service: { handle: vi.fn(async () => denseResult) },
+      input,
+      output,
+      monitorDataForRun: vi.fn(async () => ({
+        snapshot: {
+          request: { objective: "o".repeat(20_000) },
+          remoteTurns: Array.from({ length: 100 }, (_, index) => ({
+            role: "leaf",
+            taskId: `leaf-${String(index)}`,
+            threadId: "t".repeat(500),
+            turnId: "u".repeat(500),
+            state: "running",
+            updatedAt: "2026-09-02T00:00:01.000Z",
+          })),
+        },
+        events: Array.from({ length: 100 }, (_, index) => ({
+          type: "app_server",
+          method: "item/completed",
+          data: { itemId: `item-${String(index)}`, text: "x".repeat(20_000) },
+        })),
+        nextCursor: 999_999,
+        hasMore: true,
+        revision: "2026-09-02T00:00:01.000Z",
+      })),
+    });
+    const running = protocol.run();
+    input.end(
+      `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agent_trio", arguments: { action: "status", runId: "run-1", monitorCursor: 0 } } })}\n`,
+    );
+    await running;
+
+    const responseLine = text.trim();
+    expect(Buffer.byteLength(responseLine, "utf8")).toBeLessThan(64 * 1024);
+    const response = JSON.parse(responseLine) as {
+      result: { structuredContent: { monitor: { events: unknown[]; nextCursor: number } } };
+    };
+    expect(response.result.structuredContent.monitor.nextCursor).toBe(999_999);
+    expect(response.result.structuredContent.monitor.events.length).toBeGreaterThan(0);
   });
 
   it("accepts only an explicit caller permission mode on start actions", () => {

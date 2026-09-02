@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { isMainThread } from "node:worker_threads";
 import type { AgentTrioRequest, BatchResult } from "../core/contracts.js";
 import type { AgentTrioService } from "../core/service.js";
+import type { MonitorDataQuery, MonitorDataUpdate } from "../monitor/data.js";
 import { launchDetachedSupervisor, type SupervisorRequest } from "../supervisor.js";
 import { AgentTrioMcpProtocol } from "./protocol.js";
 import { MCP_ROOT_DISPATCH_CONSTRAINT } from "../core/router.js";
@@ -15,6 +16,7 @@ export type McpService = Pick<AgentTrioService, "handle"> &
 export interface AgentTrioMcpRuntime {
   service: McpService;
   monitorUrlForRun?: (runId: string) => string | undefined;
+  monitorDataForRun?: (runId: string, query: MonitorDataQuery) => Promise<MonitorDataUpdate>;
   close?: () => void | Promise<void>;
 }
 
@@ -28,6 +30,7 @@ export interface McpDispatchOptions {
   generateRunId?: McpRunIdGenerator;
   workspaceRoots?: readonly string[];
   monitorUrlForRun?: (runId: string) => string | undefined;
+  monitorDataForRun?: (runId: string, query: MonitorDataQuery) => Promise<MonitorDataUpdate>;
 }
 
 export interface RunMcpStdioOptions extends McpDispatchOptions {
@@ -56,6 +59,9 @@ export function createMcpServer(
     ...(dispatchOptions.monitorUrlForRun === undefined
       ? {}
       : { monitorUrlForRun: dispatchOptions.monitorUrlForRun }),
+    ...(dispatchOptions.monitorDataForRun === undefined
+      ? {}
+      : { monitorDataForRun: dispatchOptions.monitorDataForRun }),
     ...(dispatchOptions.generateRunId === undefined
       ? {}
       : { createRunId: dispatchOptions.generateRunId }),
@@ -89,6 +95,9 @@ export async function runMcpStdio(options: RunMcpStdioOptions = {}): Promise<voi
         ...(runtime.monitorUrlForRun === undefined
           ? {}
           : { monitorUrlForRun: runtime.monitorUrlForRun }),
+        ...(runtime.monitorDataForRun === undefined
+          ? {}
+          : { monitorDataForRun: runtime.monitorDataForRun }),
       },
     );
     await protocol.run();

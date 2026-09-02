@@ -101,8 +101,8 @@ enabled = true
       "utf8",
     );
     expect(installedSkill).toContain("`agent_trio` MCP runtime");
-    expect(installedSkill).toContain("monitorFirst=true");
-    expect(installedSkill).toContain("wait=true");
+    expect(installedSkill).toContain("exactly one `action=run` call");
+    expect(installedSkill).toContain("MCP Apps monitor");
     expect(readFileSync(join(layout.skillDirectory, "agents", "openai.yaml"), "utf8")).toContain(
       "allow_implicit_invocation: false",
     );

@@ -260,18 +260,18 @@ thread usage notifications. Remote-turn checkpoints provide the `runId`, role, t
 turn mapping; the monitor recorder then appends only matching events to that run's
 `monitor.jsonl`. This path is observational and never feeds content back into a model.
 
-The recorder uses a bounded 250 ms asynchronous batch, a 2 MiB pending-memory ceiling, a 128 KiB
-per-event ceiling, and a 24 MiB per-run log ceiling. Consecutive delta notifications with the same
-method, thread, turn, and item ID are merged before serialization. Delta events are the first events
-dropped when the pending buffer is full. Job lifecycle and recovery continue independently if
-monitor capture or presentation fails.
+The recorder uses a bounded 250 ms asynchronous batch, a 512 KiB pending-memory ceiling, a 16 KiB
+per-event ceiling, and an 8 MiB per-run log ceiling. Token delta notifications are discarded;
+completed App Server items provide one durable record per message, reasoning item, command, tool
+call, or file change. Job lifecycle and recovery continue independently if monitor capture or
+presentation fails.
 
-A detached loopback HTTP process reads `job.json` and monitor events on demand. Its SSE endpoint is
-woken by filesystem notifications, and event history is paged by byte cursor. The read path also
-coalesces adjacent legacy delta records, while the browser joins pages by logical App Server item ID
-and renders conversation entries rather than token fragments. The process is shared by foreground,
-submitted, MCP, and CLI runs under one job root. It adds no model tokens, App Server turns,
-reviewers, scheduler gates, or orchestration heartbeat.
+The primary presentation is an MCP Apps resource attached to `agent_trio`. It renders inside the
+host conversation and calls the same tool with a byte cursor, snapshot revision, and bounded long
+poll timeout. These component-originated calls do not enter model context. A detached loopback HTTP
+process remains as the CLI and non-MCP-Apps fallback. It pages the same files by byte cursor and uses
+filesystem-driven SSE. Both paths add no model tokens, App Server turns, reviewers, scheduler gates,
+or orchestration heartbeat.
 
 ## Workspaces
 
@@ -391,14 +391,11 @@ the first snapshot exists. The supervisor then waits for that same run and exits
 the submitting process. There is no daemon database, lease renewer, heartbeat loop, or separate
 workflow state machine.
 
-Explicit foreground skill invocations use a Monitor-first variant of that handshake. MCP
-`submit(monitorFirst=true)` asks the supervisor to execute the ordinary foreground `run` contract,
-returns the first persisted snapshot and Monitor URL, and leaves execution running in that same
-operation. One subsequent `status(wait=true)` call watches `job.json` and returns when the run is
-completed, failed, cancelled, waiting for input, or indeterminate. The watcher closes the
-read-before-watch race with an immediate second snapshot read. This changes presentation timing,
-not admission, planning, scheduling, budgets, leaf limits, integration, or review policy, and it
-does not poll a model or filesystem.
+Explicit foreground skill invocations generate a unique run ID and issue one ordinary blocking MCP
+`run` call. The attached MCP Apps resource receives that ID through the tool-input notification and
+renders while the call remains active. Its cursor-based `status` long polls are component traffic,
+not model turns. The legacy `submit(monitorFirst=true)` plus one `status(wait=true)` flow remains
+accepted for clients that cannot mount a component before completion.
 
 Snapshots record App Server thread and turn IDs at `thread_started`, `running`, and confirmed
 `terminal` states. Recovery attempts to resolve those IDs through App Server. Read-only turns can
@@ -444,9 +441,9 @@ Local Codex clients expose exactly one MCP tool, `agent_trio`, with `run`, `subm
 `resume`, and `cancel` actions. The CLI provides the same five operations plus `benchmark`. Both
 call the same `AgentTrioService`; neither reimplements scheduling policy.
 
-The public tool also accepts two action-scoped presentation flags: `monitorFirst` only on `submit`,
-and `wait` only on `status`. Together they let a client render the Monitor before waiting for a
-foreground-equivalent result without exposing another tool or scheduling path.
+The public tool also accepts legacy action-scoped presentation flags: `monitorFirst` only on
+`submit`, and `wait` only on `status`. The embedded component uses cursor, revision, and long-poll
+fields on `status`; they do not expose another tool or alter execution semantics.
 
 The user installer registers that MCP server and installs two user skills. `$agent-trio` delegates
 one explicitly selected turn. `$agent-trio-session` permits implicit selection only for related
