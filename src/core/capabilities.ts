@@ -4,6 +4,7 @@ import type { CapabilityRef } from "./contracts.js";
 
 const RECURSIVE_ORCHESTRATION_NAMES = new Set([
   "agent-trio",
+  "agent-trio-session",
   "hierarchical-codex",
   "codex-mission-ledger",
 ]);

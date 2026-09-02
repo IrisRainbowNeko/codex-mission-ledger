@@ -29,8 +29,8 @@ Child App Server threads:
 filesystem and network access without interactive approval. `readOnly` forces all execution
 threads to read-only. `workspaceWrite`, and legacy requests that omit `hostAccess`, retain the
 role-specific read-only/workspace-write behavior. Standard MCP tool calls do not expose the host
-sandbox automatically, so the installed skill copies the current mode exactly and forbids choosing
-a stronger one. Standard MCP also does not expose the host approval mode, so the skill copies
+sandbox automatically, so both installed skills copy the current mode exactly and forbid choosing
+a stronger one. Standard MCP also does not expose the host approval mode, so both skills copy
 Approve for me as `hostApproval=approveForMe`; this maps to `approvalPolicy=on-request` and
 `approvalsReviewer=auto_review`. Direct MCP and CLI callers are responsible for making the same
 truthful assertion. Planner, integrator, final-review, and deterministic validator scopes are not
@@ -81,10 +81,11 @@ may arrive after a request has started, and cancellation may not immediately sto
 ## User Installation
 
 The installer modifies user-level Codex configuration only when explicitly run. It registers one
-`[mcp_servers.agent_trio]` table and installs one explicit-only user skill that delegates to that
-tool. It does not install an agent profile, hook, global `AGENTS.md` instruction block, or
-root-model override. Child App Server threads exclude the skill and cannot recursively invoke the
-runtime.
+`[mcp_servers.agent_trio]` table and installs two user skills that delegate to that tool:
+`$agent-trio` is explicit-only, while `$agent-trio-session` may be implicitly selected only for
+related follow-ups after that session skill was explicitly invoked in the same conversation. It
+does not install an agent profile, hook, global `AGENTS.md` instruction block, or root-model
+override. Child App Server threads exclude both skills and cannot recursively invoke the runtime.
 
 When an MCP client advertises workspace roots, the server confines `cwd` to those roots. Clients
 without roots support must pass an absolute, resolvable `cwd`; the spawned Codex App Server then

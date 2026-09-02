@@ -320,7 +320,7 @@ These recipes guide Sol's plan but do not bypass schema, budget, workspace, or c
 
 The planner sees a capability catalog from App Server `skills/list` and, only when explicitly
 enabled, `plugin/installed`. Terra admission receives the compact form described in the direct
-path. A leaf receives only capabilities named in its plan. The Agent Trio skill is always
+path. A leaf receives only capabilities named in its plan. Both Agent Trio user skills are always
 forbidden.
 
 Plugin support is opt-in through `AGENT_TRIO_ALLOW_PLUGINS=1`. An explicitly requested plugin, or
@@ -348,7 +348,7 @@ Every child thread:
 
 The MCP protocol carries `hostAccess=readOnly|workspaceWrite|fullAccess` and
 `hostApproval=never|approveForMe` because MCP does not expose the calling Codex sandbox or approval
-mode as standard tool metadata. The explicit skill copies the active host modes and must not raise
+mode as standard tool metadata. Both user skills copy the active host modes and must not raise
 either. Omitted values preserve the original role-specific workspace and non-approving behavior.
 Both fields are stored in the durable run request and reused for leaf retries and resume turns.
 `approveForMe` maps exactly to App Server `approvalPolicy=on-request` and
@@ -448,10 +448,12 @@ The public tool also accepts two action-scoped presentation flags: `monitorFirst
 and `wait` only on `status`. Together they let a client render the Monitor before waiting for a
 foreground-equivalent result without exposing another tool or scheduling path.
 
-The user installer registers that MCP server and installs one explicit-only user skill. The skill
-only delegates a user-selected request to the MCP and is excluded from child capability discovery.
-V3 installs no model profile, hook, or global `AGENTS.md` instructions, and it does not change the
-user's selected root model.
+The user installer registers that MCP server and installs two user skills. `$agent-trio` delegates
+one explicitly selected turn. `$agent-trio-session` permits implicit selection only for related
+follow-ups after it was explicitly invoked in the same conversation; completed follow-ups start a
+new run with compact prior context, while `waiting_input` continues the existing run. Both skills
+are excluded from child capability discovery. V3 installs no model profile, hook, or global
+`AGENTS.md` instructions, and it does not change the user's selected root model.
 
 ## Explicit Non-Goals
 

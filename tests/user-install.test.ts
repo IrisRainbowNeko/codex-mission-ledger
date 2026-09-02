@@ -69,7 +69,7 @@ enabled = true
     expect(mergeUserConfig(merged, options)).toBe(merged);
   });
 
-  it("migrates V1/V2 to one explicit skill without profiles or AGENTS instructions", () => {
+  it("migrates V1/V2 to one-shot and session skills without profiles or AGENTS instructions", () => {
     const paths = temporaryPaths();
     const layout = resolveUserLayout(paths);
     mkdirSync(dirname(layout.configToml), { recursive: true });
@@ -96,12 +96,24 @@ enabled = true
     expect(config).not.toContain("hierarchical_codex");
     expect(agents).toBe("Keep this user rule.\n");
     const installedSkill = readFileSync(join(layout.skillDirectory, "SKILL.md"), "utf8");
+    const installedSessionSkill = readFileSync(
+      join(layout.sessionSkillDirectory, "SKILL.md"),
+      "utf8",
+    );
     expect(installedSkill).toContain("`agent_trio` MCP runtime");
     expect(installedSkill).toContain("monitorFirst=true");
     expect(installedSkill).toContain("wait=true");
     expect(readFileSync(join(layout.skillDirectory, "agents", "openai.yaml"), "utf8")).toContain(
       "allow_implicit_invocation: false",
     );
+    expect(installedSessionSkill).toContain("name: agent-trio-session");
+    expect(installedSessionSkill).toContain("previously invoked $agent-trio-session");
+    expect(installedSessionSkill).toContain("Do not activate from a prior $agent-trio single-turn");
+    expect(installedSessionSkill).toContain("switches to a clearly unrelated task");
+    expect(
+      readFileSync(join(layout.sessionSkillDirectory, "agents", "openai.yaml"), "utf8"),
+    ).toContain("allow_implicit_invocation: true");
+    expect(result.written).toContain(layout.sessionSkillDirectory);
     expect(PROFILE_FILES).toEqual([]);
     expect(existsSync(join(layout.profileDirectory, "luna-worker.toml"))).toBe(false);
   });
@@ -118,7 +130,7 @@ enabled = true
     expect(readFileSync(personal, "utf8")).toBe('name = "personal"\n');
   });
 
-  it("uninstalls only the V3 MCP table and managed explicit skill", () => {
+  it("uninstalls only the V3 MCP table and both managed skills", () => {
     const paths = temporaryPaths();
     const layout = resolveUserLayout(paths);
     mkdirSync(dirname(layout.configToml), { recursive: true });
@@ -135,24 +147,30 @@ enabled = true
     expect(config).toContain("[mcp_servers.notion]");
     expect(config).not.toContain("mcp_servers.agent_trio");
     expect(existsSync(layout.skillDirectory)).toBe(false);
+    expect(existsSync(layout.sessionSkillDirectory)).toBe(false);
     expect(existsSync(layout.manifestPath)).toBe(false);
   });
 
-  it("replaces its managed skill idempotently without reporting it as legacy", () => {
+  it("replaces both managed skills idempotently without reporting them as legacy", () => {
     const paths = temporaryPaths();
     const first = installUserScope(paths);
     const second = installUserScope(paths);
     const layout = resolveUserLayout(paths);
 
     expect(first.written).toContain(layout.skillDirectory);
+    expect(first.written).toContain(layout.sessionSkillDirectory);
     expect(second.removedLegacy).not.toContain(layout.skillDirectory);
+    expect(second.removedLegacy).not.toContain(layout.sessionSkillDirectory);
     expect(verifyUserInstall(paths).problems).toEqual([]);
     expect(readFileSync(join(layout.skillDirectory, "SKILL.md"), "utf8")).toContain(
       "name: agent-trio",
     );
+    expect(readFileSync(join(layout.sessionSkillDirectory, "SKILL.md"), "utf8")).toContain(
+      "name: agent-trio-session",
+    );
   });
 
-  it("detects an implicitly invokable installed skill", () => {
+  it("detects an implicitly invokable one-shot skill", () => {
     const paths = temporaryPaths();
     installUserScope(paths);
     const layout = resolveUserLayout(paths);
@@ -167,6 +185,24 @@ enabled = true
 
     expect(verifyUserInstall(paths).problems).toContain(
       "installed agent-trio skill must be explicit-only",
+    );
+  });
+
+  it("detects a session skill that cannot continue implicitly", () => {
+    const paths = temporaryPaths();
+    installUserScope(paths);
+    const layout = resolveUserLayout(paths);
+    const metadata = join(layout.sessionSkillDirectory, "agents", "openai.yaml");
+    writeFileSync(
+      metadata,
+      readFileSync(metadata, "utf8").replace(
+        "allow_implicit_invocation: true",
+        "allow_implicit_invocation: false",
+      ),
+    );
+
+    expect(verifyUserInstall(paths).problems).toContain(
+      "installed agent-trio-session skill must allow related follow-up invocation",
     );
   });
 

@@ -136,7 +136,7 @@ describe("CapabilityResolver", () => {
     );
   });
 
-  it.each(["agent-trio", "hierarchical_codex", "codex mission ledger"])(
+  it.each(["agent-trio", "agent-trio-session", "hierarchical_codex", "codex mission ledger"])(
     "always rejects recursive orchestration capability %s",
     async (name) => {
       const root = mkdtempSync(join(tmpdir(), "agent-trio-cap-"));

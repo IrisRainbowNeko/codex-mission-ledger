@@ -58,21 +58,25 @@ npm run doctor:user
 `install:user` performs two user-level changes:
 
 - registers one `[mcp_servers.agent_trio]` entry in `~/.codex/config.toml`;
-- installs the explicit-only skill at `~/.agents/skills/agent-trio`.
+- installs `$agent-trio` at `~/.agents/skills/agent-trio` and `$agent-trio-session` at
+  `~/.agents/skills/agent-trio-session`.
 
 It does not install hooks, native agent profiles, a global `AGENTS.md`, or change the selected root
-model. The skill contains no scheduler or planning logic; it delegates once to the MCP runtime and
-is not loaded for ordinary prompts.
+model. Both skills contain routing instructions only and reuse the same MCP runtime.
 
 Restart the ChatGPT desktop app, reload the VS Code Codex extension, and start a new Codex CLI
 session after installation. The MCP registration is shared by all three local Codex clients.
 
 Verify `agent_trio` with `/mcp` in the ChatGPT desktop app or Codex CLI, or with **MCP servers** in
-the VS Code Codex extension. Then invoke it explicitly:
+the VS Code Codex extension. Then choose one mode:
 
 ```text
 # ChatGPT desktop app in Codex, VS Code Codex, or interactive Codex CLI
+# One turn only; later turns must mention it again.
 $agent-trio implement this feature and run the relevant tests
+
+# Related follow-ups in this conversation continue through Agent Trio automatically.
+$agent-trio-session implement this feature and run the relevant tests
 ```
 
 For a non-interactive CLI run, keep the `$` inside single quotes:
@@ -81,10 +85,14 @@ For a non-interactive CLI run, keep the `$` inside single quotes:
 codex exec '$agent-trio research these alternatives and produce a comparison'
 ```
 
-ChatGPT Chat and Work use `@agent-trio` instead of the Codex `$agent-trio` mention. A prompt without
-the mention uses the normal Codex path, so the user decides when to pay the orchestration overhead.
+ChatGPT Chat and Work use `@agent-trio` and `@agent-trio-session` instead of Codex `$` mentions.
+`agent-trio` is explicit-only. After `agent-trio-session` is explicitly selected once, related
+corrections, refinements, continuations, and questions in that conversation are implicitly routed
+through Agent Trio. Say to stop using Agent Trio, ask for normal Codex, switch to an unrelated task,
+or start a new conversation to leave session mode. Ordinary conversations never start session mode
+implicitly.
 
-For explicit foreground invocations, the installed skill starts a foreground-equivalent run,
+For foreground invocations, the selected skill starts a foreground-equivalent run,
 immediately shows its local `monitorUrl`, and waits once for the persisted result. Open the link
 while the task runs to inspect the live DAG and select any planner, leaf, direct agent, integrator,
 or final-review thread. The view includes public agent messages, reasoning summaries emitted by
@@ -92,11 +100,11 @@ Codex, tool and command activity, file changes, token usage, cost, and validatio
 expose private hidden model reasoning. The wait is driven by filesystem events, not model calls or
 polling. Completed MCP results also prefix `finalResponse` with the Monitor link.
 
-The skill also passes the current Codex task permission and approval modes to Agent Trio. A Full
+Both skills also pass the current Codex task permission and approval modes to Agent Trio. A Full
 access task gives direct agents and execution leaves Full access, including network access;
 Workspace access and Read-only tasks remain correspondingly restricted. Approve for me is inherited
-through App Server automatic review. The skill must never request stronger access or approval than
-the calling task. Calls made without the skill can set the same context explicitly through MCP
+through App Server automatic review. Neither skill may request stronger access or approval than
+the calling task. Calls made without a skill can set the same context explicitly through MCP
 `hostAccess`/`hostApproval` or CLI `--host-access`/`--host-approval`.
 
 Useful installation commands:
@@ -227,7 +235,7 @@ The local Codex clients expose one MCP tool named `agent_trio` with five actions
 | `resume` | Continue the original App Server thread with supplied input      |
 | `cancel` | Interrupt an active run without replaying completed side effects |
 
-The explicit skill implements its visible foreground flow with two calls to this same tool:
+Both installed skills implement their visible foreground flow with two calls to this same tool:
 
 ```text
 submit(monitorFirst=true) -> show monitorUrl -> status(runId, wait=true)

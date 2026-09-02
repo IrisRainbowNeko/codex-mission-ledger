@@ -267,6 +267,13 @@ describe("AppServerCapabilityCatalog", () => {
               scope: "repo",
             },
             {
+              name: "agent-trio-session",
+              path: "/skills/agent-trio-session/SKILL.md",
+              enabled: true,
+              pluginId: null,
+              scope: "user",
+            },
+            {
               name: "ordinary",
               path: "/workspace/hierarchical-codex/.agents/skills/ordinary/SKILL.md",
               enabled: true,

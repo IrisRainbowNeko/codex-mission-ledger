@@ -1,11 +1,14 @@
 ---
 name: agent-trio
-description: Explicitly delegate a user-selected task to the Agent Trio V3 MCP runtime for cost-aware direct or parallel multi-agent execution. Use only when the user invokes $agent-trio or explicitly asks to use Agent Trio; do not trigger it implicitly for ordinary requests.
+description: Explicitly delegate one user-selected turn to the Agent Trio V3 MCP runtime for cost-aware direct or parallel multi-agent execution. Use only when the user invokes $agent-trio or explicitly asks for one Agent Trio run. Never continue implicitly on later turns; use $agent-trio-session when the user wants related follow-ups to stay on Agent Trio.
 ---
 
 # Agent Trio
 
 Delegate the complete request to the `agent_trio` MCP runtime.
+
+This is the single-turn skill. It does not activate Agent Trio for later prompts. A follow-up must
+invoke `$agent-trio` again unless the user explicitly chose `$agent-trio-session` instead.
 
 ## Invocation
 

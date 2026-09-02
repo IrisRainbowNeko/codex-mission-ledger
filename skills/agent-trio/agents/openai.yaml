@@ -1,6 +1,6 @@
 interface:
   display_name: "Agent Trio"
-  short_description: "Run cost-aware parallel work with Agent Trio"
+  short_description: "Run one explicit Agent Trio task"
   default_prompt: "Use $agent-trio to complete this task with cost-aware multi-agent execution."
 
 dependencies:

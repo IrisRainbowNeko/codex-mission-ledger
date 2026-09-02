@@ -20,7 +20,7 @@ const priceTable = valueAfter("--price-table");
 if (process.argv.includes("--uninstall")) {
   const layout = uninstallUserScope(paths);
   process.stdout.write(
-    `Removed the Agent Trio V3 MCP registration and explicit skill from ${layout.codexHome}.\n`,
+    `Removed the Agent Trio V3 MCP registration and both user skills from ${layout.codexHome}.\n`,
   );
   process.stdout.write("Unrelated Codex settings and migration backups were preserved.\n");
 } else {
@@ -29,7 +29,9 @@ if (process.argv.includes("--uninstall")) {
     ...(jobRoot === undefined ? {} : { jobRoot }),
     ...(priceTable === undefined ? {} : { priceTable }),
   });
-  process.stdout.write("Registered the Agent Trio V3 MCP tool and explicit $agent-trio skill.\n");
+  process.stdout.write(
+    "Registered the Agent Trio V3 MCP tool with $agent-trio and $agent-trio-session skills.\n",
+  );
   process.stdout.write(
     "Root model, native agent profiles, hooks, and AGENTS.md were not changed.\n",
   );

@@ -64,7 +64,9 @@ export async function runDoctor(
   check(checks, "No recursive project integration", () => {
     const forbidden = [
       ".agents/skills/agent-trio/SKILL.md",
+      ".agents/skills/agent-trio-session/SKILL.md",
       ".codex/skills/agent-trio/SKILL.md",
+      ".codex/skills/agent-trio-session/SKILL.md",
       "profiles/luna-worker.toml",
       "profiles/terra-worker.toml",
       "profiles/sol-specialist.toml",
@@ -79,12 +81,17 @@ export async function runDoctor(
     if (/\$agent-trio|agent_trio|MISSION_ROUTE|task_claim/u.test(agents)) {
       throw new Error("project AGENTS.md still injects Agent Trio orchestration");
     }
-    const packagedSkill = ["skills/agent-trio/SKILL.md", "skills/agent-trio/agents/openai.yaml"];
+    const packagedSkill = [
+      "skills/agent-trio/SKILL.md",
+      "skills/agent-trio/agents/openai.yaml",
+      "skills/agent-trio-session/SKILL.md",
+      "skills/agent-trio-session/agents/openai.yaml",
+    ];
     const missingSkill = packagedSkill.filter((path) => !existsSync(join(packageRoot, path)));
     if (missingSkill.length > 0) {
-      throw new Error(`missing explicit user skill sources: ${missingSkill.join(", ")}`);
+      throw new Error(`missing user skill sources: ${missingSkill.join(", ")}`);
     }
-    return "no recursive project integration; explicit user skill is packaged separately";
+    return "no recursive project integration; one-shot and session skills are packaged separately";
   });
 
   const configuredPriceTable = env["AGENT_TRIO_PRICE_TABLE"];
@@ -117,7 +124,7 @@ export async function runDoctor(
       ok: report.problems.length === 0,
       detail:
         report.problems.length === 0
-          ? "one agent_trio MCP registration and one explicit-only user skill"
+          ? "one agent_trio MCP registration with one-shot and session user skills"
           : report.problems.join("; "),
     });
     warnings.push(...report.warnings);

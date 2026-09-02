@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Install two user-selectable skills over the same `agent_trio` MCP service: `$agent-trio` remains
+  explicit for one turn, while `$agent-trio-session` keeps related follow-ups on Agent Trio after
+  one explicit activation.
+- Session follow-ups start a new run with only the necessary prior goal, result, decisions, and
+  artifact paths. A prior `waiting_input` run is resumed instead of duplicated.
+
+### Changed
+
+- User installation, verification, doctor output, manifests, upgrades, and uninstall now manage
+  both skills without adding hooks, global instructions, agent profiles, or another MCP service.
+
 ## [3.2.0] - 2026-09-01
 
 ### Added

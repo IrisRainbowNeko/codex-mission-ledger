@@ -44,6 +44,7 @@ export interface UserInstallLayout {
   codexHome: string;
   agentsHome: string;
   skillDirectory: string;
+  sessionSkillDirectory: string;
   legacySkillDirectories: string[];
   profileDirectory: string;
   configToml: string;
@@ -112,6 +113,7 @@ export function resolveUserLayout(paths: UserInstallPaths): UserInstallLayout {
     codexHome: paths.codexHome,
     agentsHome: join(paths.homeDirectory, ".agents"),
     skillDirectory: join(paths.homeDirectory, ".agents", "skills", "agent-trio"),
+    sessionSkillDirectory: join(paths.homeDirectory, ".agents", "skills", "agent-trio-session"),
     legacySkillDirectories: [
       join(paths.codexHome, "skills", "agent-trio"),
       join(paths.codexHome, "skills", "sol-terra-luna"),
@@ -179,9 +181,17 @@ export function installUserScope(
 
   const removedLegacy = migrateLegacyFiles(layout, backups);
   replaceUserSkill(
-    sourceSkillDirectory(paths.packageRoot),
+    sourceSkillDirectory(paths.packageRoot, "agent-trio"),
     layout.skillDirectory,
     previousManifest?.files.includes(layout.skillDirectory) ?? false,
+    layout.backupDirectory,
+    backups,
+    removedLegacy,
+  );
+  replaceUserSkill(
+    sourceSkillDirectory(paths.packageRoot, "agent-trio-session"),
+    layout.sessionSkillDirectory,
+    previousManifest?.files.includes(layout.sessionSkillDirectory) ?? false,
     layout.backupDirectory,
     backups,
     removedLegacy,
@@ -189,14 +199,20 @@ export function installUserScope(
   const manifest: InstallManifest = {
     version: 3,
     packageRoot: paths.packageRoot,
-    files: [layout.skillDirectory],
+    files: [layout.skillDirectory, layout.sessionSkillDirectory],
     mcpExecutable: mcpExecutable(paths.packageRoot),
   };
   atomicWrite(layout.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
   return {
     layout,
-    written: [layout.configToml, layout.skillDirectory, layout.userAgentsMd, layout.manifestPath],
+    written: [
+      layout.configToml,
+      layout.skillDirectory,
+      layout.sessionSkillDirectory,
+      layout.userAgentsMd,
+      layout.manifestPath,
+    ],
     removedLegacy,
     backups,
   };
@@ -224,7 +240,16 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
   const warnings: string[] = [];
   const skillMd = join(layout.skillDirectory, "SKILL.md");
   const skillMetadata = join(layout.skillDirectory, "agents", "openai.yaml");
-  const required = [layout.configToml, layout.manifestPath, skillMd, skillMetadata];
+  const sessionSkillMd = join(layout.sessionSkillDirectory, "SKILL.md");
+  const sessionSkillMetadata = join(layout.sessionSkillDirectory, "agents", "openai.yaml");
+  const required = [
+    layout.configToml,
+    layout.manifestPath,
+    skillMd,
+    skillMetadata,
+    sessionSkillMd,
+    sessionSkillMetadata,
+  ];
   for (const path of required) {
     if (!existsSync(path)) {
       problems.push(`missing ${path}`);
@@ -249,6 +274,9 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
   if (!manifest?.files.includes(layout.skillDirectory)) {
     problems.push("install manifest does not own the Agent Trio skill");
   }
+  if (!manifest?.files.includes(layout.sessionSkillDirectory)) {
+    problems.push("install manifest does not own the Agent Trio Session skill");
+  }
   const skillText = readOptional(skillMd);
   if (
     !/^name:\s*agent-trio\s*$/mu.test(skillText) ||
@@ -264,6 +292,25 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
   }
   if (!/^\s*value:\s*"agent_trio"\s*$/mu.test(metadataText)) {
     problems.push("installed agent-trio skill must declare the agent_trio MCP dependency");
+  }
+  const sessionSkillText = readOptional(sessionSkillMd);
+  if (
+    !/^name:\s*agent-trio-session\s*$/mu.test(sessionSkillText) ||
+    !sessionSkillText.includes("`agent_trio` MCP runtime") ||
+    !sessionSkillText.includes("monitorFirst=true") ||
+    !sessionSkillText.includes("wait=true") ||
+    !sessionSkillText.includes("previously invoked $agent-trio-session")
+  ) {
+    problems.push(
+      "installed agent-trio-session skill does not implement bounded conversation continuation",
+    );
+  }
+  const sessionMetadataText = readOptional(sessionSkillMetadata);
+  if (!/^\s*allow_implicit_invocation:\s*true\s*$/mu.test(sessionMetadataText)) {
+    problems.push("installed agent-trio-session skill must allow related follow-up invocation");
+  }
+  if (!/^\s*value:\s*"agent_trio"\s*$/mu.test(sessionMetadataText)) {
+    problems.push("installed agent-trio-session skill must declare the agent_trio MCP dependency");
   }
 
   const agentsText = readOptional(layout.userAgentsMd);
@@ -392,8 +439,11 @@ function mcpExecutable(packageRoot: string): string {
   return join(packageRoot, "dist", "mcp", "server.js");
 }
 
-function sourceSkillDirectory(packageRoot: string): string {
-  return join(packageRoot, "skills", "agent-trio");
+function sourceSkillDirectory(
+  packageRoot: string,
+  name: "agent-trio" | "agent-trio-session",
+): string {
+  return join(packageRoot, "skills", name);
 }
 
 export function cleanupLegacyHooksJson(source: string): string {
@@ -490,8 +540,10 @@ function assertInstallable(paths: UserInstallPaths): void {
   const required = [
     join(paths.packageRoot, "package.json"),
     join(paths.packageRoot, "src", "mcp", "server.ts"),
-    join(sourceSkillDirectory(paths.packageRoot), "SKILL.md"),
-    join(sourceSkillDirectory(paths.packageRoot), "agents", "openai.yaml"),
+    join(sourceSkillDirectory(paths.packageRoot, "agent-trio"), "SKILL.md"),
+    join(sourceSkillDirectory(paths.packageRoot, "agent-trio"), "agents", "openai.yaml"),
+    join(sourceSkillDirectory(paths.packageRoot, "agent-trio-session"), "SKILL.md"),
+    join(sourceSkillDirectory(paths.packageRoot, "agent-trio-session"), "agents", "openai.yaml"),
   ];
   const missing = required.filter((path) => !existsSync(path));
   if (missing.length > 0) {

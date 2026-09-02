@@ -1,0 +1,14 @@
+interface:
+  display_name: "Agent Trio Session"
+  short_description: "Keep related follow-ups on Agent Trio"
+  default_prompt: "Use $agent-trio-session to start a continuing Agent Trio task."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "agent_trio"
+      description: "Agent Trio V3 runtime"
+      transport: "stdio"
+
+policy:
+  allow_implicit_invocation: true
