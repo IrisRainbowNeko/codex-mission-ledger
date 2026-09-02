@@ -646,7 +646,12 @@ export class CodexAppServerClient implements AppServer {
     this.captureThreadTokenUsage(notification);
     const waiter = this.findMatchingWaiter(notification);
     if (waiter === undefined) {
-      this.bufferNotification(notification);
+      if (
+        this.options.bufferNotificationDeltas !== false ||
+        !isDeltaNotification(notification.method)
+      ) {
+        this.bufferNotification(notification);
+      }
     } else {
       waiter.cleanup();
       waiter.resolve(notification);
@@ -989,6 +994,10 @@ export class CodexAppServerClient implements AppServer {
   }
 }
 
+function isDeltaNotification(method: string): boolean {
+  return method.toLowerCase().endsWith("delta");
+}
+
 export function textInput(text: string): TurnStartParams["input"][number] {
   return { type: "text", text, text_elements: [] };
 }
@@ -1032,23 +1041,12 @@ function parseInitializeResponse(value: unknown): InitializeResponse {
   ) {
     throw new AppServerProtocolError("initialize returned an invalid response");
   }
-  const serverVersion = appServerVersionFromUserAgent(value["userAgent"]);
-  if (serverVersion !== CODEX_APP_SERVER_VERSION) {
-    throw new AppServerProtocolError(
-      `codex app-server ${CODEX_APP_SERVER_VERSION} is required; initialize returned '${value["userAgent"]}'`,
-    );
-  }
   return {
     userAgent: value["userAgent"],
     codexHome: value["codexHome"],
     platformFamily: value["platformFamily"],
     platformOs: value["platformOs"],
   };
-}
-
-function appServerVersionFromUserAgent(userAgent: string): string | null {
-  const match = /^(?:codex_app_server|Codex Desktop)\/([^\s(]+)/u.exec(userAgent);
-  return match?.[1] ?? null;
 }
 
 function parseRequestId(value: unknown): RequestId {

@@ -2,6 +2,8 @@ import { isAbsolute, relative } from "node:path";
 import type {
   CapabilityRef,
   ExecutionPlan,
+  HostAccess,
+  HostApproval,
   LeafResult,
   LeafTask,
   ModelTier,
@@ -24,10 +26,12 @@ import type { LeafExecutor, LeafRunInput } from "../core/scheduler.js";
 import type { AgentMessageInput } from "../core/messages.js";
 import { buildFinalReviewPrompt, compactValidationSignal } from "../core/final-review.js";
 import { textInput } from "./client.js";
+import { childApprovalSettings } from "./permissions.js";
 import { runAppServerValidators, type CommandExecPort } from "./validator.js";
 import type {
   AppServer,
   JsonObject,
+  SandboxMode,
   SandboxPolicy,
   ThreadResumeParams,
   ThreadStartParams,
@@ -68,6 +72,7 @@ const READ_ONLY_TURN_SANDBOX: SandboxPolicy = {
   type: "readOnly",
   networkAccess: false,
 };
+const FULL_ACCESS_TURN_SANDBOX: SandboxPolicy = { type: "dangerFullAccess" };
 
 const CHILD_RECURSION_GUARD = [
   "Complete only the explicit Agent Trio V3 child contract.",
@@ -100,7 +105,7 @@ const LEAF_DEVELOPER_INSTRUCTIONS = [
   "Preserve required qualifiers such as sole, only, exact, at least, and at most in every repeated item; do not weaken an exclusive result to a generic eligible or selected label.",
   "Before returning, silently check every requested item against explicit tie-break, ordering, threshold, and completeness rules and correct the summary in place.",
   "Copy bracketed source identifiers from owned files byte-for-byte; never add, remove, or duplicate an identifier prefix.",
-  "Never ask the user for ok, continue, approval, or permission from this child thread.",
+  "Never ask the user directly for ok, continue, approval, or permission. Tool approvals are handled by the configured App Server policy.",
   "Put local file paths and line references in findings.path and findings.line. findings.path must be a normalized workspace-relative path such as README.fixture, never an absolute path. The citations array accepts only absolute HTTP(S) URLs; leave citations empty when no web source was consulted.",
 ].join(" ");
 
@@ -465,7 +470,7 @@ export class AppServerLeafExecutor implements LeafExecutor {
       throwIfAborted(input.signal);
       const runtime = runtimeFor(server);
       const model = modelForTier(input.task.tier, this.#options.modelMap);
-      const sandbox = input.task.access === "readOnly" ? "read-only" : "workspace-write";
+      const sandbox = effectiveTaskSandbox(input.hostAccess, input.task.access);
       const continuation =
         input.continuation ??
         (selected.owned ? undefined : retryContinuation(input.retry?.previousResult));
@@ -475,6 +480,7 @@ export class AppServerLeafExecutor implements LeafExecutor {
               threadParams(leafOptions, {
                 model,
                 sandbox,
+                ...(input.hostApproval === undefined ? {} : { hostApproval: input.hostApproval }),
                 developerInstructions: LEAF_DEVELOPER_INSTRUCTIONS,
                 // codex-cli 0.151.0 ignores thread/start dynamicTools. Dependency results are
                 // injected into the prompt instead of advertising an unavailable chat channel.
@@ -489,6 +495,7 @@ export class AppServerLeafExecutor implements LeafExecutor {
                 model,
                 sandbox,
                 LEAF_DEVELOPER_INSTRUCTIONS,
+                input.hostApproval,
               ),
             );
       assertSafeChildThread(thread);
@@ -523,7 +530,12 @@ export class AppServerLeafExecutor implements LeafExecutor {
           interruptRequested: false,
           remoteTurn,
         };
-        const context = runtime.registerLeaf(threadId, input.task.id, postMessage);
+        const context = runtime.registerLeaf(
+          threadId,
+          input.task.id,
+          postMessage,
+          input.hostApproval,
+        );
         this.#active.set(activeKey, active);
         let turnStartAttempted = false;
         let observedUsage: ModelUsage[] = [];
@@ -545,8 +557,12 @@ export class AppServerLeafExecutor implements LeafExecutor {
                   : buildLeafContinuationPrompt(input),
               model,
               effort: input.task.effort,
+              ...(input.hostApproval === undefined ? {} : { hostApproval: input.hostApproval }),
               outputSchema: LEAF_RESULT_OUTPUT_SCHEMA,
               skills: capabilities.skills,
+              ...(sandbox === "danger-full-access"
+                ? { sandboxPolicy: FULL_ACCESS_TURN_SANDBOX }
+                : {}),
             }),
           });
           const turnId = requireId(response.turn, "turn/start");
@@ -604,7 +620,13 @@ export class AppServerLeafExecutor implements LeafExecutor {
           if (result.status !== "completed") {
             return result;
           }
-          const validation = await runLeafValidators(server, input.task, cwd, input.signal);
+          const validation = await runLeafValidators(
+            server,
+            input.task,
+            cwd,
+            sandbox === "read-only" ? "readOnly" : input.task.access,
+            input.signal,
+          );
           if (validation.some((item) => item.status === "failed")) {
             const infrastructureFailure = validation.some(isValidatorInfrastructureFailure);
             return {
@@ -1210,7 +1232,8 @@ function threadParams(
   options: NormalizedAdapterOptions,
   input: {
     model: string;
-    sandbox: "read-only" | "workspace-write";
+    sandbox: SandboxMode;
+    hostApproval?: HostApproval;
     developerInstructions: string;
     dynamicTools: NonNullable<ThreadStartParams["dynamicTools"]>;
     threadSource: string;
@@ -1223,8 +1246,7 @@ function threadParams(
     ...(options.serviceTier === undefined ? {} : { serviceTier: options.serviceTier }),
     cwd: options.cwd,
     runtimeWorkspaceRoots: [options.cwd],
-    approvalPolicy: "never",
-    approvalsReviewer: "user",
+    ...childApprovalSettings(input.hostApproval),
     sandbox: input.sandbox,
     config:
       input.threadSource === "agent-trio-v3-planner" ? plannerThreadConfig() : childThreadConfig(),
@@ -1244,8 +1266,9 @@ function resumeThreadParams(
   options: NormalizedAdapterOptions,
   threadId: string,
   model: string,
-  sandbox: "read-only" | "workspace-write",
+  sandbox: SandboxMode,
   developerInstructions: string,
+  hostApproval?: HostApproval,
 ): ThreadResumeParams {
   return {
     threadId,
@@ -1254,14 +1277,26 @@ function resumeThreadParams(
     ...(options.serviceTier === undefined ? {} : { serviceTier: options.serviceTier }),
     cwd: options.cwd,
     runtimeWorkspaceRoots: [options.cwd],
-    approvalPolicy: "never",
-    approvalsReviewer: "user",
+    ...childApprovalSettings(hostApproval),
     sandbox,
     config: childThreadConfig(),
     developerInstructions: `${CHILD_RECURSION_GUARD} ${developerInstructions}`,
     personality: "pragmatic",
     excludeTurns: false,
   };
+}
+
+function effectiveTaskSandbox(
+  hostAccess: HostAccess | undefined,
+  taskAccess: LeafTask["access"],
+): SandboxMode {
+  if (hostAccess === "fullAccess") {
+    return "danger-full-access";
+  }
+  if (hostAccess === "readOnly") {
+    return "read-only";
+  }
+  return taskAccess === "readOnly" ? "read-only" : "workspace-write";
 }
 
 function turnParams(
@@ -1273,6 +1308,7 @@ function turnParams(
     effort: ReasoningEffort;
     outputSchema: Readonly<Record<string, unknown>>;
     skills: readonly ResolvedSkill[];
+    hostApproval?: HostApproval;
     sandboxPolicy?: SandboxPolicy;
   },
 ): TurnStartParams {
@@ -1286,8 +1322,7 @@ function turnParams(
     input: [textInput(input.prompt), ...skillInputs],
     cwd: options.cwd,
     runtimeWorkspaceRoots: [options.cwd],
-    approvalPolicy: "never",
-    approvalsReviewer: "user",
+    ...childApprovalSettings(input.hostApproval),
     model: input.model,
     ...(options.serviceTier === undefined ? {} : { serviceTier: options.serviceTier }),
     effort: input.effort,
@@ -1424,6 +1459,7 @@ async function runLeafValidators(
   server: AppServer,
   task: LeafTask,
   cwd: string,
+  access: LeafTask["access"],
   signal: AbortSignal,
 ): Promise<LeafResult["validation"]> {
   if (task.validation.length === 0) {
@@ -1443,7 +1479,7 @@ async function runLeafValidators(
     appServer: commandExec,
     specs: task.validation,
     baseCwd: cwd,
-    access: task.access,
+    access,
     signal,
   });
 }

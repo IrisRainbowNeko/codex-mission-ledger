@@ -95,9 +95,10 @@ enabled = true
     expect(config).toContain("[mcp_servers.notion]");
     expect(config).not.toContain("hierarchical_codex");
     expect(agents).toBe("Keep this user rule.\n");
-    expect(readFileSync(join(layout.skillDirectory, "SKILL.md"), "utf8")).toContain(
-      "`agent_trio` MCP tool exactly once",
-    );
+    const installedSkill = readFileSync(join(layout.skillDirectory, "SKILL.md"), "utf8");
+    expect(installedSkill).toContain("`agent_trio` MCP runtime");
+    expect(installedSkill).toContain("monitorFirst=true");
+    expect(installedSkill).toContain("wait=true");
     expect(readFileSync(join(layout.skillDirectory, "agents", "openai.yaml"), "utf8")).toContain(
       "allow_implicit_invocation: false",
     );

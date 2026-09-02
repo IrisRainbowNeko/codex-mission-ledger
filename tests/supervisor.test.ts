@@ -5,6 +5,7 @@ import type { BatchResult } from "../src/core/contracts.js";
 import {
   launchDetachedSupervisor,
   runSupervisorChild,
+  type ForegroundSupervisorRequest,
   type SubmitRequest,
   type SupervisorChildMessage,
 } from "../src/supervisor.js";
@@ -27,6 +28,15 @@ function request(): SubmitRequest {
     action: "submit",
     runId: "run-1",
     objective: "do durable work",
+    cwd: "/workspace",
+  };
+}
+
+function foregroundRequest(): ForegroundSupervisorRequest {
+  return {
+    action: "run",
+    runId: "run-1",
+    objective: "do foreground work",
     cwd: "/workspace",
   };
 }
@@ -66,6 +76,33 @@ describe("durable supervisor", () => {
     );
 
     expect(handle).toHaveBeenCalledTimes(1);
+  });
+
+  it("acknowledges a foreground run after persistence and then awaits its original operation", async () => {
+    let finish: ((value: BatchResult) => void) | undefined;
+    const completion = new Promise<BatchResult>((resolve) => {
+      finish = resolve;
+    });
+    const handle = vi.fn((request: { action: string }) =>
+      request.action === "run" ? completion : Promise.resolve(result("running")),
+    );
+    const sent: SupervisorChildMessage[] = [];
+    const running = runSupervisorChild(
+      async () => ({ service: { handle } }),
+      (receive) => receive(foregroundRequest()),
+      (message) => {
+        sent.push(message);
+      },
+      () => undefined,
+    );
+
+    await vi.waitFor(() => expect(sent).toEqual([{ type: "accepted", result: result("running") }]));
+    finish?.(result("completed"));
+    await running;
+
+    expect(handle).toHaveBeenNthCalledWith(1, foregroundRequest());
+    expect(handle).toHaveBeenNthCalledWith(2, { action: "status", runId: "run-1" });
+    expect(handle).toHaveBeenCalledTimes(2);
   });
 
   it("returns the accepted snapshot from a detached child handshake", async () => {

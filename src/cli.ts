@@ -17,6 +17,8 @@ import type {
   BatchResult,
   CapabilityRef,
   ExecutionLimits,
+  HostAccess,
+  HostApproval,
   TaskDomain,
 } from "./core/contracts.js";
 import type { AgentTrioService } from "./core/service.js";
@@ -50,6 +52,8 @@ Run and submit options:
   -o, --objective TEXT  Task objective (or provide it positionally)
   -C, --cwd PATH        Workspace root (defaults to the current directory)
   --run-id ID           Caller-selected idempotency key
+  --host-access MODE    Caller permission: read-only, workspace-write, or full-access
+  --host-approval MODE  Caller approval: never or approve-for-me
   --domain DOMAIN       Task domain
   --strategy MODE       Route mode: auto, direct, or fanout
   --direct-tier TIER    Luna or Terra for strategy=direct
@@ -90,6 +94,7 @@ export interface AgentTrioCliOptions {
 
 export interface AgentTrioRuntime {
   service: AgentTrioServicePort;
+  monitorUrlForRun?: (runId: string) => string | undefined;
   close?: () => void | Promise<void>;
 }
 
@@ -206,7 +211,17 @@ export async function runDefaultCli(
         normalizeRuntime,
       );
       runtime = await runtimePromise;
-      return runtime.service.handle(request);
+      const dispatched =
+        (request.action === "run" || request.action === "submit") && request.runId === undefined
+          ? { ...request, runId: randomUUID() }
+          : request;
+      if (dispatched.action === "run" || dispatched.action === "submit") {
+        const monitorUrl = runtime.monitorUrlForRun?.(dispatched.runId!);
+        if (monitorUrl !== undefined) {
+          stderr.write(`Monitor: ${monitorUrl}\n`);
+        }
+      }
+      return runtime.service.handle(dispatched);
     },
   };
   const exitCode = await runCli(argv, {
@@ -284,6 +299,8 @@ function parseStartRequest(
   let objective: string | undefined;
   let cwd: string | undefined;
   let runId: string | undefined;
+  let hostAccess: HostAccess | undefined;
+  let hostApproval: HostApproval | undefined;
   let domain: TaskDomain | undefined;
   let strategy: "auto" | "direct" | "fanout" | undefined;
   let directTier: "luna" | "terra" | undefined;
@@ -318,6 +335,18 @@ function parseStartRequest(
       case "--run-id": {
         const consumed = optionValue(option, args, index);
         runId = consumed.value;
+        index += consumed.extra;
+        break;
+      }
+      case "--host-access": {
+        const consumed = optionValue(option, args, index);
+        hostAccess = parseHostAccess(consumed.value);
+        index += consumed.extra;
+        break;
+      }
+      case "--host-approval": {
+        const consumed = optionValue(option, args, index);
+        hostApproval = parseHostApproval(consumed.value);
         index += consumed.extra;
         break;
       }
@@ -439,6 +468,8 @@ function parseStartRequest(
     objective,
     cwd: requestCwd,
     ...(runId === undefined ? {} : { runId: requireNonEmpty(runId, "runId") }),
+    ...(hostAccess === undefined ? {} : { hostAccess }),
+    ...(hostApproval === undefined ? {} : { hostApproval }),
     ...(domain === undefined ? {} : { domain }),
     ...(strategy === undefined ? {} : { strategy }),
     ...(directTier === undefined ? {} : { directTier }),
@@ -456,6 +487,30 @@ function parseStartRequest(
     ...(integrate === undefined ? {} : { integrate }),
   };
   return request;
+}
+
+function parseHostAccess(value: string): HostAccess {
+  switch (value) {
+    case "read-only":
+      return "readOnly";
+    case "workspace-write":
+      return "workspaceWrite";
+    case "full-access":
+      return "fullAccess";
+    default:
+      throw new CliUsageError("host access must be read-only, workspace-write, or full-access");
+  }
+}
+
+function parseHostApproval(value: string): HostApproval {
+  switch (value) {
+    case "never":
+      return "never";
+    case "approve-for-me":
+      return "approveForMe";
+    default:
+      throw new CliUsageError("host approval must be never or approve-for-me");
+  }
 }
 
 function parseSkillCapability(value: string): CapabilityRef {
@@ -702,6 +757,9 @@ function writeBatchResult(output: CliOutput, result: BatchResult, json: boolean)
     return;
   }
   const lines = [`Run: ${result.runId}`, `Status: ${result.status}`];
+  if (result.monitorUrl !== undefined) {
+    lines.push(`Monitor: ${result.monitorUrl}`);
+  }
   if (result.finalResponse !== null) {
     lines.push("", result.finalResponse);
   }

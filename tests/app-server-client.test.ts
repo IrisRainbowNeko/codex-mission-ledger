@@ -130,7 +130,7 @@ describe("CodexAppServerClient", () => {
     });
   });
 
-  it("accepts the userAgent emitted by the pinned desktop app-server", async () => {
+  it("accepts the userAgent emitted by the desktop app-server", async () => {
     const server = new FakeServer();
     server.onMessage = (message) => {
       if (message["method"] === "initialize") {
@@ -149,20 +149,24 @@ describe("CodexAppServerClient", () => {
     });
   });
 
-  it("rejects an initialize response from a different app-server version", async () => {
+  it("does not infer protocol compatibility from the userAgent", async () => {
     const server = new FakeServer();
     server.onMessage = (message) => {
       if (message["method"] === "initialize") {
-        server.respond(message, { ...INITIALIZE_RESULT, userAgent: "codex_app_server/0.152.0" });
+        server.respond(message, {
+          ...INITIALIZE_RESULT,
+          userAgent:
+            "codex-agent-trio/0.151.0 (Arch Linux Rolling Release; x86_64) unknown (codex-agent-trio; 0.151.0)",
+        });
       }
     };
     const client = createClient(server);
 
-    await expect(client.connect()).rejects.toThrow(
-      "codex app-server 0.151.0 is required; initialize returned 'codex_app_server/0.152.0'",
-    );
-    expect(client.state).toBe("disconnected");
-    expect(server.closeCalls).toBe(1);
+    await expect(client.connect()).resolves.toMatchObject({
+      userAgent:
+        "codex-agent-trio/0.151.0 (Arch Linux Rolling Release; x86_64) unknown (codex-agent-trio; 0.151.0)",
+    });
+    expect(client.state).toBe("ready");
   });
 
   it("routes concurrent responses by id even when the server replies out of order", async () => {
@@ -237,6 +241,31 @@ describe("CodexAppServerClient", () => {
     await expect(client.waitForNotification("thread/tokenUsage/updated")).resolves.toMatchObject({
       params: { label: "\u4f7f\u7528\u91cf" },
     });
+  });
+
+  it("streams delta notifications to subscribers without retaining them for later waiters", async () => {
+    const server = new FakeServer();
+    server.installHandshake();
+    const client = new CodexAppServerClient({
+      connectionFactory: () => server.connection,
+      bufferNotificationDeltas: false,
+      requestTimeoutMs: 1_000,
+    });
+    clients.push(client);
+    await client.connect();
+    const subscriber = vi.fn();
+    client.onNotification("item/agentMessage/delta", subscriber);
+
+    server.send({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-1", turnId: "turn-1", delta: "working" },
+    });
+    await tick();
+
+    expect(subscriber).toHaveBeenCalledOnce();
+    await expect(
+      client.waitForNotification("item/agentMessage/delta", { timeoutMs: 10 }),
+    ).rejects.toThrow("notification wait timed out");
   });
 
   it("defaults cache-write counts for legacy token notifications", async () => {

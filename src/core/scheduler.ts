@@ -2,6 +2,8 @@ import type {
   AgentMessage,
   ExecutionLimits,
   ExecutionPlan,
+  HostAccess,
+  HostApproval,
   LeafResult,
   LeafTask,
   PlanPatch,
@@ -14,6 +16,8 @@ import { classifyValidatorFailure, detectReplanTriggers } from "./policy.js";
 
 export interface LeafRunInput {
   runId: string;
+  hostAccess?: HostAccess;
+  hostApproval?: HostApproval;
   task: LeafTask;
   dependencies: LeafResult[];
   attempt: number;
@@ -108,6 +112,8 @@ export class DeterministicScheduler {
     replanHandler?: ReplanHandler,
     completionInspector?: CompletionInspector,
     resumeState?: ScheduleResumeState,
+    hostAccess?: HostAccess,
+    hostApproval?: HostApproval,
   ): Promise<ScheduleResult> {
     let plan = clonePlan(initialPlan);
     validatePlanForScheduling(plan, limits);
@@ -302,6 +308,8 @@ export class DeterministicScheduler {
             waitingContinuations,
             resumeState?.userInput,
             solTaskIds,
+            hostAccess,
+            hostApproval,
             runAbort.signal,
             (message) => broker.post(message).then((receipt) => receipt.response),
           ).then((result): SettledLeaf => ({
@@ -373,6 +381,8 @@ export class DeterministicScheduler {
     waitingContinuations: Map<string, WaitingLeafResumePoint>,
     userInput: string | undefined,
     solTaskIds: Set<string>,
+    hostAccess: HostAccess | undefined,
+    hostApproval: HostApproval | undefined,
     signal: AbortSignal,
     postMessage: (message: AgentMessageInput) => Promise<string | null>,
   ): Promise<LeafResult> {
@@ -406,6 +416,8 @@ export class DeterministicScheduler {
           this.#executor,
           {
             runId,
+            ...(hostAccess === undefined ? {} : { hostAccess }),
+            ...(hostApproval === undefined ? {} : { hostApproval }),
             task,
             dependencies: task.dependsOn
               .map((id) => results.get(id))

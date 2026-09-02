@@ -859,6 +859,97 @@ describe("AppServerLeafExecutor", () => {
     expect(LEAF_RESULT_OUTPUT_SCHEMA.properties.summary.maxLength).toBe(16_000);
   });
 
+  it.each([
+    ["fullAccess", "readOnly", "danger-full-access", { type: "dangerFullAccess" }],
+    ["readOnly", "workspaceWrite", "read-only", undefined],
+    ["workspaceWrite", "workspaceWrite", "workspace-write", undefined],
+  ] as const)(
+    "maps %s host permission over a %s leaf without escalation",
+    async (hostAccess, taskAccess, expectedSandbox, expectedTurnSandbox) => {
+      const server = new FakeAppServer();
+      server.queued.push({ output: leafBody() });
+      const executor = new AppServerLeafExecutor({ appServer: server, cwd: "/workspace" });
+
+      await executor.runLeaf(
+        {
+          runId: `run-${hostAccess}-${taskAccess}`,
+          hostAccess,
+          task: task({
+            access: taskAccess,
+            ownedPaths: taskAccess === "workspaceWrite" ? ["src/leaf.ts"] : [],
+          }),
+          dependencies: [],
+          attempt: 1,
+          signal: new AbortController().signal,
+        },
+        async () => null,
+      );
+
+      expect(server.threadStarts[0]?.sandbox).toBe(expectedSandbox);
+      expect(server.turnStarts[0]?.sandboxPolicy).toEqual(expectedTurnSandbox);
+      expect(server.threadStarts[0]).toMatchObject({
+        approvalPolicy: "never",
+        config: expect.objectContaining({ agents: { enabled: false } }),
+      });
+    },
+  );
+
+  it("inherits Approve for me on leaf thread and turn starts", async () => {
+    const server = new FakeAppServer();
+    server.queued.push({ output: leafBody() });
+    const executor = new AppServerLeafExecutor({ appServer: server, cwd: "/workspace" });
+
+    await executor.runLeaf(
+      {
+        runId: "approve-for-me-leaf",
+        hostApproval: "approveForMe",
+        task: task(),
+        dependencies: [],
+        attempt: 1,
+        signal: new AbortController().signal,
+      },
+      async () => null,
+    );
+
+    expect(server.threadStarts[0]).toMatchObject({
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+    });
+    expect(server.turnStarts[0]).toMatchObject({
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+    });
+  });
+
+  it("caps a writer validator at read-only when the caller is read-only", async () => {
+    const server = new FakeAppServer();
+    server.queued.push({ output: leafBody() });
+    const executor = new AppServerLeafExecutor({ appServer: server, cwd: "/tmp" });
+
+    await executor.runLeaf(
+      {
+        runId: "read-only-validator",
+        hostAccess: "readOnly",
+        task: task({
+          access: "workspaceWrite",
+          ownedPaths: ["src/leaf.ts"],
+          validation: [{ command: "npm test" }],
+        }),
+        dependencies: [],
+        attempt: 1,
+        signal: new AbortController().signal,
+      },
+      async () => null,
+    );
+
+    expect(server.commandExec).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sandboxPolicy: { type: "readOnly", networkAccess: false },
+      }),
+      expect.any(Object),
+    );
+  });
+
   it("accepts complete multi-deliverable leaf summaries beyond the old 4k ceiling", async () => {
     const server = new FakeAppServer();
     const summary = "complete result ".repeat(400);
@@ -995,6 +1086,8 @@ describe("AppServerLeafExecutor", () => {
     const result = await executor.runLeaf(
       {
         runId: "resume-leaf",
+        hostAccess: "fullAccess",
+        hostApproval: "approveForMe",
         task: task(),
         dependencies: [],
         attempt: 1,
@@ -1018,9 +1111,17 @@ describe("AppServerLeafExecutor", () => {
       expect.objectContaining({
         threadId: "leaf-thread-existing",
         cwd: "/workspace/recovered-leaf",
+        sandbox: "danger-full-access",
+        approvalPolicy: "on-request",
+        approvalsReviewer: "auto_review",
         excludeTurns: false,
       }),
     ]);
+    expect(server.turnStarts[0]?.sandboxPolicy).toEqual({ type: "dangerFullAccess" });
+    expect(server.turnStarts[0]).toMatchObject({
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+    });
     expect(resolveLeafCwd).toHaveBeenCalledWith("resume-leaf", expect.any(Object), [], true);
     expect(server.turnStarts[0]?.input[0]).toMatchObject({
       type: "text",
@@ -1477,6 +1578,39 @@ describe("AppServerLeafExecutor", () => {
       status: "blocked",
       failureKind: "permission",
       error: "unexpected approval request 'item/fileChange/requestApproval'",
+    });
+  });
+
+  it("reports an approval escalated by automatic review without bypassing it", async () => {
+    const server = new FakeAppServer();
+    server.queued.push({
+      output: leafBody(),
+      beforeResponseHook: async (fake, threadId, turnId) => {
+        const response = await fake.callServerHandler("item/fileChange/requestApproval", {
+          threadId,
+          turnId,
+          itemId: "item-1",
+        });
+        expect(response).toEqual({ decision: "decline" });
+      },
+    });
+    const executor = new AppServerLeafExecutor({ appServer: server, cwd: "/workspace" });
+    const result = await executor.runLeaf(
+      {
+        runId: "approve-for-me-escalation",
+        hostApproval: "approveForMe",
+        task: task(),
+        dependencies: [],
+        attempt: 1,
+        signal: new AbortController().signal,
+      },
+      async () => null,
+    );
+    expect(result).toMatchObject({
+      status: "blocked",
+      failureKind: "permission",
+      error:
+        "automatic review escalated unresolved approval request 'item/fileChange/requestApproval'",
     });
   });
 

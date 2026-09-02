@@ -252,9 +252,11 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
   const skillText = readOptional(skillMd);
   if (
     !/^name:\s*agent-trio\s*$/mu.test(skillText) ||
-    !skillText.includes("`agent_trio` MCP tool exactly once")
+    !skillText.includes("`agent_trio` MCP runtime") ||
+    !skillText.includes("monitorFirst=true") ||
+    !skillText.includes("wait=true")
   ) {
-    problems.push("installed agent-trio skill does not delegate to the V3 MCP tool");
+    problems.push("installed agent-trio skill does not implement Monitor-first V3 delegation");
   }
   const metadataText = readOptional(skillMetadata);
   if (!/^\s*allow_implicit_invocation:\s*false\s*$/mu.test(metadataText)) {

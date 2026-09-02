@@ -42,7 +42,7 @@ rules.
 Requirements:
 
 - Node.js 20 or newer.
-- `codex-cli 0.151.0` exactly.
+- A working Codex CLI with App Server support.
 - Access to the configured Luna, Terra, and Sol models.
 - Git for isolated parallel writers.
 
@@ -83,6 +83,21 @@ codex exec '$agent-trio research these alternatives and produce a comparison'
 
 ChatGPT Chat and Work use `@agent-trio` instead of the Codex `$agent-trio` mention. A prompt without
 the mention uses the normal Codex path, so the user decides when to pay the orchestration overhead.
+
+For explicit foreground invocations, the installed skill starts a foreground-equivalent run,
+immediately shows its local `monitorUrl`, and waits once for the persisted result. Open the link
+while the task runs to inspect the live DAG and select any planner, leaf, direct agent, integrator,
+or final-review thread. The view includes public agent messages, reasoning summaries emitted by
+Codex, tool and command activity, file changes, token usage, cost, and validation state. It does not
+expose private hidden model reasoning. The wait is driven by filesystem events, not model calls or
+polling. Completed MCP results also prefix `finalResponse` with the Monitor link.
+
+The skill also passes the current Codex task permission and approval modes to Agent Trio. A Full
+access task gives direct agents and execution leaves Full access, including network access;
+Workspace access and Read-only tasks remain correspondingly restricted. Approve for me is inherited
+through App Server automatic review. The skill must never request stronger access or approval than
+the calling task. Calls made without the skill can set the same context explicitly through MCP
+`hostAccess`/`hostApproval` or CLI `--host-access`/`--host-approval`.
 
 Useful installation commands:
 
@@ -170,6 +185,16 @@ sol   -> gpt-5.6-sol
 
 The CLI and Desktop MCP tool use the same runtime core.
 
+For direct CLI use, declare the permission and approval modes of the environment launching the task:
+
+```bash
+agent-trio run --host-access full-access --host-approval never 'inspect the configured package sources'
+agent-trio run --host-access workspace-write --host-approval approve-for-me 'implement the requested repository change'
+agent-trio run --host-access read-only --host-approval never 'analyze this project without changing it'
+```
+
+Omitting these flags retains the original workspace-scoped, non-approving behavior for compatibility.
+
 ```bash
 agent-trio run "implement the requested feature" -C /workspace
 agent-trio run "update the report" -C /workspace --skill documents
@@ -186,6 +211,10 @@ agent-trio benchmark observations.json
 Use `--strategy auto|direct|fanout` to select routing behavior. `auto` is the default and applies
 the cost and latency gates before starting Sol Planner.
 
+The CLI prints the Monitor URL before a foreground model run starts and includes it in submitted
+and status results. MCP clients that support progress notifications receive the same URL as soon as
+the run ID is assigned; every final structured result also contains `monitorUrl`.
+
 ## MCP Tool
 
 The local Codex clients expose one MCP tool named `agent_trio` with five actions:
@@ -197,6 +226,18 @@ The local Codex clients expose one MCP tool named `agent_trio` with five actions
 | `status` | Read the latest persisted state                                  |
 | `resume` | Continue the original App Server thread with supplied input      |
 | `cancel` | Interrupt an active run without replaying completed side effects |
+
+The explicit skill implements its visible foreground flow with two calls to this same tool:
+
+```text
+submit(monitorFirst=true) -> show monitorUrl -> status(runId, wait=true)
+```
+
+`monitorFirst` changes only how the caller receives the Monitor URL. The supervisor executes the
+normal foreground `run` contract, and `wait=true` blocks on snapshot file events until the run
+completes, fails, is cancelled, needs input, or becomes indeterminate. It adds no planner turn,
+leaf, reviewer, model polling, or change to routing and execution limits. Ordinary durable
+background submissions omit `monitorFirst` and return after acceptance.
 
 Child App Server threads have project instruction loading, native multi-agent orchestration, and
 recursive Agent Trio access disabled.
@@ -220,6 +261,8 @@ recursive Agent Trio access disabled.
 | `AGENT_TRIO_PLANNER_API_KEY`      | Planner bearer credential                          |
 | `AGENT_TRIO_PLANNER_MODEL`        | Planner model override                             |
 | `AGENT_TRIO_PLANNER_SERVICE_TIER` | Planner-only service tier                          |
+| `AGENT_TRIO_MONITOR=0`            | Disable local Monitor capture and URLs             |
+| `AGENT_TRIO_MONITOR_PORT`         | Fixed loopback Monitor port override               |
 
 The bundled standard-context price table is
 [`config/openai-prices.standard.json`](config/openai-prices.standard.json). Custom model names or
@@ -229,6 +272,21 @@ execution.
 The planner transport defaults to `auto`: it uses a Responses-compatible provider when configured
 and falls back to Codex App Server. Responses planning is tool-free and uses strict structured
 output.
+
+## Monitor
+
+The Monitor is a local read-only web UI. It does not start agents, poll models, review results, or
+participate in scheduling. App Server `turn/*` and `item/*` notifications are written to a separate
+bounded `monitor.jsonl` stream, while `job.json` remains the authoritative run snapshot.
+
+The monitor process listens only on `127.0.0.1`. Each job root has a private token stored with the
+same user-only permissions as Agent Trio job state. Consecutive text deltas for the same App Server
+item are coalesced in a bounded 250 ms write batch instead of storing one JSON record per token
+fragment. The browser then renders one conversation entry per logical message, reasoning item, tool
+call, command, or file change. Existing logs receive the same coalescing when read, so no migration
+is required. The runtime never retains an unbounded conversation in memory. Browser updates use
+filesystem notifications and SSE rather than model-driven status loops, and the entire Monitor path
+adds no model calls or tokens.
 
 ## Development
 

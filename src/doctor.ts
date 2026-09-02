@@ -3,7 +3,6 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { REQUIRED_CODEX_CLI_VERSION, verifyCodexCliVersion } from "./app-server/index.js";
 import { DEFAULT_OPENAI_PRICE_TABLE_PATH, loadPriceTable } from "./runtime.js";
 import { resolvePlannerTransport } from "./planner-transport-config.js";
 import {
@@ -26,7 +25,6 @@ export interface DoctorReport {
 
 export interface DoctorOptions {
   env?: NodeJS.ProcessEnv;
-  verifyVersion?: typeof verifyCodexCliVersion;
 }
 
 export async function runDoctor(
@@ -88,27 +86,6 @@ export async function runDoctor(
     }
     return "no recursive project integration; explicit user skill is packaged separately";
   });
-
-  if (!argv.includes("--project-only")) {
-    try {
-      const codexPath = env["AGENT_TRIO_CODEX_PATH"];
-      const version = await (options.verifyVersion ?? verifyCodexCliVersion)({
-        ...(codexPath === undefined || codexPath.trim().length === 0 ? {} : { codexPath }),
-        env,
-      });
-      checks.push({
-        name: "Codex App Server schema version",
-        ok: true,
-        detail: `codex-cli ${version}`,
-      });
-    } catch (error) {
-      checks.push({
-        name: "Codex App Server schema version",
-        ok: false,
-        detail: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
 
   const configuredPriceTable = env["AGENT_TRIO_PRICE_TABLE"];
   const priceTablePath = configuredPriceTable ?? DEFAULT_OPENAI_PRICE_TABLE_PATH;
@@ -179,8 +156,6 @@ if (isEntrypoint()) {
     }
   });
 }
-
-export { REQUIRED_CODEX_CLI_VERSION };
 
 function isEntrypoint(): boolean {
   if (process.argv[1] === undefined) {

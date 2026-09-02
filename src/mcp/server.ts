@@ -5,26 +5,29 @@ import { fileURLToPath } from "node:url";
 import { isMainThread } from "node:worker_threads";
 import type { AgentTrioRequest, BatchResult } from "../core/contracts.js";
 import type { AgentTrioService } from "../core/service.js";
-import { launchDetachedSupervisor, type SubmitRequest } from "../supervisor.js";
+import { launchDetachedSupervisor, type SupervisorRequest } from "../supervisor.js";
 import { AgentTrioMcpProtocol } from "./protocol.js";
 import { MCP_ROOT_DISPATCH_CONSTRAINT } from "../core/router.js";
 
-export type McpService = Pick<AgentTrioService, "handle">;
+export type McpService = Pick<AgentTrioService, "handle"> &
+  Partial<Pick<AgentTrioService, "waitForSettlement">>;
 
 export interface AgentTrioMcpRuntime {
   service: McpService;
+  monitorUrlForRun?: (runId: string) => string | undefined;
   close?: () => void | Promise<void>;
 }
 
 export type CreateDefaultMcpRuntime = () => AgentTrioMcpRuntime | Promise<AgentTrioMcpRuntime>;
 
-export type McpSupervisorLauncher = (request: SubmitRequest) => Promise<BatchResult>;
+export type McpSupervisorLauncher = (request: SupervisorRequest) => Promise<BatchResult>;
 export type McpRunIdGenerator = () => string;
 
 export interface McpDispatchOptions {
   launchSupervisor?: McpSupervisorLauncher;
   generateRunId?: McpRunIdGenerator;
   workspaceRoots?: readonly string[];
+  monitorUrlForRun?: (runId: string) => string | undefined;
 }
 
 export interface RunMcpStdioOptions extends McpDispatchOptions {
@@ -50,6 +53,12 @@ export function createMcpServer(
     ...(dispatchOptions.workspaceRoots === undefined
       ? {}
       : { workspaceRoots: dispatchOptions.workspaceRoots }),
+    ...(dispatchOptions.monitorUrlForRun === undefined
+      ? {}
+      : { monitorUrlForRun: dispatchOptions.monitorUrlForRun }),
+    ...(dispatchOptions.generateRunId === undefined
+      ? {}
+      : { createRunId: dispatchOptions.generateRunId }),
   });
 }
 
@@ -75,7 +84,12 @@ export async function runMcpStdio(options: RunMcpStdioOptions = {}): Promise<voi
       options.input ?? process.stdin,
       options.output ?? process.stdout,
       options.errorOutput ?? process.stderr,
-      options,
+      {
+        ...options,
+        ...(runtime.monitorUrlForRun === undefined
+          ? {}
+          : { monitorUrlForRun: runtime.monitorUrlForRun }),
+      },
     );
     await protocol.run();
   } finally {
@@ -115,6 +129,15 @@ function createDispatchService(service: McpService, options: McpDispatchOptions)
   const generateRunId = options.generateRunId ?? randomUUID;
   return {
     handle: async (request: AgentTrioRequest): Promise<BatchResult> => {
+      if (request.action === "status") {
+        if (request.wait === true) {
+          if (service.waitForSettlement === undefined) {
+            throw new Error("this Agent Trio runtime cannot wait for a submitted run");
+          }
+          return service.waitForSettlement(request.runId);
+        }
+        return service.handle({ action: "status", runId: request.runId });
+      }
       if (request.action !== "submit") {
         return service.handle(markInternalPlannerDispatch(request));
       }
@@ -123,7 +146,13 @@ function createDispatchService(service: McpService, options: McpDispatchOptions)
       if (runId.trim().length === 0 || runId.length > 128) {
         throw new Error("generated runId must be a non-empty string up to 128 characters");
       }
-      return launchSupervisor({ ...dispatched, action: "submit", runId });
+      const start = { ...dispatched };
+      delete start.monitorFirst;
+      return launchSupervisor({
+        ...start,
+        action: request.monitorFirst === true ? "run" : "submit",
+        runId,
+      });
     },
   };
 }
@@ -143,7 +172,7 @@ export function markInternalPlannerDispatch<T extends AgentTrioRequest>(request:
   return { ...request, constraints: [...constraints, MCP_ROOT_DISPATCH_CONSTRAINT] } as T;
 }
 
-function defaultSupervisorLauncher(request: SubmitRequest): Promise<BatchResult> {
+function defaultSupervisorLauncher(request: SupervisorRequest): Promise<BatchResult> {
   return launchDetachedSupervisor(request, {
     modulePath: fileURLToPath(new URL("../cli.js", import.meta.url)),
   });

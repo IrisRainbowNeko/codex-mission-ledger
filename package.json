@@ -1,6 +1,6 @@
 {
   "name": "codex-agent-trio",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "private": true,
   "description": "A Sol-planned, cost-aware Codex App Server multi-agent runtime.",
   "type": "module",

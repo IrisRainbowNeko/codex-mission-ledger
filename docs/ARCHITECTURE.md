@@ -28,19 +28,21 @@ ledger.
 | `src/core/recipes.ts`         | Lightweight coding, research, writing, and office guidance      |
 | `src/core/workspace.ts`       | Writer ownership, isolated Git worktrees, patch integration     |
 | `src/core/job-store.ts`       | Atomic snapshots, compact events, process locks, request hashes |
-| `src/app-server/*`            | Version-pinned App Server transport and role adapters           |
+| `src/app-server/*`            | App Server transport, protocol validation, and role adapters    |
 | `src/responses-planner.ts`    | Optional tool-free Sol planner transport                        |
 | `src/runtime.ts`              | Shared production wiring for CLI and MCP                        |
 | `src/supervisor.ts`           | One detached process per submitted durable run                  |
 | `src/mcp/protocol.ts`         | Single public `agent_trio` MCP tool                             |
 | `src/cli.ts`                  | Matching CLI plus offline benchmark evaluation                  |
+| `src/monitor/*`               | Bounded App Server event capture and local read-only dashboard  |
 
 The runtime talks to Codex App Server over multiplexed JSONL. Requests are correlated by ID, and
 turn completion is driven by server events, so independent `thread/start` and `turn/start`
 sequences can overlap without model-driven launch loops.
 
-The App Server contract is pinned exactly to `codex-cli 0.151.0`. `doctor` and process startup
-reject a different version rather than guessing at schema compatibility.
+The runtime launches the configured Codex App Server directly. Compatibility is determined by
+actual JSON-RPC methods and response schemas; startup and `doctor` do not infer it from a CLI
+version or `userAgent` string.
 
 ## Request Flow
 
@@ -251,6 +253,26 @@ keeps communication executable on the pinned protocol and avoids extra chat turn
 There is no polling conversation, broadcast discussion, coordinator babysitting, or user
 continuation gate.
 
+## Observability
+
+Every App Server created by the production runtime is subscribed once for `turn/*`, `item/*`, and
+thread usage notifications. Remote-turn checkpoints provide the `runId`, role, task, thread, and
+turn mapping; the monitor recorder then appends only matching events to that run's
+`monitor.jsonl`. This path is observational and never feeds content back into a model.
+
+The recorder uses a bounded 250 ms asynchronous batch, a 2 MiB pending-memory ceiling, a 128 KiB
+per-event ceiling, and a 24 MiB per-run log ceiling. Consecutive delta notifications with the same
+method, thread, turn, and item ID are merged before serialization. Delta events are the first events
+dropped when the pending buffer is full. Job lifecycle and recovery continue independently if
+monitor capture or presentation fails.
+
+A detached loopback HTTP process reads `job.json` and monitor events on demand. Its SSE endpoint is
+woken by filesystem notifications, and event history is paged by byte cursor. The read path also
+coalesces adjacent legacy delta records, while the browser joins pages by logical App Server item ID
+and renders conversation entries rather than token fragments. The process is shared by foreground,
+submitted, MCP, and CLI runs under one job root. It adds no model tokens, App Server turns,
+reviewers, scheduler gates, or orchestration heartbeat.
+
 ## Workspaces
 
 Read-only leaves share the request workspace. Writer behavior depends on repository state:
@@ -316,8 +338,22 @@ Every child thread:
 - disables project instruction loading;
 - disables `agent_trio`, `hierarchical_codex`, and the legacy mission-ledger MCP server;
 - rejects instruction sources that still contain recursive orchestration directives;
-- uses `approvalPolicy=never` and a role-specific sandbox;
+- uses `approvalPolicy=never` by default, or `on-request` with `auto_review` for execution work when
+  the caller uses Approve for me;
+- lets direct/coordinator and leaf execution inherit the per-run `hostAccess`, with Full access
+  mapped to `danger-full-access` and read-only callers forced to `read-only`;
+- lets those execution threads inherit per-run `hostApproval`, without changing the separately
+  restricted planner, integration, review, and deterministic validator scopes;
 - cannot ask the user to send `ok`, `continue`, or an internal readiness signal.
+
+The MCP protocol carries `hostAccess=readOnly|workspaceWrite|fullAccess` and
+`hostApproval=never|approveForMe` because MCP does not expose the calling Codex sandbox or approval
+mode as standard tool metadata. The explicit skill copies the active host modes and must not raise
+either. Omitted values preserve the original role-specific workspace and non-approving behavior.
+Both fields are stored in the durable run request and reused for leaf retries and resume turns.
+`approveForMe` maps exactly to App Server `approvalPolicy=on-request` and
+`approvalsReviewer=auto_review`. Semantic planner, integration, review, and deterministic validator
+sandboxes remain independently restricted.
 
 The process boundary is isolated as well. `createDefaultRuntime()` starts internally-created App
 Server processes with a lazily-created projected `CODEX_HOME`: when the caller's home has
@@ -354,6 +390,15 @@ CLI and MCP `submit` each start one detached supervisor and wait for an IPC ackn
 the first snapshot exists. The supervisor then waits for that same run and exits independently of
 the submitting process. There is no daemon database, lease renewer, heartbeat loop, or separate
 workflow state machine.
+
+Explicit foreground skill invocations use a Monitor-first variant of that handshake. MCP
+`submit(monitorFirst=true)` asks the supervisor to execute the ordinary foreground `run` contract,
+returns the first persisted snapshot and Monitor URL, and leaves execution running in that same
+operation. One subsequent `status(wait=true)` call watches `job.json` and returns when the run is
+completed, failed, cancelled, waiting for input, or indeterminate. The watcher closes the
+read-before-watch race with an immediate second snapshot read. This changes presentation timing,
+not admission, planning, scheduling, budgets, leaf limits, integration, or review policy, and it
+does not poll a model or filesystem.
 
 Snapshots record App Server thread and turn IDs at `thread_started`, `running`, and confirmed
 `terminal` states. Recovery attempts to resolve those IDs through App Server. Read-only turns can
@@ -398,6 +443,10 @@ coordination inside the aggregate.
 Local Codex clients expose exactly one MCP tool, `agent_trio`, with `run`, `submit`, `status`,
 `resume`, and `cancel` actions. The CLI provides the same five operations plus `benchmark`. Both
 call the same `AgentTrioService`; neither reimplements scheduling policy.
+
+The public tool also accepts two action-scoped presentation flags: `monitorFirst` only on `submit`,
+and `wait` only on `status`. Together they let a client render the Monitor before waiting for a
+foreground-equivalent result without exposing another tool or scheduling path.
 
 The user installer registers that MCP server and installs one explicit-only user skill. The skill
 only delegates a user-selected request to the MCP and is excluded from child capability discovery.

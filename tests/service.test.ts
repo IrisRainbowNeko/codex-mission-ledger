@@ -305,6 +305,21 @@ function createService(
 }
 
 describe("AgentTrioService", () => {
+  it("adds the local monitor URL without adding an execution stage", async () => {
+    const service = createService({
+      monitorUrlForRun: (runId) => `http://127.0.0.1:43173/runs/${runId}?token=test`,
+    });
+
+    const result = await service.run({
+      runId: "monitored-direct",
+      objective: "complete a direct task",
+      cwd: "/workspace",
+    });
+
+    expect(result.monitorUrl).toBe("http://127.0.0.1:43173/runs/monitored-direct?token=test");
+    expect(result.metrics?.usageByStage?.planning.usage).toEqual([]);
+  });
+
   it("bypasses Sol planning and leaves for a direct Terra request", async () => {
     const store = createStore();
     const planner = { plan: vi.fn(async () => Promise.reject(new Error("unexpected planner"))) };
@@ -380,17 +395,33 @@ describe("AgentTrioService", () => {
       runId: "direct-capabilities",
       objective: "update the document",
       cwd: "/workspace",
+      hostAccess: "fullAccess",
+      hostApproval: "approveForMe",
       capabilities,
     });
 
     expect(result.status).toBe("completed");
     expect(decide).toHaveBeenCalledWith(
-      expect.objectContaining({ request: expect.objectContaining({ capabilities }) }),
+      expect.objectContaining({
+        request: expect.objectContaining({
+          capabilities,
+          hostAccess: "fullAccess",
+          hostApproval: "approveForMe",
+        }),
+      }),
     );
     expect(execute).toHaveBeenCalledWith(
-      expect.objectContaining({ request: expect.objectContaining({ capabilities }) }),
+      expect.objectContaining({
+        request: expect.objectContaining({
+          capabilities,
+          hostAccess: "fullAccess",
+          hostApproval: "approveForMe",
+        }),
+      }),
     );
     expect(store.load("direct-capabilities")?.request.capabilities).toEqual(capabilities);
+    expect(store.load("direct-capabilities")?.request.hostAccess).toBe("fullAccess");
+    expect(store.load("direct-capabilities")?.request.hostApproval).toBe("approveForMe");
   });
 
   it("uses the model-free router for explicit fanout with declared capabilities", async () => {
@@ -707,6 +738,9 @@ describe("AgentTrioService", () => {
       expect.any(AbortSignal),
       undefined,
       expect.objectContaining({ inspect: expect.any(Function) }),
+      undefined,
+      undefined,
+      undefined,
     );
   });
 
@@ -1938,6 +1972,88 @@ describe("AgentTrioService", () => {
     finish?.("background result");
     await vi.waitFor(() => expect(service.status("background-1").status).toBe("completed"));
     expect(service.status("background-1").finalResponse).toBe("background result");
+  });
+
+  it("waits for an externally active run through snapshot events", async () => {
+    const store = createStore();
+    let finish: ((value: string) => void) | undefined;
+    const directExecutor: DirectExecutor = {
+      execute: vi.fn(
+        async () =>
+          new Promise<AgentOutcome>((resolve) => {
+            finish = (value) =>
+              resolve({
+                status: "completed",
+                response: value,
+                threadId: "terra-external",
+                usage: [],
+              });
+          }),
+      ),
+    };
+    const producer = createService({ store, directExecutor });
+    const observer = createService({ store });
+    await producer.submit({
+      runId: "external-wait-1",
+      objective: "foreground-equivalent detached task",
+      cwd: "/workspace",
+    });
+    await vi.waitFor(() => expect(directExecutor.execute).toHaveBeenCalledOnce());
+
+    const waiting = observer.waitForSettlement("external-wait-1");
+    finish?.("external result");
+
+    await expect(waiting).resolves.toMatchObject({
+      runId: "external-wait-1",
+      status: "completed",
+      finalResponse: "external result",
+    });
+  });
+
+  it.each([
+    {
+      status: "waiting_input" as const,
+      needsAction: "provide credentials",
+      error: "credentials are missing",
+    },
+    {
+      status: "indeterminate" as const,
+      needsAction: undefined,
+      error: "remote state is uncertain",
+    },
+  ])("settles an event-driven wait on $status", async ({ status, needsAction, error }) => {
+    const store = createStore();
+    let finish: ((outcome: AgentOutcome) => void) | undefined;
+    const producer = createService({
+      store,
+      directExecutor: {
+        execute: vi.fn(
+          async () =>
+            new Promise<AgentOutcome>((resolve) => {
+              finish = resolve;
+            }),
+        ),
+      },
+    });
+    const observer = createService({ store });
+    await producer.submit({
+      runId: `external-${status}`,
+      objective: "finish outside the observing MCP process",
+      cwd: "/workspace",
+    });
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+
+    const waiting = observer.waitForSettlement(`external-${status}`);
+    finish?.({
+      status,
+      response: null,
+      threadId: null,
+      usage: [],
+      ...(needsAction === undefined ? {} : { needsAction }),
+      error,
+    });
+
+    await expect(waiting).resolves.toMatchObject({ status, error });
   });
 
   it("cancels a local run through its shared AbortSignal", async () => {

@@ -5,6 +5,8 @@ import type { AgentTrioService } from "./core/service.js";
 const SUPERVISOR_HANDSHAKE_TIMEOUT_MS = 30_000;
 
 export type SubmitRequest = RunRequest & { action: "submit"; runId: string };
+export type ForegroundSupervisorRequest = RunRequest & { action: "run"; runId: string };
+export type SupervisorRequest = SubmitRequest | ForegroundSupervisorRequest;
 
 export interface SupervisorRuntime {
   service: Pick<AgentTrioService, "handle">;
@@ -28,7 +30,7 @@ export interface LaunchSupervisorOptions {
 
 /** Launch one detached process and return only after its durable job snapshot exists. */
 export async function launchDetachedSupervisor(
-  request: SubmitRequest,
+  request: SupervisorRequest,
   options: LaunchSupervisorOptions,
 ): Promise<BatchResult> {
   const child = (options.spawnProcess ?? spawn)(
@@ -74,21 +76,30 @@ export async function runSupervisorChild(
 ): Promise<void> {
   let runtime: SupervisorRuntime | undefined;
   try {
-    const request = await new Promise<SubmitRequest>((resolve, reject) =>
+    const request = await new Promise<SupervisorRequest>((resolve, reject) =>
       receive((message) => {
         try {
-          resolve(assertSubmitRequest(message));
+          resolve(assertSupervisorRequest(message));
         } catch (error) {
           reject(error instanceof Error ? error : new Error(String(error)));
         }
       }),
     );
     runtime = await createRuntime();
-    const accepted = await runtime.service.handle(request);
-    await send({ type: "accepted", result: accepted });
-    disconnect();
-    if (isActive(accepted.status)) {
-      await runtime.service.handle({ action: "resume", runId: request.runId });
+    if (request.action === "run") {
+      const completion = runtime.service.handle(request);
+      void completion.catch(() => undefined);
+      const accepted = await runtime.service.handle({ action: "status", runId: request.runId });
+      await send({ type: "accepted", result: accepted });
+      disconnect();
+      await completion;
+    } else {
+      const accepted = await runtime.service.handle(request);
+      await send({ type: "accepted", result: accepted });
+      disconnect();
+      if (isActive(accepted.status)) {
+        await runtime.service.handle({ action: "resume", runId: request.runId });
+      }
     }
   } catch (error) {
     await Promise.resolve(
@@ -103,7 +114,7 @@ export async function runSupervisorChild(
 
 function supervisorHandshake(
   child: ChildProcess,
-  request: SubmitRequest,
+  request: SupervisorRequest,
   timeoutMs: number,
 ): Promise<BatchResult> {
   return new Promise((resolve, reject) => {
@@ -153,19 +164,19 @@ function supervisorHandshake(
   });
 }
 
-function assertSubmitRequest(value: unknown): SubmitRequest {
+function assertSupervisorRequest(value: unknown): SupervisorRequest {
   if (
     typeof value !== "object" ||
     value === null ||
     !("action" in value) ||
-    value.action !== "submit" ||
+    (value.action !== "submit" && value.action !== "run") ||
     !("runId" in value) ||
     typeof value.runId !== "string" ||
     value.runId.length === 0
   ) {
-    throw new Error("supervisor received an invalid submit request");
+    throw new Error("supervisor received an invalid request");
   }
-  return value as SubmitRequest;
+  return value as SupervisorRequest;
 }
 
 function isSupervisorMessage(value: unknown): value is SupervisorChildMessage {

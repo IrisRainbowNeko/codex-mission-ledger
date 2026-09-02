@@ -2048,6 +2048,8 @@ function cloneRunRequest(request: RunRequest): RunRequest {
   return {
     objective: request.objective,
     cwd: request.cwd,
+    ...(request.hostAccess === undefined ? {} : { hostAccess: request.hostAccess }),
+    ...(request.hostApproval === undefined ? {} : { hostApproval: request.hostApproval }),
     ...(request.strategy === undefined ? {} : { strategy: request.strategy }),
     ...(request.directTier === undefined ? {} : { directTier: request.directTier }),
     ...(request.mode === undefined ? {} : { mode: request.mode }),

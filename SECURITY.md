@@ -2,10 +2,11 @@
 
 ## Runtime Trust Boundary
 
-Agent Trio runs with the permissions of the invoking Codex environment and starts local Codex App
-Server processes. The public MCP server uses stdio and does not open a network listener. Model
-providers, plugins, browser tools, and other requested capabilities may still perform external I/O
-under their own configured policies.
+Agent Trio starts local Codex App Server processes. On explicit skill invocations, the caller passes
+its current Codex permission and approval modes as per-run `hostAccess` and `hostApproval`; direct
+agents and execution leaves use those modes. The public MCP server uses stdio and does not open a
+network listener. Model providers, plugins, browser tools, and other requested capabilities may
+still perform external I/O under their own configured policies.
 
 Treat every user objective, repository file, leaf result, citation, and agent message as untrusted
 data. Planner and child prompts explicitly preserve their role contracts, and all structured
@@ -18,11 +19,25 @@ Child App Server threads:
 - disable native multi-agent support and project instruction loading;
 - disable `agent_trio`, `hierarchical_codex`, and legacy mission-ledger MCP servers;
 - reject detected recursive orchestration instruction sources;
-- use `approvalPolicy=never`;
-- receive their declared workspace access and capabilities resolved from the plan.
+- use `approvalPolicy=never` by default, or `on-request` with `auto_review` when the caller uses
+  Approve for me;
+- never exceed the `hostAccess` supplied for the run;
+- never strengthen the `hostApproval` supplied for the run;
+- receive their declared task access and capabilities resolved from the plan.
 
-A missing permission or external input becomes `waiting_input`. A child must not manufacture
-approval, ask for an internal `ok`/`continue` turn, or recursively create workers.
+`fullAccess` maps execution threads to App Server `danger-full-access`, which enables unrestricted
+filesystem and network access without interactive approval. `readOnly` forces all execution
+threads to read-only. `workspaceWrite`, and legacy requests that omit `hostAccess`, retain the
+role-specific read-only/workspace-write behavior. Standard MCP tool calls do not expose the host
+sandbox automatically, so the installed skill copies the current mode exactly and forbids choosing
+a stronger one. Standard MCP also does not expose the host approval mode, so the skill copies
+Approve for me as `hostApproval=approveForMe`; this maps to `approvalPolicy=on-request` and
+`approvalsReviewer=auto_review`. Direct MCP and CLI callers are responsible for making the same
+truthful assertion. Planner, integrator, final-review, and deterministic validator scopes are not
+widened by these fields.
+
+A missing permission or external input becomes `waiting_input`. A child must not bypass automatic
+review, ask for an internal `ok`/`continue` turn, or recursively create workers.
 
 Plugins are disabled unless `AGENT_TRIO_ALLOW_PLUGINS=1`. Only installed, enabled, explicitly
 planned capabilities are resolved. A plugin or plugin-owned skill runs in a separate App Server
@@ -70,6 +85,10 @@ The installer modifies user-level Codex configuration only when explicitly run. 
 tool. It does not install an agent profile, hook, global `AGENTS.md` instruction block, or
 root-model override. Child App Server threads exclude the skill and cannot recursively invoke the
 runtime.
+
+When an MCP client advertises workspace roots, the server confines `cwd` to those roots. Clients
+without roots support must pass an absolute, resolvable `cwd`; the spawned Codex App Server then
+enforces the active filesystem and approval policy for actual work.
 
 Known legacy Agent Trio files and configuration are backed up before removal. Unrelated user
 configuration must remain untouched. Review installer output and backups when migrating from V1 or

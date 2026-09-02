@@ -43,6 +43,10 @@ describe("agent-trio CLI", () => {
         "project",
         "--run-id",
         "run-1",
+        "--host-access",
+        "full-access",
+        "--host-approval",
+        "approve-for-me",
         "--domain",
         "coding",
         "--constraint",
@@ -66,6 +70,8 @@ describe("agent-trio CLI", () => {
       objective: "implement the feature",
       cwd: "/workspace/project",
       runId: "run-1",
+      hostAccess: "fullAccess",
+      hostApproval: "approveForMe",
       domain: "coding",
       constraints: ["keep compatibility"],
       capabilities: [
@@ -80,6 +86,38 @@ describe("agent-trio CLI", () => {
       integrate: false,
     });
     expect(JSON.parse(stdout.text())).toMatchObject({ runId: "run-1", status: "completed" });
+  });
+
+  it("rejects an unknown host permission mode", async () => {
+    const handle = vi.fn();
+    const stderr = capture();
+
+    const exitCode = await runCli(["run", "task", "--host-access", "unrestricted"], {
+      service: { handle },
+      stderr: stderr.output,
+      cwd: "/workspace",
+    });
+
+    expect(exitCode).toBe(2);
+    expect(stderr.text()).toContain(
+      "host access must be read-only, workspace-write, or full-access",
+    );
+    expect(handle).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown host approval mode", async () => {
+    const handle = vi.fn();
+    const stderr = capture();
+
+    const exitCode = await runCli(["run", "task", "--host-approval", "always"], {
+      service: { handle },
+      stderr: stderr.output,
+      cwd: "/workspace",
+    });
+
+    expect(exitCode).toBe(2);
+    expect(stderr.text()).toContain("host approval must be never or approve-for-me");
+    expect(handle).not.toHaveBeenCalled();
   });
 
   it.each(["status", "resume", "cancel"] as const)(
@@ -100,6 +138,21 @@ describe("agent-trio CLI", () => {
       expect(stdout.text()).toContain(`Run: run-1\nStatus:`);
     },
   );
+
+  it("prints the monitor URL in human-readable results", async () => {
+    const stdout = capture();
+    const handle = vi.fn(async () =>
+      result({ monitorUrl: "http://127.0.0.1:43173/runs/run-1?token=test" }),
+    );
+
+    const exitCode = await runCli(["status", "run-1"], {
+      service: { handle },
+      stdout: stdout.output,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout.text()).toContain("Monitor: http://127.0.0.1:43173/runs/run-1?token=test");
+  });
 
   it("passes an explicit delegated direct tier to the service", async () => {
     const handle = vi.fn(async () => result());

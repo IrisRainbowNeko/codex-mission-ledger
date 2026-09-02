@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import type { Readable, Writable } from "node:stream";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -32,9 +33,23 @@ export const AGENT_TRIO_TOOL_SCHEMA = {
   properties: {
     action: { type: "string", enum: ["run", "submit", "status", "resume", "cancel"] },
     runId: { type: "string", minLength: 1, maxLength: 128 },
+    monitorFirst: { type: "boolean" },
+    wait: { type: "boolean" },
     input: { type: "string", maxLength: 4_096 },
     objective: { type: "string", minLength: 1, maxLength: 200_000 },
     cwd: { type: "string", minLength: 1, maxLength: 4_096 },
+    hostAccess: {
+      type: "string",
+      enum: ["readOnly", "workspaceWrite", "fullAccess"],
+      description:
+        "Current calling-task permission mode. Pass it exactly; never request more access than the caller has.",
+    },
+    hostApproval: {
+      type: "string",
+      enum: ["never", "approveForMe"],
+      description:
+        "Current calling-task approval mode. Pass it exactly; never enable automatic approval unless the caller uses Approve for me.",
+    },
     strategy: { type: "string", enum: ["auto", "direct", "fanout"] },
     directTier: { type: "string", enum: ["luna", "terra"] },
     domain: { type: "string", enum: DOMAIN_VALUES },
@@ -91,13 +106,21 @@ export const AGENT_TRIO_TOOL_SCHEMA = {
       else: { not: { required: ["input"] } },
     },
     {
+      if: { required: ["monitorFirst"] },
+      then: { properties: { action: { const: "submit" } }, required: ["action"] },
+    },
+    {
+      if: { required: ["wait"] },
+      then: { properties: { action: { const: "status" } }, required: ["action"] },
+    },
+    {
       if: { required: ["directTier"] },
       then: { properties: { strategy: { const: "direct" } }, required: ["strategy"] },
     },
   ],
 } as const;
 
-export const AGENT_TRIO_TOOL_DESCRIPTION = `Run, submit, inspect, resume, or cancel Agent Trio. The result is the complete user-visible delivery; after success, do not repeat finalResponse. For nontrivial work use objective, cwd, and strategy=auto without semanticPlan: the runtime selects cheap direct execution or invokes its internal Sol planner before Luna-first fanout. The root handles one-turn work itself, using its normal workspace tools when needed. One local fix, a finite exact calculation over a handful of local inputs, a targeted rewrite, or another single-deliverable task is direct; a domain label such as algorithm or research is not by itself a reason to call this tool. Do not call merely because partitions exist: call when at least two useful independent leaves are expected to take over ${String(FANOUT_MIN_TASK_SECONDS)} seconds of actual Luna wall time and the predicted complete plan remains below 40% cost and 70% latency. The economic gate, not a fixed total-duration threshold, decides whether several smaller Luna leaves repay Sol planning. A current Sol root may instead supply strategy=fanout and a semanticPlan fast path. Plan from the objective and workspace file index; leave file inspection to the leaves. Use 2-5 independent leaves, preferring finer partitions only when they shorten the critical path. Host plans use exactly semanticPlan={"access":"readOnly","merge":"deterministic","risk":"low","tasks":[{"goal":"short bounded goal","paths":["relative/path"],"after":[],"floor":null,"expectedSeconds":90}]}. Tasks never contain id, task, tier, model, effort, checks, or the repeated full objective. Omit capabilities unless exact structured capability objects were supplied. status/resume/cancel require runId.`;
+export const AGENT_TRIO_TOOL_DESCRIPTION = `Run, submit, inspect, resume, or cancel Agent Trio. The result is the complete user-visible delivery; after success, do not repeat finalResponse. For run or submit, pass hostAccess and hostApproval as the calling Codex task's current permission and approval modes; copy them exactly and never request stronger access or approval. Use hostApproval=approveForMe only when the caller uses Approve for me; otherwise use never. Explicit Monitor-first clients call submit with monitorFirst=true, immediately show the returned monitorUrl, then call status with the same runId and wait=true exactly once; this preserves foreground execution and waits locally without model polling. For nontrivial work use objective, cwd, and strategy=auto without semanticPlan: the runtime selects cheap direct execution or invokes its internal Sol planner before Luna-first fanout. The root handles one-turn work itself, using its normal workspace tools when needed. One local fix, a finite exact calculation over a handful of local inputs, a targeted rewrite, or another single-deliverable task is direct; a domain label such as algorithm or research is not by itself a reason to call this tool. Do not call merely because partitions exist: call when at least two useful independent leaves are expected to take over ${String(FANOUT_MIN_TASK_SECONDS)} seconds of actual Luna wall time and the predicted complete plan remains below 40% cost and 70% latency. The economic gate, not a fixed total-duration threshold, decides whether several smaller Luna leaves repay Sol planning. A current Sol root may instead supply strategy=fanout and a semanticPlan fast path. Plan from the objective and workspace file index; leave file inspection to the leaves. Use 2-5 independent leaves, preferring finer partitions only when they shorten the critical path. Host plans use exactly semanticPlan={"access":"readOnly","merge":"deterministic","risk":"low","tasks":[{"goal":"short bounded goal","paths":["relative/path"],"after":[],"floor":null,"expectedSeconds":90}]}. Tasks never contain id, task, tier, model, effort, checks, or the repeated full objective. Omit capabilities unless exact structured capability objects were supplied. status/resume/cancel require runId.`;
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -124,6 +147,8 @@ export interface McpProtocolOptions {
   onError?: (error: Error) => void;
   /** Trusted fixed roots for an isolated embedding; normal Desktop MCP negotiates roots. */
   workspaceRoots?: readonly string[];
+  monitorUrlForRun?: (runId: string) => string | undefined;
+  createRunId?: () => string;
 }
 
 export class AgentTrioMcpProtocol {
@@ -132,6 +157,8 @@ export class AgentTrioMcpProtocol {
   readonly #output: Writable;
   readonly #onError: (error: Error) => void;
   readonly #workspaceRoots: string[] | null;
+  readonly #monitorUrlForRun: ((runId: string) => string | undefined) | undefined;
+  readonly #createRunId: () => string;
   #clientSupportsRoots = false;
   #roots: string[] | null = null;
   #rootsResolve: ((roots: string[]) => void) | null = null;
@@ -148,6 +175,8 @@ export class AgentTrioMcpProtocol {
       options.workspaceRoots === undefined
         ? null
         : options.workspaceRoots.map((root) => resolve(root));
+    this.#monitorUrlForRun = options.monitorUrlForRun;
+    this.#createRunId = options.createRunId ?? randomUUID;
   }
 
   async run(): Promise<void> {
@@ -236,7 +265,7 @@ export class AgentTrioMcpProtocol {
                 ? params["protocolVersion"]
                 : "2025-06-18",
             capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: "agent-trio", version: "3.1.0" },
+            serverInfo: { name: "agent-trio", version: "3.2.0" },
           });
           return;
         }
@@ -313,12 +342,40 @@ export class AgentTrioMcpProtocol {
       return;
     }
     const parsed = parseAgentTrioRequest(params["arguments"]);
+    const dispatched =
+      (parsed.action === "run" || parsed.action === "submit") && parsed.runId === undefined
+        ? { ...parsed, runId: this.#createRunId() }
+        : parsed;
     if (parsed.action === "run" || parsed.action === "submit") {
-      const roots = this.#workspaceRoots ?? this.#roots ?? (await this.#rootsPromise);
-      assertWorkspaceRoot(parsed.cwd, roots);
+      const rootsAreAuthoritative = this.#workspaceRoots !== null || this.#clientSupportsRoots;
+      const roots =
+        this.#workspaceRoots ??
+        (this.#clientSupportsRoots ? (this.#roots ?? (await this.#rootsPromise)) : []);
+      assertWorkspaceRoot(parsed.cwd, roots, rootsAreAuthoritative);
     }
     try {
-      const result = compactResult(await this.#service.handle(parsed));
+      const dispatchedRunId = "runId" in dispatched ? dispatched.runId : undefined;
+      const monitorUrl =
+        dispatchedRunId === undefined ? undefined : this.#monitorUrlForRun?.(dispatchedRunId);
+      const progressToken = progressTokenFrom(params);
+      if (monitorUrl !== undefined && progressToken !== undefined) {
+        this.#write({
+          jsonrpc: "2.0",
+          method: "notifications/progress",
+          params: {
+            progressToken,
+            progress: 0,
+            total: 1,
+            message: `Agent Trio Monitor: ${monitorUrl}`,
+          },
+        });
+      }
+      const handled = await this.#service.handle(dispatched);
+      const monitored =
+        handled.monitorUrl === undefined && monitorUrl !== undefined
+          ? { ...handled, monitorUrl }
+          : handled;
+      const result = compactResult(withMonitorLink(monitored));
       this.#writeResult(request.id, {
         content: [
           {
@@ -326,6 +383,7 @@ export class AgentTrioMcpProtocol {
             text: JSON.stringify({
               runId: result.runId,
               status: result.status,
+              monitorUrl: result.monitorUrl ?? monitorUrl ?? null,
               finalResponse: result.finalResponse,
               needsAction: result.needsAction ?? null,
               error: result.error ?? null,
@@ -394,11 +452,25 @@ export function parseAgentTrioRequest(value: unknown): AgentTrioRequest {
   }
   if (action === "status" || action === "resume" || action === "cancel") {
     const allowed = new Set(
-      action === "resume" ? ["action", "runId", "input"] : ["action", "runId"],
+      action === "resume"
+        ? ["action", "runId", "input"]
+        : action === "status"
+          ? ["action", "runId", "wait"]
+          : ["action", "runId"],
     );
     rejectUnknownArgument(input, allowed);
     const runId = requiredString(input["runId"], "runId", 128);
-    if (action !== "resume") {
+    if (action === "status") {
+      if (input["wait"] !== undefined && typeof input["wait"] !== "boolean") {
+        throw new Error("wait must be boolean");
+      }
+      return {
+        action,
+        runId,
+        ...(input["wait"] === undefined ? {} : { wait: input["wait"] as boolean }),
+      };
+    }
+    if (action === "cancel") {
       return { action, runId };
     }
     return {
@@ -412,6 +484,8 @@ export function parseAgentTrioRequest(value: unknown): AgentTrioRequest {
     "runId",
     "objective",
     "cwd",
+    "hostAccess",
+    "hostApproval",
     "strategy",
     "directTier",
     "domain",
@@ -420,8 +494,17 @@ export function parseAgentTrioRequest(value: unknown): AgentTrioRequest {
     "semanticPlan",
     "limits",
     "integrate",
+    "monitorFirst",
   ]);
   rejectUnknownArgument(input, allowed);
+  if (input["monitorFirst"] !== undefined) {
+    if (action !== "submit") {
+      throw new Error("monitorFirst is only valid when action is submit");
+    }
+    if (typeof input["monitorFirst"] !== "boolean") {
+      throw new Error("monitorFirst must be boolean");
+    }
+  }
   const domain = input["domain"];
   if (domain !== undefined && !DOMAIN_VALUES.includes(domain as TaskDomain)) {
     throw new Error("invalid domain");
@@ -435,6 +518,19 @@ export function parseAgentTrioRequest(value: unknown): AgentTrioRequest {
     throw new Error("constraints must be an array of non-empty strings");
   }
   const capabilities = parseCapabilities(input["capabilities"]);
+  const hostAccess = input["hostAccess"];
+  if (
+    hostAccess !== undefined &&
+    hostAccess !== "readOnly" &&
+    hostAccess !== "workspaceWrite" &&
+    hostAccess !== "fullAccess"
+  ) {
+    throw new Error("hostAccess must be readOnly, workspaceWrite, or fullAccess");
+  }
+  const hostApproval = input["hostApproval"];
+  if (hostApproval !== undefined && hostApproval !== "never" && hostApproval !== "approveForMe") {
+    throw new Error("hostApproval must be never or approveForMe");
+  }
   const semanticPlan =
     input["semanticPlan"] === undefined
       ? undefined
@@ -465,6 +561,8 @@ export function parseAgentTrioRequest(value: unknown): AgentTrioRequest {
       ? {}
       : { runId: requiredString(input["runId"], "runId", 128) }),
     ...(domain === undefined ? {} : { domain: domain as TaskDomain }),
+    ...(hostAccess === undefined ? {} : { hostAccess }),
+    ...(hostApproval === undefined ? {} : { hostApproval }),
     ...(strategy === undefined ? {} : { strategy: strategy as "auto" | "direct" | "fanout" }),
     ...(directTier === undefined ? {} : { directTier: directTier as "luna" | "terra" }),
     ...(constraints === undefined ? {} : { constraints: [...constraints] as string[] }),
@@ -472,6 +570,9 @@ export function parseAgentTrioRequest(value: unknown): AgentTrioRequest {
     ...(semanticPlan === undefined ? {} : { semanticPlan }),
     ...(limits === undefined ? {} : { limits }),
     ...(input["integrate"] === undefined ? {} : { integrate: input["integrate"] as boolean }),
+    ...(input["monitorFirst"] === undefined
+      ? {}
+      : { monitorFirst: input["monitorFirst"] as boolean }),
   };
 }
 
@@ -558,14 +659,21 @@ function parseLimits(value: unknown): Partial<ExecutionLimits> {
   return result;
 }
 
-function assertWorkspaceRoot(cwd: string, roots: readonly string[]): void {
-  if (roots.length === 0) {
-    throw new Error("MCP client did not provide workspace roots");
-  }
+function assertWorkspaceRoot(
+  cwd: string,
+  roots: readonly string[],
+  rootsAreAuthoritative: boolean,
+): void {
   if (!isAbsolute(cwd)) {
     throw new Error("cwd must be absolute");
   }
   const realCwd = realpathSync(cwd);
+  if (!rootsAreAuthoritative) {
+    return;
+  }
+  if (roots.length === 0) {
+    throw new Error("MCP client advertised workspace roots but did not provide any");
+  }
   if (!roots.some((root) => isWithin(root, realCwd))) {
     throw new Error(`cwd is outside the MCP workspace roots: ${cwd}`);
   }
@@ -599,6 +707,26 @@ function compactResult(result: BatchResult): BatchResult {
     throw new Error("agent_trio result exceeds the 64 KiB transport limit");
   }
   return compact;
+}
+
+function withMonitorLink(result: BatchResult): BatchResult {
+  if (
+    result.monitorUrl === undefined ||
+    result.finalResponse === null ||
+    result.finalResponse.includes(result.monitorUrl)
+  ) {
+    return result;
+  }
+  return {
+    ...result,
+    finalResponse: `[Open Agent Trio Monitor](${result.monitorUrl})\n\n${result.finalResponse}`,
+  };
+}
+
+function progressTokenFrom(params: Record<string, unknown>): string | number | undefined {
+  const metadata = isRecord(params["_meta"]) ? params["_meta"] : null;
+  const token = metadata?.["progressToken"];
+  return typeof token === "string" || typeof token === "number" ? token : undefined;
 }
 
 function truncate(value: string | null, maxBytes: number): string | null {

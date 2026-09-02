@@ -105,6 +105,29 @@ const noReplan: ReplanHandler = {
 };
 
 describe("DeterministicScheduler", () => {
+  it("passes caller permissions to every scheduled leaf", async () => {
+    const runLeaf = vi.fn(async ({ task: item }: Parameters<LeafExecutor["runLeaf"]>[0]) =>
+      completed(item.id),
+    );
+    await new DeterministicScheduler({ runLeaf }, noReplan).execute(
+      "permission-run",
+      plan([task("a"), task("b")]),
+      limits,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "fullAccess",
+      "approveForMe",
+    );
+
+    expect(runLeaf).toHaveBeenCalledTimes(2);
+    for (const [input] of runLeaf.mock.calls) {
+      expect(input.hostAccess).toBe("fullAccess");
+      expect(input.hostApproval).toBe("approveForMe");
+    }
+  });
+
   it("runs independent leaves concurrently before dependent work", async () => {
     const order: string[] = [];
     let active = 0;

@@ -46,6 +46,7 @@ export {
   type TokenBreakdown,
 } from "./metrics.js";
 export * from "./mcp/protocol.js";
+export * from "./monitor/index.js";
 export * from "./runtime.js";
 export * from "./responses-planner.js";
 export * from "./supervisor.js";

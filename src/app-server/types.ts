@@ -509,6 +509,8 @@ export interface AppServerClientOptions {
     capabilities?: Partial<InitializeCapabilities> | null;
   };
   notificationBufferSize?: number;
+  /** Keep high-volume delta notifications for later waiters; production orchestration disables it. */
+  bufferNotificationDeltas?: boolean;
   requestTimeoutMs?: number;
   maxLineBytes?: number;
   onError?: (error: Error) => void;

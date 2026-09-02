@@ -5,39 +5,26 @@ import { describe, expect, it, vi } from "vitest";
 import { runDoctor } from "../src/doctor.js";
 
 describe("runDoctor", () => {
-  it("checks the same Codex executable configured for the runtime", async () => {
-    const verifyVersion = vi.fn(async () => "0.151.0");
+  it("does not probe or reject the configured Codex executable by version", async () => {
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
       const report = await runDoctor([], {
-        env: { AGENT_TRIO_CODEX_PATH: "/opt/codex-0.151.0" },
-        verifyVersion,
+        env: { AGENT_TRIO_CODEX_PATH: "/definitely/not/a/codex/executable" },
       });
 
-      expect(verifyVersion).toHaveBeenCalledWith({
-        codexPath: "/opt/codex-0.151.0",
-        env: { AGENT_TRIO_CODEX_PATH: "/opt/codex-0.151.0" },
-      });
-      expect(report.checks).toContainEqual({
-        name: "Codex App Server schema version",
-        ok: true,
-        detail: "codex-cli 0.151.0",
-      });
+      expect(report.checks.some((check) => check.name.includes("version"))).toBe(false);
     } finally {
       write.mockRestore();
     }
   });
 
   it("does not probe Codex for project-only checks", async () => {
-    const verifyVersion = vi.fn(async () => "0.151.0");
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const codexHome = mkdtempSync(join(tmpdir(), "agent-trio-doctor-empty-home-"));
     try {
       const report = await runDoctor(["--project-only"], {
         env: { CODEX_HOME: codexHome },
-        verifyVersion,
       });
-      expect(verifyVersion).not.toHaveBeenCalled();
       expect(report.checks).toContainEqual({
         name: "Planner transport",
         ok: true,

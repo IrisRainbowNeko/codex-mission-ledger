@@ -6,6 +6,8 @@ import {
   openSync,
   renameSync,
   rmSync,
+  watch,
+  type FSWatcher,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -78,6 +80,7 @@ export interface AgentTrioServiceOptions {
   now?: () => Date;
   createRunId?: () => string;
   controlPollMs?: number;
+  monitorUrlForRun?: (runId: string) => string | undefined;
 }
 
 export interface StartRequest extends RunRequest {
@@ -167,6 +170,7 @@ export class AgentTrioService {
   readonly #now: () => Date;
   readonly #createRunId: () => string;
   readonly #controlPollMs: number;
+  readonly #monitorUrlForRun: ((runId: string) => string | undefined) | undefined;
   readonly #active = new Map<string, ActiveRun>();
 
   constructor(options: AgentTrioServiceOptions) {
@@ -185,6 +189,7 @@ export class AgentTrioService {
     this.#now = options.now ?? (() => new Date());
     this.#createRunId = options.createRunId ?? randomUUID;
     this.#controlPollMs = options.controlPollMs ?? 100;
+    this.#monitorUrlForRun = options.monitorUrlForRun;
     if (!Number.isFinite(this.#controlPollMs) || this.#controlPollMs <= 0) {
       throw new RangeError("controlPollMs must be a positive finite number");
     }
@@ -212,10 +217,10 @@ export class AgentTrioService {
     if (existing !== null) {
       const active = this.#active.get(runId);
       return active === undefined
-        ? cloneResult(existing.result)
-        : cloneResult(await active.promise);
+        ? this.#resultForUser(existing.result)
+        : this.#resultForUser(await active.promise);
     }
-    return cloneResult(await this.#startNew(runId, request).promise);
+    return this.#resultForUser(await this.#startNew(runId, request).promise);
   }
 
   async submit(input: StartRequest): Promise<BatchResult> {
@@ -223,26 +228,81 @@ export class AgentTrioService {
     const runId = input.runId ?? this.#createRunId();
     const existing = this.#findExisting(runId, request);
     if (existing !== null) {
-      return cloneResult(existing.result);
+      return this.#resultForUser(existing.result);
     }
     const active = this.#startNew(runId, request);
     void active.promise.catch(() => undefined);
-    return cloneResult(this.#requireSnapshot(runId).result);
+    return this.#resultForUser(this.#requireSnapshot(runId).result);
   }
 
   status(runId: string): BatchResult {
-    return cloneResult(this.#requireSnapshot(runId).result);
+    return this.#resultForUser(this.#requireSnapshot(runId).result);
+  }
+
+  async waitForSettlement(runId: string): Promise<BatchResult> {
+    const active = this.#active.get(runId);
+    if (active !== undefined) {
+      return this.#resultForUser(await active.promise);
+    }
+    const initial = this.#requireSnapshot(runId);
+    if (isSettled(initial.result.status)) {
+      return this.#resultForUser(initial.result);
+    }
+    return new Promise<BatchResult>((resolve, reject) => {
+      let watcher: FSWatcher | null = null;
+      let finished = false;
+      const close = (): void => {
+        watcher?.close();
+        watcher = null;
+      };
+      const fail = (error: unknown): void => {
+        if (finished) {
+          return;
+        }
+        finished = true;
+        close();
+        reject(error instanceof Error ? error : new Error(String(error)));
+      };
+      const check = (): void => {
+        if (finished) {
+          return;
+        }
+        try {
+          const snapshot = this.#requireSnapshot(runId);
+          if (!isSettled(snapshot.result.status)) {
+            return;
+          }
+          finished = true;
+          close();
+          resolve(this.#resultForUser(snapshot.result));
+        } catch (error) {
+          fail(error);
+        }
+      };
+      try {
+        watcher = watch(this.#store.jobDirectory(runId), (_event, filename) => {
+          if (filename === null || filename === "job.json") {
+            check();
+          }
+        });
+        watcher.once("error", fail);
+        // Close the race between the initial read and watcher registration.
+        check();
+      } catch (error) {
+        fail(error);
+      }
+    });
   }
 
   async resume(runId: string, input?: string): Promise<BatchResult> {
     const userInput = normalizeResumeInput(input);
     const active = this.#active.get(runId);
     if (active !== undefined) {
-      return cloneResult(await active.promise);
+      return this.#resultForUser(await active.promise);
     }
     const initial = this.#requireSnapshot(runId);
     if (isTerminal(initial.result.status)) {
-      return cloneResult(initial.result);
+      return this.#resultForUser(initial.result);
     }
     if (this.#recovery === undefined) {
       throw new AgentTrioServiceError(
@@ -261,7 +321,7 @@ export class AgentTrioService {
     }
     if (isTerminal(snapshot.result.status)) {
       lock.release();
-      return cloneResult(snapshot.result);
+      return this.#resultForUser(snapshot.result);
     }
     const controller = new AbortController();
     const stopControl = this.#watchCancellation(runId, controller);
@@ -275,7 +335,7 @@ export class AgentTrioService {
         }
       });
     this.#active.set(runId, { controller, promise: operation });
-    return cloneResult(await operation);
+    return this.#resultForUser(await operation);
   }
 
   async cancel(runId: string): Promise<BatchResult> {
@@ -285,7 +345,7 @@ export class AgentTrioService {
       const result = await active.promise;
       const snapshot = this.#requireSnapshot(runId);
       if (latestNonterminalRemoteTurns(snapshot.remoteTurns).length === 0) {
-        return cloneResult(result);
+        return this.#resultForUser(result);
       }
     }
 
@@ -433,7 +493,12 @@ export class AgentTrioService {
         return { controller: new AbortController(), promise: completed };
       }
 
-      const snapshot = initialSnapshot(runId, request, this.#now());
+      const snapshot = initialSnapshot(
+        runId,
+        request,
+        this.#now(),
+        this.#monitorUrlForRun?.(runId),
+      );
       this.#save(snapshot, "created");
       const controller = new AbortController();
       const state: MutableRunState = {
@@ -1033,6 +1098,9 @@ export class AgentTrioService {
               signal,
               replanHandler,
               completionInspector,
+              undefined,
+              request.hostAccess,
+              request.hostApproval,
             )
           : await this.#scheduler.execute(
               runId,
@@ -1050,6 +1118,8 @@ export class AgentTrioService {
                 patch: session.patch,
                 replanCount: session.replanCount,
               },
+              request.hostAccess,
+              request.hostApproval,
             );
       schedulerCompleted = true;
       retainWorkspace = hasIndeterminateWriterSchedule(scheduled);
@@ -2187,6 +2257,15 @@ export class AgentTrioService {
     return snapshot;
   }
 
+  #resultForUser(result: BatchResult): BatchResult {
+    const copy = cloneResult(result);
+    const monitorUrl = copy.monitorUrl ?? this.#monitorUrlForRun?.(copy.runId);
+    if (monitorUrl !== undefined) {
+      copy.monitorUrl = monitorUrl;
+    }
+    return copy;
+  }
+
   #save(snapshot: JobSnapshot, event: string): void {
     const persisted = this.#store.load(snapshot.result.runId);
     if (persisted !== null) {
@@ -2441,6 +2520,8 @@ function withoutAction(
   return {
     objective: request.objective,
     cwd: request.cwd,
+    ...(request.hostAccess === undefined ? {} : { hostAccess: request.hostAccess }),
+    ...(request.hostApproval === undefined ? {} : { hostApproval: request.hostApproval }),
     ...(request.strategy === undefined ? {} : { strategy: request.strategy }),
     ...(request.directTier === undefined ? {} : { directTier: request.directTier }),
     ...(request.mode === undefined ? {} : { mode: request.mode }),
@@ -2500,10 +2581,33 @@ function normalizeStartRequest(
   if (input.directTier !== undefined && input.strategy !== "direct") {
     throw new AgentTrioServiceError("invalid_request", "directTier requires strategy=direct");
   }
+  if (
+    input.hostAccess !== undefined &&
+    input.hostAccess !== "readOnly" &&
+    input.hostAccess !== "workspaceWrite" &&
+    input.hostAccess !== "fullAccess"
+  ) {
+    throw new AgentTrioServiceError(
+      "invalid_request",
+      "hostAccess must be readOnly, workspaceWrite, or fullAccess",
+    );
+  }
+  if (
+    input.hostApproval !== undefined &&
+    input.hostApproval !== "never" &&
+    input.hostApproval !== "approveForMe"
+  ) {
+    throw new AgentTrioServiceError(
+      "invalid_request",
+      "hostApproval must be never or approveForMe",
+    );
+  }
   normalizeExecutionLimitsForMode(defaultMode, input.limits ?? {});
   return {
     objective,
     cwd,
+    ...(input.hostAccess === undefined ? {} : { hostAccess: input.hostAccess }),
+    ...(input.hostApproval === undefined ? {} : { hostApproval: input.hostApproval }),
     ...(input.strategy === undefined ? {} : { strategy: input.strategy }),
     ...(input.directTier === undefined ? {} : { directTier: input.directTier }),
     mode: defaultMode,
@@ -2534,7 +2638,12 @@ function normalizeResumeInput(input: string | undefined): string | undefined {
   return normalized;
 }
 
-function initialSnapshot(runId: string, request: RunRequest, now: Date): JobSnapshot {
+function initialSnapshot(
+  runId: string,
+  request: RunRequest,
+  now: Date,
+  monitorUrl?: string,
+): JobSnapshot {
   return {
     protocolVersion: AGENT_TRIO_PROTOCOL_VERSION,
     requestHash: hashRunRequest(request),
@@ -2548,6 +2657,7 @@ function initialSnapshot(runId: string, request: RunRequest, now: Date): JobSnap
       leaves: [],
       finalResponse: null,
       metrics: null,
+      ...(monitorUrl === undefined ? {} : { monitorUrl }),
     },
     remoteTurns: [],
     coordinatorThreadId: null,
@@ -3142,6 +3252,10 @@ function elapsedMs(startedAt: Date, completedAt: Date): number {
 
 function isTerminal(status: JobStatus): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function isSettled(status: JobStatus): boolean {
+  return isTerminal(status) || status === "waiting_input" || status === "indeterminate";
 }
 
 function errorMessage(error: unknown, signal: AbortSignal): string {

@@ -7,6 +7,8 @@ export type ExecutionStrategy = "auto" | "direct" | "fanout";
 export type AggregationMode = "auto" | "deterministic" | "terra";
 export type ValidatorStrength = "none" | "weak" | "strong";
 export type TaskAccess = "readOnly" | "workspaceWrite";
+export type HostAccess = "readOnly" | "workspaceWrite" | "fullAccess";
+export type HostApproval = "never" | "approveForMe";
 export type TaskDomain =
   "coding" | "algorithm" | "research" | "paper" | "office" | "autoResearch" | "general";
 export type JobMode = "foreground" | "durable";
@@ -263,6 +265,10 @@ export interface ExecutionLimits {
 export interface RunRequest {
   objective: string;
   cwd: string;
+  /** Permission mode of the calling Codex task. Children may inherit it but never exceed it. */
+  hostAccess?: HostAccess;
+  /** Approval mode of the calling Codex task. Children may inherit it but never strengthen it. */
+  hostApproval?: HostApproval;
   strategy?: ExecutionStrategy;
   /** Calling-Sol tier choice for a delegated direct run; valid only with strategy=direct. */
   directTier?: Exclude<ModelTier, "sol">;
@@ -278,8 +284,10 @@ export interface RunRequest {
 }
 
 export type AgentTrioRequest =
-  | ({ action: "run" | "submit" } & RunRequest & { runId?: string })
-  | { action: "status" | "cancel"; runId: string }
+  | ({ action: "run" } & RunRequest & { runId?: string })
+  | ({ action: "submit" } & RunRequest & { runId?: string; monitorFirst?: boolean })
+  | { action: "status"; runId: string; wait?: boolean }
+  | { action: "cancel"; runId: string }
   | { action: "resume"; runId: string; input?: string };
 
 export interface BatchMetrics {
@@ -313,6 +321,8 @@ export interface BatchResult {
   leaves: LeafResult[];
   finalResponse: string | null;
   metrics: BatchMetrics | null;
+  /** Local read-only dashboard for this run. It is absent when monitoring is disabled. */
+  monitorUrl?: string;
   needsAction?: string;
   error?: string;
 }

@@ -1,5 +1,57 @@
 # Changelog
 
+## [3.2.0] - 2026-09-01
+
+### Added
+
+- A local Agent Trio Monitor that shows the live DAG, stage and leaf status, model usage, cost,
+  App Server messages, reasoning summaries, tool calls, commands, file changes, and validation
+  activity without adding model turns.
+- Event-driven SSE updates and incremental history reads for ChatGPT desktop, Codex IDE, and CLI
+  users through the `monitorUrl` returned by the existing `agent_trio` tool.
+- Bounded asynchronous monitor capture with a 2 MiB pending-memory ceiling and a 24 MiB per-run
+  event log. The monitor runs on loopback with a private per-job-root token.
+
+### Changed
+
+- MCP assigns the run ID before execution and reports the Monitor URL through progress
+  notifications when the client supplies a progress token.
+- Explicit foreground skill calls now use `submit(monitorFirst=true)` followed by exactly one
+  `status(wait=true)` call. This exposes the Monitor before completion while preserving the normal
+  foreground execution contract; settlement waiting uses filesystem events and no model turns.
+- CLI results print the Monitor URL. The monitor service is shared across Agent Trio processes and
+  reads durable job snapshots, so foreground and submitted runs use the same view.
+- Monitor capture now coalesces consecutive deltas for the same App Server item in a bounded 250 ms
+  batch, and the event API coalesces legacy logs while reading them. This prevents token-sized JSON
+  records from multiplying storage and browser object counts.
+- The Monitor conversation renders one entry per logical message, reasoning item, command, file
+  change, or tool call. Completed messages replace partial content, command output is collapsible,
+  and internal protocol noise is omitted from the conversation view.
+
+### Fixed
+
+- Direct/coordinator threads and execution leaves now inherit the calling Codex task's explicitly
+  supplied permission mode. Full access enables App Server `danger-full-access` and network access;
+  read-only forces child execution read-only; persisted retries and resumes retain the same mode.
+- The explicit skill passes the active permission mode without escalation. MCP and CLI callers can
+  provide the same per-run context through `hostAccess` and `--host-access`.
+- Direct/coordinator threads and execution leaves now also inherit Approve for me through per-run
+  `hostApproval`. The runtime maps it to App Server `on-request` plus `auto_review` on thread start,
+  resume, and turn start; durable retries and resumes retain the same mode.
+- The explicit skill copies the active approval mode without escalation. MCP and CLI callers can
+  provide it through `hostApproval` and `--host-approval`.
+
+## [3.1.1] - 2026-09-01
+
+### Fixed
+
+- MCP clients that do not implement workspace roots can run Agent Trio with an absolute,
+  resolvable `cwd`; clients that advertise roots remain strictly confined to them.
+- The explicit `$agent-trio` skill now stops on an MCP integration error instead of silently
+  completing the task through the root model.
+- Removed CLI version probing and `initialize.userAgent` version gates. Compatibility now follows
+  actual App Server protocol behavior instead of unreliable version strings.
+
 ## [3.1.0] - 2026-09-01
 
 ### Changed

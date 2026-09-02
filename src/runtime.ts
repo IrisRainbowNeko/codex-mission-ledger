@@ -11,7 +11,6 @@ import {
   AppServerTerraIntegrator,
   awaitPersistedAppServerTurn,
   CodexAppServerClient,
-  REQUIRED_CODEX_CLI_VERSION,
   createCodexAppServerConnectionFactory,
   runAppServerValidators,
   type AppServer,
@@ -62,6 +61,7 @@ import { LocalRouteOptimizer, recommendDirectTier, type RouteOptimizer } from ".
 import { userHome } from "./platform.js";
 import { ResponsesPlannerTransport } from "./responses-planner.js";
 import { resolvePlannerTransport } from "./planner-transport-config.js";
+import { AgentTrioMonitorRuntime, type MonitorRuntimePort } from "./monitor/index.js";
 
 const DEFAULT_MODELS: Readonly<Record<ModelTier, string>> = Object.freeze({
   luna: "gpt-5.6-luna",
@@ -111,7 +111,7 @@ const INACTIVE_REPLANNER: ReplanHandler = {
   },
 };
 
-export type RuntimeProcessOptions = Omit<CodexProcessOptions, "expectedVersion">;
+export type RuntimeProcessOptions = CodexProcessOptions;
 
 export type RuntimeClientOptions = Omit<AppServerClientOptions, "connectionFactory">;
 
@@ -145,6 +145,7 @@ export interface DefaultRuntimeComponents {
   recovery: RecoveryAdapter;
   costEstimator: NonLeafCostEstimator;
   routeOptimizer?: RouteOptimizer;
+  monitor: MonitorRuntimePort;
 }
 
 export interface DefaultRuntimeOptions {
@@ -165,6 +166,7 @@ export interface DefaultRuntimeOptions {
 export interface DefaultRuntime {
   service: AgentTrioService;
   appServer: AppServer;
+  monitorUrlForRun(runId: string): string | undefined;
   close(): Promise<void>;
 }
 
@@ -210,13 +212,15 @@ export function createDefaultRuntime(options: DefaultRuntimeOptions = {}): Defau
   const modelProvider = options.modelProvider ?? env["AGENT_TRIO_MODEL_PROVIDER"];
   const serviceTier = options.serviceTier ?? env["AGENT_TRIO_SERVICE_TIER"];
   const store = components.store ?? new JobStore(jobRoot);
+  const monitor = components.monitor ?? new AgentTrioMonitorRuntime({ jobRoot, store, env });
   const workspace = components.workspace ?? new WorkspaceRegistry();
   const appServer =
     components.appServer ??
-    createAppServer(cwd, options, ["--disable", "plugins"], processResources);
+    createAppServer(cwd, options, ["--disable", "plugins"], processResources, monitor);
+  monitor.attach(appServer);
   const capabilityDiscoveryServer =
     components.capabilityCatalog === undefined && allowPlugins
-      ? createAppServer(cwd, options, ["--enable", "plugins"], processResources)
+      ? createAppServer(cwd, options, ["--enable", "plugins"], processResources, monitor)
       : null;
   const validator =
     components.validator ??
@@ -234,6 +238,7 @@ export function createDefaultRuntime(options: DefaultRuntimeOptions = {}): Defau
 
   const checkpointRemoteTurn = (runId: string, turn: RemoteTurnRef): void => {
     store.recordRemoteTurn(runId, turn);
+    monitor.recordRemoteTurn(runId, turn);
   };
   const capabilityCatalog =
     components.capabilityCatalog ??
@@ -254,6 +259,7 @@ export function createDefaultRuntime(options: DefaultRuntimeOptions = {}): Defau
           options,
           buildPluginIsolationArgs(installedPlugins, capabilities),
           processResources,
+          monitor,
         );
       },
     } satisfies IsolatedCapabilityServerFactory);
@@ -394,11 +400,13 @@ export function createDefaultRuntime(options: DefaultRuntimeOptions = {}): Defau
     recovery,
     costEstimator,
     ...(routeOptimizer === undefined ? {} : { routeOptimizer }),
+    monitorUrlForRun: (runId) => monitor.urlForRun(runId),
   });
 
   return {
     service,
     appServer,
+    monitorUrlForRun: (runId) => monitor.urlForRun(runId),
     close: async () => {
       let closeError: unknown;
       try {
@@ -410,6 +418,7 @@ export function createDefaultRuntime(options: DefaultRuntimeOptions = {}): Defau
         for (const resource of processResources) {
           await resource.dispose().catch(() => undefined);
         }
+        await monitor.close().catch(() => undefined);
       }
       if (closeError !== undefined) {
         throw closeError;
@@ -445,6 +454,7 @@ function createAppServer(
   options: DefaultRuntimeOptions,
   isolatedExtraArgs: readonly string[] = [],
   processResources: ManagedAppServerConnectionFactory[] = [],
+  monitor?: MonitorRuntimePort,
 ): AppServer {
   const env = options.env ?? process.env;
   const processOptions = options.processOptions ?? {};
@@ -464,14 +474,17 @@ function createAppServer(
     ...(codexPath === undefined ? {} : { codexPath }),
     ...(childEnvironment === undefined ? {} : { env: childEnvironment }),
     cwd: processOptions.cwd ?? cwd,
-    expectedVersion: REQUIRED_CODEX_CLI_VERSION,
     codexHomeIsolation,
   });
   processResources.push(connectionFactory);
-  return new CodexAppServerClient({
+  const server = new CodexAppServerClient({
     ...options.clientOptions,
+    bufferNotificationDeltas: options.clientOptions?.bufferNotificationDeltas ?? false,
+    notificationBufferSize: options.clientOptions?.notificationBufferSize ?? 128,
     connectionFactory,
   });
+  monitor?.attach(server);
+  return server;
 }
 
 /**

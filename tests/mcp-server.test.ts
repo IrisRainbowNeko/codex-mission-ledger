@@ -216,6 +216,70 @@ describe("V3 MCP server", () => {
     expect(handle).not.toHaveBeenCalled();
   });
 
+  it("starts Monitor-first work with foreground semantics and waits once by run id", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let text = "";
+    output.setEncoding("utf8");
+    output.on("data", (chunk: string) => {
+      text += chunk;
+    });
+    const handle = vi.fn();
+    const waitForSettlement = vi.fn(async () => result("visible-run", "completed"));
+    const launchSupervisor = vi.fn(async (request) => result(request.runId));
+    const running = createMcpServer({ handle, waitForSettlement }, input, output, process.stderr, {
+      generateRunId: () => "visible-run",
+      launchSupervisor,
+      monitorUrlForRun: (runId) => `http://127.0.0.1:43173/runs/${runId}?token=test`,
+    }).run();
+
+    writeWorkspaceHandshake(input);
+    input.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "agent_trio",
+          arguments: {
+            action: "submit",
+            objective: "visible foreground task",
+            cwd: "/tmp",
+            strategy: "auto",
+            monitorFirst: true,
+          },
+        },
+      }) + "\n",
+    );
+    await vi.waitFor(() => expect(text).toContain('"id":2'));
+    input.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: {
+          name: "agent_trio",
+          arguments: { action: "status", runId: "visible-run", wait: true },
+        },
+      }) + "\n",
+    );
+    input.end();
+    await running;
+
+    expect(launchSupervisor).toHaveBeenCalledWith({
+      action: "run",
+      objective: "visible foreground task",
+      cwd: "/tmp",
+      strategy: "auto",
+      runId: "visible-run",
+      constraints: ["agent-trio:root-dispatch"],
+    });
+    expect(waitForSettlement).toHaveBeenCalledOnce();
+    expect(waitForSettlement).toHaveBeenCalledWith("visible-run");
+    expect(handle).not.toHaveBeenCalled();
+    expect(text).toContain("Open Agent Trio Monitor");
+  });
+
   it("loads and closes the default runtime around the stdio protocol", async () => {
     const input = new PassThrough();
     const output = new PassThrough();

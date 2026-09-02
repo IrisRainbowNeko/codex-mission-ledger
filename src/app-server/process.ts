@@ -3,7 +3,6 @@ import { mkdtemp, mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
-import { CODEX_APP_SERVER_VERSION } from "../core/contracts.js";
 import type { AppServerConnection, AppServerConnectionFactory } from "./types.js";
 
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
@@ -22,7 +21,6 @@ const DEFAULT_ISOLATED_CONFIG = [
 ].join("\n");
 
 export type AppServerTransport = "stdio" | "proxy";
-export const REQUIRED_CODEX_CLI_VERSION = CODEX_APP_SERVER_VERSION;
 
 export type SpawnCodex = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 
@@ -64,21 +62,16 @@ export interface ManagedAppServerConnectionFactory extends AppServerConnectionFa
   dispose(): Promise<void>;
 }
 
-export interface CodexCliVersionOptions {
+export interface CodexProcessOptions {
   codexPath?: string;
-  expectedVersion?: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   spawnProcess?: SpawnCodex;
-}
-
-export interface CodexProcessOptions extends CodexCliVersionOptions {
   transport?: AppServerTransport;
   socketPath?: string;
   extraArgs?: string[];
   /** Defaults to `inherit` for the low-level factory; the production runtime opts into `temporary`. */
   codexHomeIsolation?: CodexHomeIsolationOptions;
-  verifyVersion?: boolean;
   closeTimeoutMs?: number;
   onStderr?: (chunk: string) => void;
   /** One isolated root-only MCP bridge appended after recursive-MCP safety disables. */
@@ -91,57 +84,10 @@ export interface CodexProcessOptions extends CodexCliVersionOptions {
   };
 }
 
-export class CodexCliVersionError extends Error {}
-
 export class CodexProcessError extends Error {}
-
-/** Verify the executable before starting a transport; no model turn is launched. */
-export async function verifyCodexCliVersion(options: CodexCliVersionOptions = {}): Promise<string> {
-  const command = options.codexPath ?? "codex";
-  const expectedVersion = options.expectedVersion ?? REQUIRED_CODEX_CLI_VERSION;
-  const child = spawnCodex(options.spawnProcess, command, ["--version"], {
-    cwd: options.cwd,
-    env: options.env,
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-  });
-  const stdout = requireReadable(child.stdout, "version stdout");
-  const stderr = requireReadable(child.stderr, "version stderr");
-  const [status, stdoutText, stderrText] = await Promise.all([
-    childStatus(child),
-    collectText(stdout),
-    collectText(stderr),
-  ]);
-  if (status.error !== null) {
-    throw new CodexCliVersionError(`failed to run ${command} --version: ${status.error.message}`);
-  }
-  if (status.code !== 0) {
-    throw new CodexCliVersionError(
-      `${command} --version exited with ${String(status.code)}: ${stderrText.trim()}`,
-    );
-  }
-
-  const versionLine = stdoutText
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .find((line) => /^codex-cli\s+\S+$/u.test(line));
-  const actualVersion = versionLine?.replace(/^codex-cli\s+/u, "");
-  if (actualVersion === undefined) {
-    throw new CodexCliVersionError(
-      `${command} --version did not return a codex-cli version: ${stdoutText.trim()}`,
-    );
-  }
-  if (actualVersion !== expectedVersion) {
-    throw new CodexCliVersionError(
-      `codex-cli ${expectedVersion} is required; found ${actualVersion}`,
-    );
-  }
-  return actualVersion;
-}
 
 /**
  * Create a fresh stdio or daemon-proxy process for each connect/reconnect.
- * Version verification is enabled by default and pinned to contracts.ts.
  */
 export function createCodexAppServerConnectionFactory(
   options: CodexProcessOptions = {},
@@ -156,10 +102,6 @@ export function createCodexAppServerConnectionFactory(
 
   const connectionFactory = (async () => {
     const processEnv = await homeProjection.environment(options.env);
-    if (options.verifyVersion !== false) {
-      await verifyCodexCliVersion({ ...options, env: processEnv });
-    }
-
     const command = options.codexPath ?? "codex";
     const transport = options.transport ?? "stdio";
     const args =
@@ -591,18 +533,6 @@ function childStatus(child: ChildProcess): Promise<ChildStatus> {
     if (child.exitCode !== null || child.signalCode !== null) {
       finish({ code: child.exitCode, signal: child.signalCode, error: null });
     }
-  });
-}
-
-function collectText(readable: Readable): Promise<string> {
-  readable.setEncoding("utf8");
-  let output = "";
-  return new Promise((resolve, reject) => {
-    readable.on("data", (chunk: string) => {
-      output += chunk;
-    });
-    readable.once("end", () => resolve(output));
-    readable.once("error", reject);
   });
 }
 

@@ -12,12 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  CodexCliVersionError,
-  createCodexAppServerConnectionFactory,
-  verifyCodexCliVersion,
-  type SpawnCodex,
-} from "../src/app-server/index.js";
+import { createCodexAppServerConnectionFactory, type SpawnCodex } from "../src/app-server/index.js";
 import { buildPluginIsolationArgs } from "../src/app-server/plugin-isolation.js";
 
 const temporaryRoots: string[] = [];
@@ -42,16 +37,6 @@ function childProcess(): FakeChild {
   return child;
 }
 
-function exitChild(child: FakeChild, code: number, stdout: string, stderr = ""): void {
-  queueMicrotask(() => {
-    child.stdout.end(stdout);
-    child.stderr.end(stderr);
-    child.exitCode = code;
-    child.emit("exit", code, null);
-    child.emit("close", code, null);
-  });
-}
-
 afterEach(() => {
   vi.useRealTimers();
   for (const root of temporaryRoots.splice(0)) {
@@ -60,34 +45,11 @@ afterEach(() => {
 });
 
 describe("codex app-server process transport", () => {
-  it("accepts only the pinned codex-cli 0.151.0 version", async () => {
-    const matching = childProcess();
-    const matchingSpawn: SpawnCodex = () => {
-      exitChild(matching, 0, "codex-cli 0.151.0\n", "warning\n");
-      return matching as unknown as ChildProcess;
-    };
-    await expect(verifyCodexCliVersion({ spawnProcess: matchingSpawn })).resolves.toBe("0.151.0");
-
-    const mismatch = childProcess();
-    const mismatchSpawn: SpawnCodex = () => {
-      exitChild(mismatch, 0, "codex-cli 0.149.0\n");
-      return mismatch as unknown as ChildProcess;
-    };
-    await expect(verifyCodexCliVersion({ spawnProcess: mismatchSpawn })).rejects.toThrow(
-      new CodexCliVersionError("codex-cli 0.151.0 is required; found 0.149.0"),
-    );
-  });
-
-  it("verifies then launches the stdio transport and closes it through EOF", async () => {
+  it("launches one stdio transport process and closes it through EOF", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
-    const versionChild = childProcess();
     const serverChild = childProcess();
     const spawnProcess: SpawnCodex = (command, args) => {
       calls.push({ command, args });
-      if (args[0] === "--version") {
-        exitChild(versionChild, 0, "codex-cli 0.151.0\n");
-        return versionChild as unknown as ChildProcess;
-      }
       serverChild.stdin.once("finish", () => {
         serverChild.exitCode = 0;
         serverChild.emit("exit", 0, null);
@@ -103,7 +65,6 @@ describe("codex app-server process transport", () => {
 
     const connection = await factory();
     expect(calls).toEqual([
-      { command: "/opt/codex", args: ["--version"] },
       {
         command: "/opt/codex",
         args: ["app-server", "--stdio", "--strict-config"],
@@ -113,7 +74,7 @@ describe("codex app-server process transport", () => {
     expect(serverChild.kill).not.toHaveBeenCalled();
   });
 
-  it("builds proxy arguments without a version process when verification is disabled", async () => {
+  it("builds proxy arguments and starts one process", async () => {
     const serverChild = childProcess();
     const spawnProcess = vi.fn<SpawnCodex>((_command, _args) => {
       serverChild.stdin.once("finish", () => {
@@ -126,7 +87,6 @@ describe("codex app-server process transport", () => {
     const factory = createCodexAppServerConnectionFactory({
       transport: "proxy",
       socketPath: "/tmp/codex.sock",
-      verifyVersion: false,
       spawnProcess,
     });
 
@@ -163,7 +123,6 @@ describe("codex app-server process transport", () => {
       },
     );
     const factory = createCodexAppServerConnectionFactory({
-      verifyVersion: false,
       spawnProcess,
       extraArgs: isolationArgs,
     });
@@ -197,7 +156,6 @@ describe("codex app-server process transport", () => {
     });
     const spawnProcess: SpawnCodex = () => serverChild as unknown as ChildProcess;
     const factory = createCodexAppServerConnectionFactory({
-      verifyVersion: false,
       closeTimeoutMs: 0,
       spawnProcess,
     });
@@ -231,7 +189,6 @@ describe("codex app-server process transport", () => {
       return child as unknown as ChildProcess;
     });
     const factory = createCodexAppServerConnectionFactory({
-      verifyVersion: false,
       spawnProcess,
       codexHomeIsolation: { mode: "temporary", parentDirectory: parent },
     });
@@ -273,7 +230,6 @@ describe("codex app-server process transport", () => {
     });
     const spawnProcess = vi.fn<SpawnCodex>(() => child as unknown as ChildProcess);
     const factory = createCodexAppServerConnectionFactory({
-      verifyVersion: false,
       spawnProcess,
       extraArgs: ["--strict-config"],
       env: { CUSTOM_AUTH_ENV: "present" },
@@ -340,7 +296,6 @@ describe("codex app-server process transport", () => {
     });
     const spawnProcess = vi.fn<SpawnCodex>(() => child as unknown as ChildProcess);
     const factory = createCodexAppServerConnectionFactory({
-      verifyVersion: false,
       spawnProcess,
       codexHomeIsolation: {
         mode: "temporary",
@@ -366,7 +321,6 @@ describe("codex app-server process transport", () => {
     });
     const spawnProcess = vi.fn<SpawnCodex>(() => child as unknown as ChildProcess);
     const factory = createCodexAppServerConnectionFactory({
-      verifyVersion: false,
       spawnProcess,
       env: { CODEX_HOME: "/caller-owned-home", KEEP: "yes" },
       codexHomeIsolation: { mode: "inherit" },

@@ -408,6 +408,67 @@ describe("AppServerTerraCoordinator", () => {
     expect(server.turnStarts[0]?.outputSchema).toEqual(TERRA_COORDINATOR_OUTPUT_SCHEMA);
   });
 
+  it.each([
+    ["fullAccess", "danger-full-access", { type: "dangerFullAccess" }],
+    ["readOnly", "read-only", undefined],
+  ] as const)(
+    "runs coordinator work with %s caller permissions",
+    async (hostAccess, expectedSandbox, expectedTurnSandbox) => {
+      const server = new FakeAppServer();
+      server.queued.push({
+        output: coordinatorBody({
+          route: "direct",
+          reason: "bounded direct task",
+          outcome: outcomeBody(),
+        }),
+      });
+      const coordinator = new AppServerTerraCoordinator({
+        appServer: server,
+        cwd: "/workspace",
+      });
+
+      await coordinator.decide({
+        runId: `coordinator-${hostAccess}`,
+        request: { ...request(), hostAccess },
+        signal: new AbortController().signal,
+      });
+
+      expect(server.threadStarts[0]?.sandbox).toBe(expectedSandbox);
+      expect(server.turnStarts[0]?.sandboxPolicy).toEqual(expectedTurnSandbox);
+      expect(server.threadStarts[0]).toMatchObject({
+        approvalPolicy: "never",
+        config: expect.objectContaining({ agents: { enabled: false } }),
+      });
+    },
+  );
+
+  it("inherits Approve for me on coordinator thread and turn starts", async () => {
+    const server = new FakeAppServer();
+    server.queued.push({
+      output: coordinatorBody({
+        route: "direct",
+        reason: "bounded direct task",
+        outcome: outcomeBody(),
+      }),
+    });
+    const coordinator = new AppServerTerraCoordinator({ appServer: server, cwd: "/workspace" });
+
+    await coordinator.decide({
+      runId: "approve-for-me-coordinator",
+      request: { ...request(), hostApproval: "approveForMe" },
+      signal: new AbortController().signal,
+    });
+
+    expect(server.threadStarts[0]).toMatchObject({
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+    });
+    expect(server.turnStarts[0]).toMatchObject({
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+    });
+  });
+
   it("loads an explicitly requested direct skill in the single admission turn", async () => {
     const server = new FakeAppServer();
     server.queued.push({
@@ -999,7 +1060,7 @@ describe("AppServerTerraCoordinator", () => {
 
     const outcome = await coordinator.resumeDirect({
       runId: "resume-direct",
-      request: request(),
+      request: { ...request(), hostApproval: "approveForMe" },
       continuation: {
         threadId: "terra-waiting-direct",
         previousTurnId: "turn-before-permission",
@@ -1016,8 +1077,17 @@ describe("AppServerTerraCoordinator", () => {
       threadId: "terra-waiting-direct",
     });
     expect(server.threadStarts).toHaveLength(0);
-    expect(server.threadResumes).toHaveLength(1);
-    expect(server.turnStarts[0]).toMatchObject({ threadId: "terra-waiting-direct" });
+    expect(server.threadResumes).toEqual([
+      expect.objectContaining({
+        approvalPolicy: "on-request",
+        approvalsReviewer: "auto_review",
+      }),
+    ]);
+    expect(server.turnStarts[0]).toMatchObject({
+      threadId: "terra-waiting-direct",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+    });
   });
 });
 

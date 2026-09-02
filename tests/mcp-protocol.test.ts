@@ -73,6 +73,86 @@ describe("AgentTrioMcpProtocol", () => {
     }
   });
 
+  it("parses the bounded Monitor-first submit and one blocking status wait", () => {
+    expect(AGENT_TRIO_TOOL_SCHEMA.properties.monitorFirst).toEqual({ type: "boolean" });
+    expect(AGENT_TRIO_TOOL_SCHEMA.properties.wait).toEqual({ type: "boolean" });
+    expect(
+      parseAgentTrioRequest({
+        action: "submit",
+        objective: "inspect a project",
+        cwd: "/workspace",
+        strategy: "auto",
+        monitorFirst: true,
+      }),
+    ).toMatchObject({ action: "submit", monitorFirst: true });
+    expect(parseAgentTrioRequest({ action: "status", runId: "run-1", wait: true })).toEqual({
+      action: "status",
+      runId: "run-1",
+      wait: true,
+    });
+    expect(() =>
+      parseAgentTrioRequest({
+        action: "run",
+        objective: "inspect a project",
+        cwd: "/workspace",
+        monitorFirst: true,
+      }),
+    ).toThrow("monitorFirst is only valid when action is submit");
+    expect(() => parseAgentTrioRequest({ action: "cancel", runId: "run-1", wait: true })).toThrow(
+      "unknown agent_trio argument: wait",
+    );
+  });
+
+  it("accepts only an explicit caller permission mode on start actions", () => {
+    expect(AGENT_TRIO_TOOL_SCHEMA.properties.hostAccess).toMatchObject({
+      enum: ["readOnly", "workspaceWrite", "fullAccess"],
+    });
+    expect(
+      parseAgentTrioRequest({
+        action: "run",
+        objective: "inspect the host",
+        cwd: "/workspace",
+        hostAccess: "fullAccess",
+      }),
+    ).toMatchObject({ hostAccess: "fullAccess" });
+    expect(() =>
+      parseAgentTrioRequest({
+        action: "run",
+        objective: "inspect the host",
+        cwd: "/workspace",
+        hostAccess: "root",
+      }),
+    ).toThrow("hostAccess must be readOnly, workspaceWrite, or fullAccess");
+    expect(() =>
+      parseAgentTrioRequest({ action: "status", runId: "run-1", hostAccess: "fullAccess" }),
+    ).toThrow("unknown agent_trio argument: hostAccess");
+  });
+
+  it("accepts only an explicit caller approval mode on start actions", () => {
+    expect(AGENT_TRIO_TOOL_SCHEMA.properties.hostApproval).toMatchObject({
+      enum: ["never", "approveForMe"],
+    });
+    expect(
+      parseAgentTrioRequest({
+        action: "run",
+        objective: "inspect the host",
+        cwd: "/workspace",
+        hostApproval: "approveForMe",
+      }),
+    ).toMatchObject({ hostApproval: "approveForMe" });
+    expect(() =>
+      parseAgentTrioRequest({
+        action: "run",
+        objective: "inspect the host",
+        cwd: "/workspace",
+        hostApproval: "always",
+      }),
+    ).toThrow("hostApproval must be never or approveForMe");
+    expect(() =>
+      parseAgentTrioRequest({ action: "status", runId: "run-1", hostApproval: "approveForMe" }),
+    ).toThrow("unknown agent_trio argument: hostApproval");
+  });
+
   it("parses explicit direct capabilities and rejects unresolved paths", () => {
     expect(
       parseAgentTrioRequest({
@@ -303,6 +383,123 @@ describe("AgentTrioMcpProtocol", () => {
       result: { tools: [{ name: "agent_trio", defer_loading: true }] },
     });
     expect(handle).not.toHaveBeenCalled();
+  });
+
+  it("accepts an absolute cwd when the MCP client does not support roots", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let text = "";
+    output.setEncoding("utf8");
+    output.on("data", (chunk: string) => {
+      text += chunk;
+    });
+    const handle = vi.fn(async () => result());
+    const protocol = new AgentTrioMcpProtocol({ service: { handle }, input, output });
+    const running = protocol.run();
+    input.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18", capabilities: {} },
+      })}\n`,
+    );
+    input.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
+    input.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "agent_trio",
+          arguments: { action: "run", objective: "test", cwd: "/tmp", strategy: "auto" },
+        },
+      })}\n`,
+    );
+    await vi.waitFor(() => expect(text).toContain('"id":2'));
+    input.end();
+    await running;
+
+    expect(handle).toHaveBeenCalledWith({
+      action: "run",
+      objective: "test",
+      cwd: "/tmp",
+      strategy: "auto",
+      runId: expect.any(String),
+    });
+    expect(text).toContain('"finalResponse":"done"');
+    expect(text).not.toContain("workspace roots");
+  });
+
+  it("assigns a run id and emits the monitor URL through MCP progress", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let text = "";
+    output.setEncoding("utf8");
+    output.on("data", (chunk: string) => {
+      text += chunk;
+    });
+    const handle = vi.fn(async (request: { runId?: string }) => ({
+      ...result(),
+      runId: request.runId ?? "missing",
+    }));
+    const protocol = new AgentTrioMcpProtocol({
+      service: { handle },
+      input,
+      output,
+      createRunId: () => "generated-run",
+      monitorUrlForRun: (runId) => `http://127.0.0.1:43173/runs/${runId}?token=test`,
+    });
+    const running = protocol.run();
+    input.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { capabilities: {} } })}\n`,
+    );
+    input.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "agent_trio",
+          arguments: {
+            action: "run",
+            objective: "inspect",
+            cwd: "/tmp",
+            strategy: "auto",
+          },
+          _meta: { progressToken: "progress-1" },
+        },
+      })}\n`,
+    );
+    input.end();
+    await running;
+
+    expect(handle).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "run", runId: "generated-run" }),
+    );
+    const messages = text
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        method: "notifications/progress",
+        params: expect.objectContaining({
+          progressToken: "progress-1",
+          message: expect.stringContaining("/runs/generated-run?token=test"),
+        }),
+      }),
+    );
+    const response = messages.find((message) => message["id"] === 2) as {
+      result: { content: Array<{ text: string }>; structuredContent: BatchResult };
+    };
+    expect(response.result.structuredContent.monitorUrl).toContain(
+      "/runs/generated-run?token=test",
+    );
+    expect(response.result.structuredContent.finalResponse).toBe(
+      "[Open Agent Trio Monitor](http://127.0.0.1:43173/runs/generated-run?token=test)\n\ndone",
+    );
+    expect(response.result.content[0]!.text).toContain("Open Agent Trio Monitor");
   });
 
   it("drains in-flight request handlers after graceful EOF", async () => {

@@ -17,7 +17,7 @@ export interface AppServerCapabilityCatalogOptions {
   includePlugins?: boolean;
 }
 
-/** Exact capability discovery through the version-pinned App Server API. */
+/** Capability discovery through the App Server API. */
 export class AppServerCapabilityCatalog implements CapabilityCatalog {
   readonly #appServer: AppServer;
   readonly #cwd: string;

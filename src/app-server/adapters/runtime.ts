@@ -1,5 +1,11 @@
 import { readFileSync } from "node:fs";
-import type { AgentMessage, ModelTier, ModelUsage, ReasoningEffort } from "../../core/contracts.js";
+import type {
+  AgentMessage,
+  HostApproval,
+  ModelTier,
+  ModelUsage,
+  ReasoningEffort,
+} from "../../core/contracts.js";
 import type { AgentMessageInput } from "../../core/messages.js";
 import { APPROVAL_REQUEST_METHODS } from "../types.js";
 import type {
@@ -46,6 +52,7 @@ interface RuntimeLeafContext {
   taskId: string;
   turnId: string | null;
   postMessage: (message: AgentMessageInput) => Promise<string | null>;
+  hostApproval: HostApproval | undefined;
   approvalViolation: string | null;
 }
 
@@ -143,6 +150,7 @@ export class AppServerRuntime {
     threadId: string,
     taskId: string,
     postMessage: (message: AgentMessageInput) => Promise<string | null>,
+    hostApproval?: HostApproval,
   ): LeafContextHandle {
     if (this.#leafContexts.has(threadId)) {
       throw new AppServerAdapterError(
@@ -154,6 +162,7 @@ export class AppServerRuntime {
       taskId,
       turnId: null,
       postMessage,
+      hostApproval,
       approvalViolation: null,
     };
     this.#leafContexts.set(threadId, context);
@@ -362,7 +371,12 @@ export class AppServerRuntime {
     if (scopedHandler !== undefined) {
       return scopedHandler(request);
     }
-    this.#markPermissionViolation(request, `unexpected approval request '${request.method}'`);
+    const context = threadId === null ? undefined : this.#leafContexts.get(threadId);
+    const rejection =
+      context?.hostApproval === "approveForMe"
+        ? `automatic review escalated unresolved approval request '${request.method}'`
+        : `unexpected approval request '${request.method}'`;
+    this.#markPermissionViolation(request, rejection);
     if (
       request.method === "item/commandExecution/requestApproval" ||
       request.method === "item/fileChange/requestApproval"
@@ -370,7 +384,7 @@ export class AppServerRuntime {
       return { decision: "decline" };
     }
     if (request.method === "applyPatchApproval" || request.method === "execCommandApproval") {
-      return { decision: { denied: { rejection: "Agent Trio workers use approvalPolicy=never" } } };
+      return { decision: { denied: { rejection } } };
     }
     throw new ServerRequestError(
       403,
