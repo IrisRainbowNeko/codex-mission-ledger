@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [3.4.2] - 2026-09-03
+
+### Fixed
+
+- Clarified in all four skills that `risk` and `merge` belong only inside a fanout `semanticPlan`
+  and must be omitted from direct requests.
+- Normalize valid misplaced top-level `risk` and `merge` hints without adding them to the public
+  MCP schema; direct/auto calls discard them and fanout calls adopt only non-conflicting values.
+
 ## [3.4.1] - 2026-09-03
 
 ### Fixed

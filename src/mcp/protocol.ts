@@ -143,7 +143,7 @@ export const AGENT_TRIO_TOOL_SCHEMA = {
   ],
 } as const;
 
-export const AGENT_TRIO_TOOL_DESCRIPTION = `Run or monitor Agent Trio. Pass arguments as flat top-level fields; never wrap the argument object in request, input, or arguments. For foreground UI, submit once with monitorFirst=true, then call status once with wait=true only if submit succeeds and returns the same runId. Copy hostAccess and hostApproval exactly. profile defaults to balanced; quality preserves V3.3 routing. strategy=direct delegates one worker: Luna for bounded mechanical work; Terra for recovery/stateful work, coupled debugging, review/synthesis, or office artifacts. strategy=fanout requires semanticPlan with 2+ independent tasks; use Luna by default, disjoint writer paths, valid dependencies, and at most one Sol leaf. Balanced uses 2 tasks normally; use 3 only for three substantial streams, >30s each, >=90s serial work, and >=20% critical-path gain over the best 2-task grouping. Quality allows 2-5 tasks and >15s each. Use strategy=auto only when semantic boundaries are unavailable. Runtime enforces permissions, DAG, ownership, explicit budget, concurrency, and positive time saving; 40% cost and 70% latency are telemetry, not per-run vetoes. semanticPlan tasks contain only goal, paths, after indexes, floor, and expectedSeconds; merge is deterministic or terra, risk is low, medium, or high. status/resume/cancel require runId.`;
+export const AGENT_TRIO_TOOL_DESCRIPTION = `Run or monitor Agent Trio. Pass arguments as flat top-level fields; never wrap the argument object in request, input, or arguments. For foreground UI, submit once with monitorFirst=true, then call status once with wait=true only if submit succeeds and returns the same runId. Copy hostAccess and hostApproval exactly. profile defaults to balanced; quality preserves V3.3 routing. strategy=direct delegates one worker: Luna for bounded mechanical work; Terra for recovery/stateful work, coupled debugging, review/synthesis, or office artifacts. For direct, omit semanticPlan and every plan-only field. strategy=fanout requires semanticPlan with 2+ independent tasks; use Luna by default, disjoint writer paths, valid dependencies, and at most one Sol leaf. Put merge and risk only inside semanticPlan, never at tool top level. Balanced uses 2 tasks normally; use 3 only for three substantial streams, >30s each, >=90s serial work, and >=20% critical-path gain over the best 2-task grouping. Quality allows 2-5 tasks and >15s each. Use strategy=auto only when semantic boundaries are unavailable. Runtime enforces permissions, DAG, ownership, explicit budget, concurrency, and positive time saving; 40% cost and 70% latency are telemetry, not per-run vetoes. Inside semanticPlan, tasks contain only goal, paths, after indexes, floor, and expectedSeconds; merge is deterministic or terra, and risk is low, medium, or high. status/resume/cancel require runId.`;
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -295,7 +295,7 @@ export class AgentTrioMcpProtocol {
               tools: { listChanged: false },
               resources: { subscribe: false, listChanged: false },
             },
-            serverInfo: { name: "agent-trio", version: "3.4.1" },
+            serverInfo: { name: "agent-trio", version: "3.4.2" },
           });
           return;
         }
@@ -712,18 +712,51 @@ export function parseAgentTrioRequest(value: unknown): ParsedAgentTrioRequest {
 }
 
 function normalizeAgentTrioArguments(value: unknown): Record<string, unknown> {
-  const input = requireRecord(value, "agent_trio arguments");
-  if (!("request" in input)) {
+  const envelope = requireRecord(value, "agent_trio arguments");
+  let input = envelope;
+  if ("request" in envelope) {
+    if (Object.keys(envelope).length !== 1) {
+      throw new Error("request wrapper cannot be combined with top-level agent_trio arguments");
+    }
+    input = requireRecord(envelope["request"], "agent_trio request wrapper");
+    if ("request" in input) {
+      throw new Error("nested agent_trio request wrappers are not supported");
+    }
+  }
+  if (input["action"] !== "run" && input["action"] !== "submit") {
     return input;
   }
-  if (Object.keys(input).length !== 1) {
-    throw new Error("request wrapper cannot be combined with top-level agent_trio arguments");
+  const risk = input["risk"];
+  const merge = input["merge"];
+  if (risk === undefined && merge === undefined) {
+    return input;
   }
-  const wrapped = requireRecord(input["request"], "agent_trio request wrapper");
-  if ("request" in wrapped) {
-    throw new Error("nested agent_trio request wrappers are not supported");
+  if (risk !== undefined && risk !== "low" && risk !== "medium" && risk !== "high") {
+    throw new Error("misplaced risk must be low, medium, or high");
   }
-  return wrapped;
+  if (merge !== undefined && merge !== "deterministic" && merge !== "terra") {
+    throw new Error("misplaced merge must be deterministic or terra");
+  }
+  const normalized = { ...input };
+  delete normalized["risk"];
+  delete normalized["merge"];
+  if (input["strategy"] === "fanout" && isRecord(input["semanticPlan"])) {
+    const semanticPlan = { ...input["semanticPlan"] };
+    for (const [key, misplaced] of [
+      ["risk", risk],
+      ["merge", merge],
+    ] as const) {
+      if (misplaced === undefined) {
+        continue;
+      }
+      if (semanticPlan[key] !== undefined && semanticPlan[key] !== misplaced) {
+        throw new Error(`top-level ${key} conflicts with semanticPlan.${key}`);
+      }
+      semanticPlan[key] = misplaced;
+    }
+    normalized["semanticPlan"] = semanticPlan;
+  }
+  return normalized;
 }
 
 function parseResumeInput(value: unknown): string {

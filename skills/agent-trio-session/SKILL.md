@@ -28,8 +28,11 @@ prior run is `waiting_input` and the user supplies the requested input, resume t
 
 Make each follow-up objective self-contained using only needed prior goals, facts, decisions, and
 artifact paths. Pass absolute `cwd`, inferred `domain`, exact current `hostAccess` and
-`hostApproval`, preserved constraints, and only explicitly selected capabilities. Writer paths
-must be disjoint; use valid dependency indexes and exact merge/risk enums.
+`hostApproval`, preserved constraints, and only explicitly selected capabilities. `risk` and
+`merge` are valid only inside `semanticPlan` for `strategy=fanout`; never send either as a top-level
+tool argument. Inside that plan, writer paths must be disjoint and dependency, merge, and risk
+values must use the exact schema. With `strategy=direct`, omit `semanticPlan` and all plan-only
+fields.
 
 Treat successful `finalResponse` as the complete delivery. Durable jobs submit without
 `monitorFirst`. On MCP failure, report the exact error and stop unless the user asks for fallback.

@@ -61,7 +61,7 @@ describe("Agent Trio Monitor server", () => {
     const page = await fetch(`${base}/runs/run-1?token=secret`);
     expect(page.status).toBe(200);
     expect(await page.text()).toContain("Agent Trio Monitor");
-    const browserScript = await fetch(`${base}/assets/monitor.js?v=3.4.1-profile-1`);
+    const browserScript = await fetch(`${base}/assets/monitor.js?v=3.4.2-profile-1`);
     const browserScriptSource = await browserScript.text();
     expect(() => new Script(browserScriptSource)).not.toThrow();
     expect(browserScriptSource).toContain("buildConversationEvents");

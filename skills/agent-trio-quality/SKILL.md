@@ -23,8 +23,10 @@ call with the same ID and `wait=true`. If submit returns an MCP/tool error, stop
 immediately and do not call status. The MCP Apps monitor mounts while work runs; do not poll.
 
 Pass the complete objective, absolute `cwd`, exact current `hostAccess` and `hostApproval`, inferred
-domain, constraints, and only explicitly selected capabilities. Writer paths are pairwise
-disjoint; dependencies use task indexes; merge and risk use exact schema enums.
+domain, constraints, and only explicitly selected capabilities. `risk` and `merge` are valid only
+inside `semanticPlan` for `strategy=fanout`; never send either as a top-level tool argument. Inside
+that plan, writer paths are pairwise disjoint and dependencies, merge, and risk use exact schema
+values. With `strategy=direct`, omit `semanticPlan` and all plan-only fields.
 
 For durable work, submit without `monitorFirst` and stop after showing the Monitor link. Treat a
 successful `finalResponse` as the complete delivery. Report MCP failures exactly without silently

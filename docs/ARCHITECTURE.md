@@ -473,7 +473,10 @@ fields on `status`; they do not expose another tool or alter execution semantics
 Canonical tool arguments are flat top-level fields. The parser normalizes one compatibility
 envelope shaped as `{ request: { ...flat fields... } }`, because some hosts may synthesize that
 wrapper despite the schema. The wrapper is not advertised, cannot be combined with top-level
-fields, and cannot be nested recursively.
+fields, and cannot be nested recursively. `risk` and `merge` are plan-only fields nested inside a
+fanout `semanticPlan`. The boundary also normalizes valid misplaced hints: direct/auto calls discard
+them, while fanout calls move them into a plan only when they do not conflict with an existing plan
+value. Neither compatibility form is advertised in the public schema.
 
 The user installer registers that MCP server and installs two user skills. `$agent-trio` delegates
 one explicitly selected turn. `$agent-trio-session` permits implicit selection only for related

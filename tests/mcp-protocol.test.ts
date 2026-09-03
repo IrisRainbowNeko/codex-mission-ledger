@@ -65,6 +65,70 @@ describe("AgentTrioMcpProtocol", () => {
     ).toThrow("nested agent_trio request wrappers are not supported");
   });
 
+  it("normalizes misplaced plan-only hints without exposing top-level fields", () => {
+    const direct = {
+      action: "submit" as const,
+      runId: "run-1",
+      objective: "inspect one coupled project",
+      cwd: "/workspace",
+      strategy: "direct" as const,
+      directTier: "terra" as const,
+      risk: "medium",
+      merge: "terra",
+    };
+    expect(parseAgentTrioRequest(direct)).toEqual(
+      parseAgentTrioRequest({
+        action: direct.action,
+        runId: direct.runId,
+        objective: direct.objective,
+        cwd: direct.cwd,
+        strategy: direct.strategy,
+        directTier: direct.directTier,
+      }),
+    );
+    expect("risk" in AGENT_TRIO_TOOL_SCHEMA.properties).toBe(false);
+    expect("merge" in AGENT_TRIO_TOOL_SCHEMA.properties).toBe(false);
+    expect(() => parseAgentTrioRequest({ ...direct, risk: "critical" })).toThrow(
+      "misplaced risk must be low, medium, or high",
+    );
+  });
+
+  it("moves compatible fanout hints into semanticPlan and rejects conflicts", () => {
+    const semanticPlan = {
+      access: "readOnly",
+      tasks: ["alpha", "beta"].map((name) => ({
+        goal: `inspect ${name}`,
+        paths: [],
+        after: [],
+        floor: null,
+        expectedSeconds: 60,
+      })),
+    };
+    expect(
+      parseAgentTrioRequest({
+        action: "submit",
+        objective: "inspect two modules",
+        cwd: "/workspace",
+        strategy: "fanout",
+        risk: "low",
+        merge: "deterministic",
+        semanticPlan,
+      }),
+    ).toMatchObject({
+      semanticPlan: { ...semanticPlan, risk: "low", merge: "deterministic" },
+    });
+    expect(() =>
+      parseAgentTrioRequest({
+        action: "submit",
+        objective: "inspect two modules",
+        cwd: "/workspace",
+        strategy: "fanout",
+        risk: "high",
+        semanticPlan: { ...semanticPlan, risk: "low", merge: "deterministic" },
+      }),
+    ).toThrow("top-level risk conflicts with semanticPlan.risk");
+  });
+
   it("parses bounded resume input and rejects input for every other action", () => {
     const exactBoundary = `${"\u754c".repeat(1_365)}a`;
     expect(AGENT_TRIO_TOOL_SCHEMA.properties.input).toEqual({
@@ -581,7 +645,10 @@ describe("AgentTrioMcpProtocol", () => {
     );
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Quality allows 2-5 tasks and >15s each");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("positive time saving");
-    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("semanticPlan tasks contain only goal");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Inside semanticPlan, tasks contain only goal");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain(
+      "Put merge and risk only inside semanticPlan, never at tool top level",
+    );
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("strategy=direct delegates");
   });
 

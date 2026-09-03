@@ -40,8 +40,10 @@ poll or open another monitor page.
 
 Pass the complete objective without the skill marker, absolute `cwd`, inferred `domain`, and the
 current `hostAccess` and `hostApproval` exactly. Preserve constraints. Add only exact capabilities
-the user selected. Writer `paths` must be pairwise disjoint; `after` uses task indexes; `merge` is
-`deterministic` or `terra`; `risk` is `low`, `medium`, or `high`.
+the user selected. `risk` and `merge` are valid only inside `semanticPlan` for `strategy=fanout`;
+never send either as a top-level tool argument. Inside that plan, writer `paths` must be pairwise
+disjoint, `after` uses task indexes, `merge` is `deterministic` or `terra`, and `risk` is `low`,
+`medium`, or `high`. With `strategy=direct`, omit `semanticPlan` and all plan-only fields.
 
 For an explicitly durable job, submit without `monitorFirst`, show its Monitor link, and stop.
 Treat a successful blocking status `finalResponse` as the complete delivery. If MCP fails, report

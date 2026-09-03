@@ -275,7 +275,9 @@ generate unique runId -> submit(runId, monitorFirst=true)
 Tool arguments are flat fields such as `action`, `runId`, `objective`, and `cwd`; callers must not
 nest the whole argument object beneath `request`, `input`, or `arguments`. The runtime accepts one
 legacy `request` wrapper for compatibility, but the public schema and documented format remain
-flat.
+flat. `risk` and `merge` belong inside `semanticPlan` only when `strategy=fanout`; direct requests
+omit the plan and all plan-only fields. For compatibility, the runtime discards valid misplaced
+top-level hints on direct/auto requests and moves non-conflicting hints into a fanout plan.
 
 The first call returns as soon as the foreground run has a durable snapshot, which gives the host a
 completed tool result to attach the component to. The second call waits on that same run locally;

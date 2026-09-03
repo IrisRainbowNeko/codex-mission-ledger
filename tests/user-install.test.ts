@@ -122,6 +122,8 @@ enabled = true
     expect(installedSkill).toMatch(/exactly one\s+`action=status`\s+call/mu);
     expect(installedSkill).toContain("flat top-level fields");
     expect(installedSkill).toContain("If submit returns an MCP/tool error");
+    expect(installedSkill).toMatch(/never send either as a top-level\s+tool argument/mu);
+    expect(installedSkill).toMatch(/With `strategy=direct`, omit\s+`semanticPlan`/mu);
     expect(installedSkill).toContain("MCP Apps monitor");
     expect(readFileSync(join(layout.skillDirectory, "agents", "openai.yaml"), "utf8")).toContain(
       "allow_implicit_invocation: false",
@@ -132,6 +134,7 @@ enabled = true
     expect(installedSessionSkill).toContain("switches to a clearly unrelated task");
     expect(installedSessionSkill).toContain("flat top-level fields");
     expect(installedSessionSkill).toContain("If submit returns an MCP/tool error");
+    expect(installedSessionSkill).toMatch(/never send either as a top-level\s+tool argument/mu);
     expect(
       readFileSync(join(layout.sessionSkillDirectory, "agents", "openai.yaml"), "utf8"),
     ).toContain("allow_implicit_invocation: true");
@@ -149,8 +152,12 @@ enabled = true
     expect(installedQualitySkill).toContain("`profile=quality`");
     expect(installedQualitySkill).toContain("flat top-level fields");
     expect(installedQualitySkill).toContain("If submit returns an MCP/tool error");
+    expect(installedQualitySkill).toMatch(/never send either as a top-level\s+tool argument/mu);
     expect(installedQualitySessionSkill).toContain("flat top-level fields");
     expect(installedQualitySessionSkill).toContain("If submit returns an MCP/tool error");
+    expect(installedQualitySessionSkill).toMatch(
+      /never send either as a top-level\s+tool argument/mu,
+    );
     expect(PROFILE_FILES).toEqual([]);
     expect(existsSync(join(layout.profileDirectory, "luna-worker.toml"))).toBe(false);
   });
