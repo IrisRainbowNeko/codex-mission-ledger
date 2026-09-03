@@ -10,6 +10,7 @@ import type {
   LeafResult,
   ModelUsage,
   RemoteTurnRef,
+  RunRequest,
 } from "../src/core/contracts.js";
 import type {
   AdmissionController,
@@ -317,6 +318,7 @@ describe("AgentTrioService", () => {
     });
 
     expect(result.monitorUrl).toBe("http://127.0.0.1:43173/runs/monitored-direct?token=test");
+    expect(result.metrics?.profile).toBe("balanced");
     expect(result.metrics?.usageByStage?.planning.usage).toEqual([]);
   });
 
@@ -567,7 +569,10 @@ describe("AgentTrioService", () => {
     });
 
     expect(result.status).toBe("completed");
-    expect(result.metrics?.plannerSkipped).toBe(false);
+    expect(result.metrics).toMatchObject({
+      plannerSkipped: false,
+      routeSource: "internal_sol",
+    });
     expect(adoptHostPlan).toHaveBeenCalledOnce();
     expect(internalPlan).toHaveBeenCalledWith(
       expect.not.objectContaining({ semanticPlan: expect.anything() }),
@@ -576,6 +581,115 @@ describe("AgentTrioService", () => {
       "fanout",
     );
   });
+
+  it.each([1, 2, 3, 5])(
+    "executes an adaptive internal Sol result with %i leaves and records its route shape",
+    async (count) => {
+      const tasks = Array.from({ length: count }, (_, index) => {
+        const base = { ...plan().tasks[0]! };
+        delete base.expectedCostUsd;
+        return {
+          ...base,
+          id: `adaptive-${String(index + 1)}`,
+          objective: `inspect unit ${String(index + 1)}`,
+          access: "readOnly" as const,
+          ownedPaths: [],
+        };
+      });
+      const executionPlan = plan({
+        tasks,
+        integration: {
+          objective: "combine adaptive results",
+          requiredOutputs: ["complete result"],
+          validation: [],
+          finalReview: "never",
+          aggregation: "deterministic",
+        },
+        risk: "low",
+        origin: "sol",
+      });
+      const plannerSession = (request: RunRequest): PlannerSession => ({
+        threadId: `sol-adaptive-${String(count)}`,
+        request,
+        limits: { ...limits, maxLeaves: count },
+        initialPlan: executionPlan,
+        plan: executionPlan,
+        patch: null,
+        replanCount: 0,
+        usage: [usage("sol", 0.01)],
+      });
+      const planAdaptive = vi.fn(async (request: RunRequest) => plannerSession(request));
+      const completedLeaves = tasks.map((task) => ({
+        ...leaf(task.id),
+        changedFiles: [],
+      }));
+      const assessPlan = vi.fn(() => ({
+        route: "fanout" as const,
+        reason: "final adaptive DAG has positive time saving",
+        routeSource: "internal_sol" as const,
+        estimatedDirectCostUsd: 0.1,
+        estimatedFanoutCostUsd: 0.03,
+        estimatedDirectSeconds: 100,
+        estimatedFanoutSeconds: 50,
+      }));
+      const service = createService({
+        routeOptimizer: {
+          decide: () => ({
+            route: "adaptive",
+            reason: "internal Sol will choose the execution shape",
+            routeSource: "internal_sol",
+            suggestedMaxLeaves: count,
+            estimatedDirectCostUsd: 0.1,
+            estimatedFanoutCostUsd: 0.03,
+            estimatedDirectSeconds: 100,
+            estimatedFanoutSeconds: 50,
+          }),
+          assessPlan,
+        },
+        planner: { plan: planAdaptive },
+        scheduler: {
+          execute: async () => ({
+            plan: executionPlan,
+            patch: null,
+            leaves: completedLeaves,
+            launchSkewMs: 0,
+            peakConcurrency: count,
+            replanCount: 0,
+            usage: completedLeaves.flatMap((item) => item.usage),
+          }),
+        },
+      });
+
+      const result = await service.run({
+        runId: `adaptive-service-${String(count)}`,
+        objective: "Let internal Sol choose one worker or a DAG",
+        cwd: "/workspace",
+        profile: "quality",
+        integrate: false,
+        limits: { maxLeaves: count, maxSolLeaves: Math.min(1, count) },
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.metrics).toMatchObject({
+        routeSource: "internal_sol",
+        selectedDomain: "coding",
+        selectedLeafCount: count,
+        selectedWaveCount: 1,
+        selectedTierCounts: { luna: count },
+        estimatedSerialSeconds: count * 90,
+        estimatedCriticalPathSeconds: 90,
+        estimatedCostRatio: 0.3,
+        estimatedLatencyRatio: 0.5,
+      });
+      expect(planAdaptive).toHaveBeenCalledWith(
+        expect.any(Object),
+        `adaptive-service-${String(count)}`,
+        expect.any(AbortSignal),
+        "adaptive",
+      );
+      expect(assessPlan).toHaveBeenCalledTimes(count === 1 ? 0 : 1);
+    },
+  );
 
   it("fails closed when a remote stage omits usage under a hard cost budget", async () => {
     const service = createService({
@@ -1016,6 +1130,7 @@ describe("AgentTrioService", () => {
         runId: "foreground-too-large",
         objective: "task",
         cwd: "/workspace",
+        profile: "quality",
         limits: { maxLeaves: 9 },
       }),
     ).rejects.toThrow("foreground runs cannot exceed 8 leaves");
@@ -1033,6 +1148,7 @@ describe("AgentTrioService", () => {
         runId: "durable-cap",
         objective: "task",
         cwd: "/workspace",
+        profile: "quality",
         limits: { maxLeaves: 20 },
       }),
     ).resolves.toMatchObject({ runId: "durable-cap" });
@@ -2927,6 +3043,9 @@ describe("AgentTrioService", () => {
       validation: [{ command: "validate leaf-a", status: "passed" as const, summary: "ok" }],
     };
     const snapshot = resumableFanoutSnapshot("resume-fanout", executionPlan, [recoveredLeaf]);
+    snapshot.request.profile = "quality";
+    snapshot.requestHash = hashRunRequest(snapshot.request);
+    snapshot.plannerSession!.request = structuredClone(snapshot.request);
     store.save(snapshot);
 
     const planNewWork = vi.fn(async () => {
@@ -3024,6 +3143,7 @@ describe("AgentTrioService", () => {
       expect.objectContaining({
         runId: "resume-fanout",
         threadId: "sol-planner-resume",
+        request: expect.objectContaining({ profile: "quality" }),
       }),
     );
     expect(runLeaf).toHaveBeenCalledOnce();
@@ -3041,6 +3161,7 @@ describe("AgentTrioService", () => {
     );
     expect(workspace.integrate).toHaveBeenCalledOnce();
     expect(result.metrics).toMatchObject({
+      profile: "quality",
       startedAt: "2026-08-28T00:00:00.000Z",
       planningMs: 17,
       usageByStage: {
@@ -4031,6 +4152,7 @@ describe("AgentTrioService", () => {
       status: "completed",
       finalResponse: "already integrated",
       metrics: {
+        profile: "balanced",
         startedAt: "2026-08-28T00:00:00.000Z",
         planningMs: 17,
         usageByStage: {

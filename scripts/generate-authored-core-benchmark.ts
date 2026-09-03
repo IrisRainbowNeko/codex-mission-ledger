@@ -11,7 +11,9 @@ import {
   BENCHMARK_MANIFEST_VERSION,
   BENCHMARK_FAMILIES,
   createFileBenchmarkArtifactReader,
+  economicEligibilityFromCalibration,
   hashBenchmarkBytes,
+  loadBenchmarkCalibrationTable,
   sealBenchmarkManifest,
   verifyBenchmarkCorpus,
   type BenchmarkArtifactRole,
@@ -19,6 +21,7 @@ import {
   type BenchmarkCorpusManifest,
   type BenchmarkEvaluationClass,
   type BenchmarkManifestDraft,
+  type LoadedBenchmarkCalibration,
 } from "../src/benchmark.js";
 import {
   parseSealedBenchmarkValidatorV1,
@@ -722,6 +725,7 @@ function numericalDefinitions(): AddedDefinition[] {
         "Compute twelve independent numerical cases in three parallel roots.",
         `Roots: ${roots.map((root) => `data/${root.id}/`).join(", ")}.`,
         "For every vector report the population mean, population variance, and unit-spacing trapezoidal integral to exactly three decimals. Include the substitution or intermediate sums and preserve every item marker.",
+        `Required output markers, each exactly once: ${roots.flatMap((root) => root.cases.map((item) => itemMarker(item.id))).join(", ")}.`,
         ...roots.map(({ id }) => `${unitMarker(id)} Complete all four vectors under data/${id}/.`),
       ].join("\n"),
       files: roots.flatMap(({ id, cases }) =>
@@ -736,7 +740,7 @@ function numericalDefinitions(): AddedDefinition[] {
         cases.map((item) =>
           outputRule(item.id, `${item.id} exact numerical results`, {
             all: [`mean ${item.mean}`, `variance ${item.variance}`, `trapezoid ${item.trapezoid}`],
-            any: ["sum", "substitution", "intermediate"],
+            any: ["sum", "substitution", "intermediate", "s="],
           }),
         ),
       ),
@@ -922,14 +926,8 @@ function paperEditDefinitions(): AddedDefinition[] {
       ],
       outputRules: [
         outputRule(id, `${id} preserves evidence and calibrates the claim`, {
-          all: [
-            String(participants),
-            `${estimate}-point`,
-            lower,
-            upper,
-            "observational",
-            "self-reported",
-          ],
+          all: [String(participants), lower, upper, "observational", "self-reported"],
+          allAny: [[`${estimate}-point`, `${estimate} point`, `${estimate} points`]],
           none: ["caused improvement", "proves", "guarantees"],
           minWords: 90,
           maxWords: 125,
@@ -1160,15 +1158,17 @@ function documentDefinitions(): AddedDefinition[] {
       const output = `data/${id}/decision.docx`;
       const result = `data/${id}/result.json`;
       const expected = [
-        `Decision: Select Option B`,
-        `Budget cap $${cap},000`,
-        `Option B $${selected},000`,
-        `Budget margin $11,000`,
-        `Option A $${rejected},000`,
-        `Overage $16,000`,
-        `Deadline ${weeks} weeks`,
-        `Owner ${owner}`,
-        `Due ${due}`,
+        "Select Option B",
+        "Option A",
+        "Option B",
+        `$${cap},000`,
+        `$${selected},000`,
+        "$11,000",
+        `$${rejected},000`,
+        "$16,000",
+        `${weeks} weeks`,
+        owner,
+        due,
       ];
       return { id, cap, selected, rejected, weeks, owner, due, output, result, expected };
     });
@@ -1224,13 +1224,13 @@ function slideDefinitions(): AddedDefinition[] {
       const output = `data/${id}/update.pptx`;
       const result = `data/${id}/result.json`;
       const expected = [
-        `Program ${id}`,
-        `Completion ${completion}%`,
-        `Budget $${budget},000`,
-        `Spent $${spent},000`,
-        "Risk supplier delay",
-        `Owner ${owner}`,
-        "Next gate 2026-11-15",
+        id,
+        `${completion}%`,
+        `$${budget},000`,
+        `$${spent},000`,
+        "supplier delay",
+        owner,
+        "2026-11-15",
       ];
       return { id, completion, budget, spent, owner, output, result, expected };
     });
@@ -2076,6 +2076,7 @@ function addArtifact(
 function addDefinition(
   definition: AddedDefinition,
   artifacts: Array<{ path: string; bytes: Uint8Array }>,
+  calibration?: Readonly<LoadedBenchmarkCalibration>,
 ): BenchmarkCorpusInstance {
   const base = `instances/${definition.familyId}/${definition.instanceId}`;
   const seals = [
@@ -2104,21 +2105,17 @@ function addDefinition(
   const evaluationClass =
     definition.evaluationClass ??
     (family.decomposable ? "economic-decomposable" : "direct-fast-path");
+  const eligibility =
+    evaluationClass === "economic-decomposable"
+      ? economicEligibilityFromCalibration(calibration, definition.familyId, 3)
+      : undefined;
   return {
     familyId: definition.familyId,
     instanceId: definition.instanceId,
     seed: definition.seed,
     ...releaseMetadata(),
     evaluationClass,
-    ...(evaluationClass === "economic-decomposable"
-      ? {
-          eligibility: {
-            independentUnits: 3,
-            estimatedMinLeafSeconds: 45,
-            calibrationRevision: "authored-core-v1",
-          },
-        }
-      : {}),
+    ...(eligibility === undefined ? {} : { eligibility }),
     initialStateSha256: workspace.sha256,
     artifacts: seals,
   };
@@ -2126,9 +2123,10 @@ function addDefinition(
 
 function importReusedInstances(
   artifacts: Array<{ path: string; bytes: Uint8Array }>,
+  calibration?: Readonly<LoadedBenchmarkCalibration>,
 ): BenchmarkCorpusInstance[] {
-  const coding = createEconomicCodingCorpus();
-  const crossDomain = createEconomicCrossDomainCorpus();
+  const coding = createEconomicCodingCorpus(calibration);
+  const crossDomain = createEconomicCrossDomainCorpus(calibration);
   const selectedCrossDomain = crossDomain.manifest.instances.filter(
     (instance) => instance.familyId !== "office-document",
   );
@@ -2147,11 +2145,6 @@ function importReusedInstances(
       ...instance,
       ...releaseMetadata(),
       evaluationClass: "economic-decomposable",
-      eligibility: {
-        independentUnits: 3,
-        estimatedMinLeafSeconds: 45,
-        calibrationRevision: "authored-core-v1",
-      },
     };
   });
 }
@@ -2159,22 +2152,35 @@ function importReusedInstances(
 let authoredCoreCorpus: Promise<AuthoredCoreCorpus> | undefined;
 let authoredCoreRoutingCorpus: Promise<AuthoredCoreCorpus> | undefined;
 
-export function createAuthoredCoreCorpus(): Promise<AuthoredCoreCorpus> {
+export function createAuthoredCoreCorpus(
+  calibration?: Readonly<LoadedBenchmarkCalibration>,
+): Promise<AuthoredCoreCorpus> {
+  if (calibration !== undefined) {
+    return buildAuthoredCoreCorpus(true, calibration).then((corpus) => structuredClone(corpus));
+  }
   authoredCoreCorpus ??= buildAuthoredCoreCorpus(true);
   return authoredCoreCorpus.then((corpus) => structuredClone(corpus));
 }
 
 /** Build the same sealed task inputs without running Office-heavy validator qualification. */
-export function createAuthoredCoreRoutingCorpus(): Promise<AuthoredCoreCorpus> {
+export function createAuthoredCoreRoutingCorpus(
+  calibration?: Readonly<LoadedBenchmarkCalibration>,
+): Promise<AuthoredCoreCorpus> {
+  if (calibration !== undefined) {
+    return buildAuthoredCoreCorpus(false, calibration).then((corpus) => structuredClone(corpus));
+  }
   authoredCoreRoutingCorpus ??= buildAuthoredCoreCorpus(false);
   return authoredCoreRoutingCorpus.then((corpus) => structuredClone(corpus));
 }
 
-async function buildAuthoredCoreCorpus(qualify: boolean): Promise<AuthoredCoreCorpus> {
+async function buildAuthoredCoreCorpus(
+  qualify: boolean,
+  calibration?: Readonly<LoadedBenchmarkCalibration>,
+): Promise<AuthoredCoreCorpus> {
   const artifacts: Array<{ path: string; bytes: Uint8Array }> = [];
   const unqualifiedInstances: BenchmarkManifestDraft["instances"] = [
-    ...importReusedInstances(artifacts),
-    ...ADDED_DEFINITIONS.map((definition) => addDefinition(definition, artifacts)),
+    ...importReusedInstances(artifacts, calibration),
+    ...ADDED_DEFINITIONS.map((definition) => addDefinition(definition, artifacts, calibration)),
   ];
   const instances = qualify
     ? await qualifyInstances(unqualifiedInstances, artifacts)
@@ -2195,9 +2201,16 @@ async function buildAuthoredCoreCorpus(qualify: boolean): Promise<AuthoredCoreCo
   };
 }
 
-export async function generateAuthoredCoreCorpus(rootDirectory = DEFAULT_ROOT): Promise<string> {
+export async function generateAuthoredCoreCorpus(
+  rootDirectory = DEFAULT_ROOT,
+  calibrationPath?: string,
+): Promise<string> {
   const root = resolve(rootDirectory);
-  const corpus = await createAuthoredCoreCorpus();
+  const calibration =
+    calibrationPath === undefined
+      ? undefined
+      : await loadBenchmarkCalibrationTable(calibrationPath);
+  const corpus = await createAuthoredCoreCorpus(calibration);
   for (const artifact of corpus.artifacts) {
     const target = resolve(root, artifact.path);
     await mkdir(dirname(target), { recursive: true });
@@ -2212,6 +2225,26 @@ export async function generateAuthoredCoreCorpus(rootDirectory = DEFAULT_ROOT): 
 
 const entryPath = process.argv[1] === undefined ? "" : resolve(process.argv[1]);
 if (entryPath === fileURLToPath(import.meta.url)) {
-  const path = await generateAuthoredCoreCorpus(process.argv[2]);
+  const { rootDirectory, calibrationPath } = generatorArguments(process.argv.slice(2));
+  const path = await generateAuthoredCoreCorpus(rootDirectory, calibrationPath);
   process.stdout.write(`${path}\n`);
+}
+
+function generatorArguments(args: readonly string[]): {
+  rootDirectory: string | undefined;
+  calibrationPath: string | undefined;
+} {
+  const calibrationIndex = args.indexOf("--calibration");
+  const calibrationPath = calibrationIndex < 0 ? undefined : args[calibrationIndex + 1];
+  if (calibrationIndex >= 0 && calibrationPath === undefined) {
+    throw new Error("--calibration requires a JSON file path");
+  }
+  const positional =
+    calibrationIndex < 0
+      ? [...args]
+      : args.filter((_, index) => index !== calibrationIndex && index !== calibrationIndex + 1);
+  if (positional.length > 1) {
+    throw new Error("usage: generate-authored-core-benchmark [root] [--calibration file.json]");
+  }
+  return { rootDirectory: positional[0], calibrationPath };
 }

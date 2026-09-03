@@ -410,7 +410,7 @@ function validatePlanSemantics(
     );
   }
 
-  if (plan.risk === "high" && plan.integration.finalReview === "never") {
+  if (plan.risk === "high" && plan.integration.finalReview === "never" && plan.origin !== "sol") {
     issue(
       issues,
       "$.integration",

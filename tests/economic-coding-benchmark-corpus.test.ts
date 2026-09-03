@@ -7,12 +7,14 @@ import { describe, expect, it } from "vitest";
 import { parseSealedBenchmarkValidatorV1 } from "../src/benchmark-validator.js";
 import { verifyBenchmarkCorpus } from "../src/benchmark.js";
 import { createEconomicCodingCorpus } from "../scripts/generate-economic-coding-benchmark.js";
+import { calibrationFixture } from "./benchmark-calibration-fixture.js";
 
 const execFileAsync = promisify(execFile);
 
 describe("economic coding diagnostic corpus", () => {
   it("seals three distinct three-way workspace-write instances with executable validators", async () => {
-    const corpus = createEconomicCodingCorpus();
+    const calibration = calibrationFixture(["coding-cross-module"]);
+    const corpus = createEconomicCodingCorpus(calibration);
     const byPath = new Map(corpus.artifacts.map((artifact) => [artifact.path, artifact.bytes]));
 
     expect(corpus.manifest.instances).toHaveLength(3);
@@ -23,7 +25,13 @@ describe("economic coding diagnostic corpus", () => {
       expect(instance).toMatchObject({
         familyId: "coding-cross-module",
         evaluationClass: "economic-decomposable",
-        eligibility: { independentUnits: 3, estimatedMinLeafSeconds: 45 },
+        eligibility: {
+          independentUnits: 3,
+          estimatedMinLeafSeconds: 35,
+          directSolP50Seconds: 120,
+          calibrationRevision: "independent-development-fixture-v1",
+          calibrationEvidenceSha256: calibration.evidenceSha256,
+        },
       });
       const validator = instance.artifacts.find((artifact) => artifact.role === "validator")!;
       const parsed = parseSealedBenchmarkValidatorV1(
@@ -35,6 +43,13 @@ describe("economic coding diagnostic corpus", () => {
     await expect(
       verifyBenchmarkCorpus(corpus.manifest, async (artifact) => byPath.get(artifact.path)!),
     ).resolves.toBeUndefined();
+  });
+
+  it("does not claim measured economic eligibility without calibration input", () => {
+    const corpus = createEconomicCodingCorpus();
+    expect(corpus.manifest.instances.every((instance) => instance.eligibility === undefined)).toBe(
+      true,
+    );
   });
 
   it("emits syntactically valid JavaScript validation files", async () => {

@@ -4,7 +4,7 @@ export const MONITOR_HTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Agent Trio Monitor</title>
-  <link rel="stylesheet" href="/assets/monitor.css?v=3.2.0-conversation-2">
+  <link rel="stylesheet" href="/assets/monitor.css?v=3.4.0-profile-1">
 </head>
 <body>
   <header class="topbar">
@@ -42,7 +42,7 @@ export const MONITOR_HTML = `<!doctype html>
       </section>
     </section>
   </main>
-  <script src="/assets/monitor.js?v=3.2.0-conversation-2"></script>
+  <script src="/assets/monitor.js?v=3.4.0-profile-1"></script>
 </body>
 </html>`;
 
@@ -210,9 +210,18 @@ export const MONITOR_APP_JS = `
     let filtered = state.events;
     const fields = [];
     if (state.selected === "overview") {
+      const metrics = result.metrics || {};
       fields.push(["Objective", (snapshot.request || {}).objective || ""]);
-      fields.push(["Route", ((result.metrics || {}).routeReason) || (plan.origin ? plan.origin + " plan" : "Direct")]);
+      fields.push(["Profile", metrics.profile || (snapshot.request || {}).profile || "balanced"]);
+      fields.push(["Route", metrics.routeReason || (plan.origin ? plan.origin + " plan" : "Direct")]);
+      fields.push(["Route source", metrics.routeSource || ""]);
+      fields.push(["Domain", metrics.selectedDomain || plan.domain || ""]);
       fields.push(["Plan", plan.tasks ? String(plan.tasks.length) + " leaves" : "No fanout"]);
+      fields.push(["Planning", formatPlanning(metrics, plan)]);
+      fields.push(["Waves", metrics.selectedWaveCount == null ? "" : String(metrics.selectedWaveCount)]);
+      fields.push(["Tier mix", formatTierCounts(metrics.selectedTierCounts)]);
+      fields.push(["Planned time", formatPlannedTime(metrics)]);
+      fields.push(["Predicted ratios", formatRatios(metrics)]);
       fields.push(["Required output", ((plan.integration || {}).requiredOutputs || []).join("\\n")]);
     } else if (state.selected.startsWith("task:")) {
       const taskId = state.selected.slice(5); const task = (plan.tasks || []).find((item) => item.id === taskId) || {};
@@ -235,6 +244,11 @@ export const MONITOR_APP_JS = `
     for (const event of filtered) timeline.appendChild(renderEvent(event));
     timeline.lastElementChild?.scrollIntoView({ block: "nearest" });
   }
+
+  function formatTierCounts(counts) { if (!counts) return ""; return ["luna", "terra", "sol"].filter((tier) => counts[tier]).map((tier) => tier + ": " + counts[tier]).join(", "); }
+  function formatPlanning(metrics, plan) { if (metrics.routeSource === "host_sol") return plan.tasks ? "External host Sol (not runtime-metered)" : "External host Sol selected one agent"; if (metrics.routeSource === "internal_sol") return "Internal Sol"; return metrics.plannerSkipped ? "None" : ""; }
+  function formatPlannedTime(metrics) { const values = []; if (metrics.estimatedSerialSeconds != null) values.push("serial " + Number(metrics.estimatedSerialSeconds).toFixed(0) + "s"); if (metrics.estimatedCriticalPathSeconds != null) values.push("critical path " + Number(metrics.estimatedCriticalPathSeconds).toFixed(0) + "s"); return values.join(", "); }
+  function formatRatios(metrics) { const values = []; if (metrics.estimatedCostRatio != null) values.push("cost " + Number(metrics.estimatedCostRatio).toFixed(2) + "x"); if (metrics.estimatedLatencyRatio != null) values.push("time " + Number(metrics.estimatedLatencyRatio).toFixed(2) + "x"); return values.join(", "); }
 
   function renderEvent(event) {
     const row = document.createElement("article"); row.className = "event " + (event.displayKind || "activity");
@@ -309,6 +323,9 @@ export const MONITOR_APP_JS = `
     if (descriptor.kind === "agent-message") {
       logical.displayLabel = roleLabel(event.role || "agent");
       if (item && typeof item.text === "string") logical.displayText = unwrapAgentMessage(item.text);
+      else if (event.method === "item/completed" && logical.displayText) {
+        logical.displayText = unwrapAgentMessage(logical.displayText);
+      }
       return;
     }
     if (descriptor.kind === "reasoning") {
@@ -340,7 +357,15 @@ export const MONITOR_APP_JS = `
     try {
       const value = JSON.parse(text);
       return value && typeof value.response === "string" ? value.response : text;
-    } catch { return text; }
+    } catch {
+      const match = /"response"\\s*:\\s*"/.exec(text);
+      if (!match) return text;
+      const source = text.slice(match.index + match[0].length); let escaped = false, end = source.length;
+      for (let index = 0; index < source.length; index += 1) { const char = source[index]; if (char === '"' && !escaped) { end = index; break; } if (char === "\\\\" && !escaped) escaped = true; else escaped = false; }
+      let encoded = source.slice(0, end); while (encoded.endsWith("\\\\")) encoded = encoded.slice(0, -1);
+      try { return JSON.parse('"' + encoded + '"'); }
+      catch { return encoded.replace(/\\\\n/g, "\\n").replace(/\\\\r/g, "\\r").replace(/\\\\t/g, "\\t").replace(/\\\\"/g, '"').replace(/\\\\\\\\/g, "\\\\"); }
+    }
   }
 
   function appendRichText(container, text) {

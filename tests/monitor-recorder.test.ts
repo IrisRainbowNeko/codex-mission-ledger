@@ -80,7 +80,7 @@ describe("MonitorRecorder", () => {
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
-    expect(events).toHaveLength(2);
+    expect(events).toHaveLength(3);
     expect(events[0]).toMatchObject({
       type: "remote_turn",
       role: "leaf",
@@ -93,21 +93,31 @@ describe("MonitorRecorder", () => {
       taskId: "leaf-1",
       threadId: "thread-1",
       turnId: "turn-1",
+      method: "item/agentMessage/delta",
+      data: { itemId: "message-1", delta: "work" },
+    });
+    expect(events[2]).toMatchObject({
+      type: "app_server",
+      role: "leaf",
+      taskId: "leaf-1",
+      threadId: "thread-1",
+      turnId: "turn-1",
       method: "item/completed",
       data: {
-        item: { id: "message-1", type: "agentMessage", text: "working together" },
+        item: { id: "message-1", type: "agentMessage" },
       },
     });
+    expect(events[2]).not.toHaveProperty("data.item.text");
   });
 
-  it("drops token deltas without blocking lifecycle events", async () => {
+  it("coalesces token deltas without blocking lifecycle events", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-trio-monitor-bounded-"));
     roots.push(root);
     const store = new JobStore(root);
     const recorder = new MonitorRecorder(store, {
       flushMs: 60_000,
-      maxPendingBytes: 512,
-      maxLogBytes: 2_048,
+      maxPendingBytes: 2_048,
+      maxLogBytes: 4_096,
     });
     recorder.recordRemoteTurn("bounded", {
       role: "leaf",
@@ -121,7 +131,12 @@ describe("MonitorRecorder", () => {
     for (let index = 0; index < 100; index += 1) {
       recorder.recordNotification("bounded", {
         method: "item/agentMessage/delta",
-        params: { threadId: "thread", delta: "x".repeat(200) },
+        params: {
+          threadId: "thread",
+          turnId: "turn-1",
+          itemId: "message-1",
+          delta: "x",
+        },
       });
     }
     recorder.recordNotification("bounded", {
@@ -131,10 +146,20 @@ describe("MonitorRecorder", () => {
     await recorder.close();
 
     const log = readFileSync(join(store.jobDirectory("bounded"), "monitor.jsonl"), "utf8");
-    expect(Buffer.byteLength(log, "utf8")).toBeLessThanOrEqual(2_048);
+    const events = log
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(Buffer.byteLength(log, "utf8")).toBeLessThanOrEqual(4_096);
     expect(log).toContain('"type":"remote_turn"');
     expect(log).toContain('"method":"turn/completed"');
-    expect(log).not.toContain("agentMessage/delta");
+    expect(events.filter((event) => event["method"] === "item/agentMessage/delta")).toHaveLength(1);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        method: "item/agentMessage/delta",
+        data: { itemId: "message-1", delta: "x".repeat(100) },
+      }),
+    );
   });
 
   it("enforces the serialized event limit after JSON escaping", async () => {

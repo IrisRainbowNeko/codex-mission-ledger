@@ -24,13 +24,13 @@ function result(): BatchResult {
 }
 
 describe("AgentTrioMcpProtocol", () => {
-  it("keeps bounded single-deliverable work on the root fast path", () => {
-    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain(
-      "a finite exact calculation over a handful of local inputs",
-    );
-    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain(
-      "a domain label such as algorithm or research is not by itself a reason",
-    );
+  it("makes the current Sol root the semantic router", () => {
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("profile defaults to balanced");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("strategy=direct delegates one worker");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Balanced uses 2 tasks normally");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain(">=20% critical-path gain");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Terra for recovery/stateful work");
+    expect(AGENT_TRIO_TOOL_SCHEMA.properties.profile).toMatchObject({ default: "balanced" });
   });
 
   it("parses bounded resume input and rejects input for every other action", () => {
@@ -431,6 +431,7 @@ describe("AgentTrioMcpProtocol", () => {
         action: "run",
         objective: "inspect two modules",
         cwd: "/workspace",
+        profile: "quality",
         strategy: "fanout",
         semanticPlan,
       }),
@@ -469,7 +470,22 @@ describe("AgentTrioMcpProtocol", () => {
     ]) {
       expect(hostTaskProperties).not.toHaveProperty(derived);
     }
-    expect(() =>
+    const unknownFieldFallback = parseAgentTrioRequest({
+      action: "run",
+      objective: "inspect two modules",
+      cwd: "/workspace",
+      strategy: "fanout",
+      semanticPlan: {
+        ...semanticPlan,
+        tasks: semanticPlan.tasks.map((task) => ({ ...task, checks: [] })),
+      },
+    });
+    expect(unknownFieldFallback).not.toHaveProperty("semanticPlan");
+    expect(unknownFieldFallback).toMatchObject({
+      strategy: "fanout",
+      constraints: [expect.stringContaining("unknown property 'checks'")],
+    });
+    expect(
       parseAgentTrioRequest({
         action: "run",
         objective: "inspect two modules",
@@ -477,10 +493,13 @@ describe("AgentTrioMcpProtocol", () => {
         strategy: "fanout",
         semanticPlan: {
           ...semanticPlan,
-          tasks: semanticPlan.tasks.map((task) => ({ ...task, checks: [] })),
+          merge: "invalid",
         },
       }),
-    ).toThrow("unknown property 'checks'");
+    ).toMatchObject({
+      strategy: "fanout",
+      constraints: [expect.stringContaining("$.merge")],
+    });
     expect(
       parseAgentTrioRequest({
         action: "run",
@@ -493,19 +512,24 @@ describe("AgentTrioMcpProtocol", () => {
         },
       }),
     ).toMatchObject({ semanticPlan: { tasks: [{ goal: null }, { goal: null }] } });
-    expect(() =>
+    expect(
       parseAgentTrioRequest({
         action: "run",
         objective: "inspect two modules",
         cwd: "/workspace",
+        profile: "quality",
         strategy: "fanout",
         semanticPlan: {
           ...semanticPlan,
           tasks: semanticPlan.tasks.map((task) => ({ ...task, expectedSeconds: 15 })),
         },
       }),
-    ).toThrow("must be greater than 15 for fanout");
-    expect(() =>
+    ).toMatchObject({
+      strategy: "fanout",
+      profile: "quality",
+      constraints: [expect.stringContaining("must be greater than 15 for fanout")],
+    });
+    expect(
       parseAgentTrioRequest({
         action: "run",
         objective: "inspect two modules",
@@ -516,16 +540,17 @@ describe("AgentTrioMcpProtocol", () => {
           tasks: semanticPlan.tasks.map(({ expectedSeconds: _expectedSeconds, ...task }) => task),
         },
       }),
-    ).toThrow("must be a positive finite number");
+    ).toMatchObject({
+      strategy: "fanout",
+      constraints: [expect.stringContaining("must be a positive finite number")],
+    });
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain(
-      "For nontrivial work use objective, cwd, and strategy=auto without semanticPlan",
+      "Use strategy=auto only when semantic boundaries are unavailable",
     );
-    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("over 15 seconds of actual Luna wall time");
-    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("not a fixed total-duration threshold");
-    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain('semanticPlan={"access":"readOnly"');
-    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain('"expectedSeconds":90');
-    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Tasks never contain id");
-    expect(AGENT_TRIO_TOOL_DESCRIPTION).not.toContain("Use strategy=direct");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Quality allows 2-5 tasks and >15s each");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("positive time saving");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("semanticPlan tasks contain only goal");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("strategy=direct delegates");
   });
 
   it("exposes one tool and rejects a cwd outside client roots", async () => {
@@ -629,6 +654,7 @@ describe("AgentTrioMcpProtocol", () => {
       action: "run",
       objective: "test",
       cwd: "/tmp",
+      profile: "balanced",
       strategy: "auto",
       runId: expect.any(String),
     });

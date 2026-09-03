@@ -124,8 +124,11 @@ interface MutableRunState {
   selectedLeafCount?: number;
   plannerSkipped?: boolean;
   integrationSkipped?: boolean;
+  routeSource: "host_sol" | "internal_sol" | "deterministic_direct" | undefined;
   estimatedDirectCostUsd: number | null | undefined;
   estimatedFanoutCostUsd: number | null | undefined;
+  estimatedDirectSeconds: number | null | undefined;
+  estimatedFanoutSeconds: number | null | undefined;
 }
 
 type UsageStage = keyof BatchUsageBreakdown;
@@ -511,6 +514,9 @@ export class AgentTrioService {
         workspaceUncertain: false,
         estimatedDirectCostUsd: undefined,
         estimatedFanoutCostUsd: undefined,
+        estimatedDirectSeconds: undefined,
+        estimatedFanoutSeconds: undefined,
+        routeSource: undefined,
       };
       const stopControl = this.#watchCancellation(runId, controller);
       const operation = this.#execute(state, controller.signal)
@@ -647,6 +653,9 @@ export class AgentTrioService {
     state.routeReason = decision.reason;
     state.estimatedDirectCostUsd = decision.estimatedDirectCostUsd;
     state.estimatedFanoutCostUsd = decision.estimatedFanoutCostUsd;
+    state.estimatedDirectSeconds = decision.estimatedDirectSeconds;
+    state.estimatedFanoutSeconds = decision.estimatedFanoutSeconds;
+    state.routeSource = decision.routeSource;
     state.plannerSkipped = decision.route === "direct";
 
     if (decision.route === "waiting_input") {
@@ -693,6 +702,7 @@ export class AgentTrioService {
     const planningRequest = withSuggestedLeafLimit(request, decision.suggestedMaxLeaves);
     const useHostPlan =
       planningRequest.semanticPlan !== undefined && this.#planner.adoptHostPlan !== undefined;
+    let adoptedHostPlan = false;
     let planningReservation: CostReservation | null = useHostPlan
       ? null
       : this.#reserveNonLeafCost(state, budget, "planning", {
@@ -709,12 +719,18 @@ export class AgentTrioService {
     try {
       if (useHostPlan) {
         try {
-          session = await this.#planner.adoptHostPlan!(planningRequest, runId, decision.route);
+          session = await this.#planner.adoptHostPlan!(
+            planningRequest,
+            runId,
+            decision.route === "adaptive" ? "fanout" : decision.route,
+          );
+          adoptedHostPlan = true;
         } catch (error) {
           if (plannerFailureDetails(error)?.code !== "host_plan_requires_internal_sol") {
             throw error;
           }
           state.plannerSkipped = false;
+          state.routeSource = "internal_sol";
           planningReservation = this.#reserveNonLeafCost(state, budget, "planning", {
             objective: request.objective,
             domain: request.domain ?? "general",
@@ -767,28 +783,33 @@ export class AgentTrioService {
     if (planningReservation !== null) {
       budget.settle(planningReservation, state.extraUsage, initialPlannerUsage);
     }
-    if (decision.route === "fanout" && this.#routeOptimizer?.assessPlan !== undefined) {
+    const executionRoute = session.plan.tasks.length === 1 ? "planned_single" : "fanout";
+    if (decision.route === "adaptive") {
+      state.routeReason =
+        executionRoute === "planned_single"
+          ? "internal Sol selected one execution leaf"
+          : `internal Sol selected a ${String(session.plan.tasks.length)}-leaf DAG`;
+    }
+    if (executionRoute === "fanout" && this.#routeOptimizer?.assessPlan !== undefined) {
       const finalAdmission = await this.#routeOptimizer.assessPlan({
         runId,
         request,
         plan: session.plan,
-        source: useHostPlan ? "host" : "internal",
+        source: adoptedHostPlan ? "host" : "internal",
         signal,
       });
       state.routeReason = finalAdmission.reason;
       state.estimatedDirectCostUsd = finalAdmission.estimatedDirectCostUsd;
       state.estimatedFanoutCostUsd = finalAdmission.estimatedFanoutCostUsd;
+      state.estimatedDirectSeconds = finalAdmission.estimatedDirectSeconds;
+      state.estimatedFanoutSeconds = finalAdmission.estimatedFanoutSeconds;
+      state.routeSource = finalAdmission.routeSource ?? state.routeSource;
       if (finalAdmission.route !== "fanout") {
         state.snapshot.result.plan = null;
         delete state.snapshot.plannerSession;
         state.selectedLeafCount = 0;
         state.snapshot.workspaceCommitState = "not_applicable";
-        return this.#executeDirectAfterPlanning(
-          state,
-          signal,
-          budget,
-          "final_plan_economic_rejection",
-        );
+        return this.#executeDirectAfterPlanning(state, signal, budget, "final_plan_hard_rejection");
       }
     }
     this.#transition(state, "running");
@@ -1775,6 +1796,7 @@ export class AgentTrioService {
         return;
       }
       state.snapshot.plannerSession = structuredClone(current);
+      state.snapshot.plannerThreadId = current.continuationThreadId ?? current.threadId;
       state.snapshot.result.plan = structuredClone(current.plan);
       state.snapshot.result.patch = current.patch === null ? null : structuredClone(current.patch);
       if (hasWorkspaceWriters(current.plan) && state.snapshot.workspaceCommitState !== "applied") {
@@ -1928,7 +1950,7 @@ export class AgentTrioService {
       }
       const session = this.#planner.restoreSession(plannerState);
       snapshot.plannerSession = structuredClone(session);
-      snapshot.plannerThreadId = session.threadId;
+      snapshot.plannerThreadId = session.continuationThreadId ?? session.threadId;
       // A recovered admission thread may belong to a dead App Server process. Starting a fresh
       // read-only Terra integration turn is cheaper than risking an invalid continuation or replay.
       snapshot.coordinatorThreadId = null;
@@ -2177,11 +2199,13 @@ export class AgentTrioService {
   ): BatchResult {
     const completedAt = this.#now();
     const usage = state.extraUsage;
+    const selectedPlan = scheduled?.plan ?? state.snapshot.result.plan;
     const result: BatchResult = {
       ...state.snapshot.result,
       status,
       finalResponse: details.finalResponse ?? null,
       metrics: {
+        profile: state.snapshot.request.profile ?? "balanced",
         startedAt: state.startedAt.toISOString(),
         completedAt: completedAt.toISOString(),
         elapsedMs: elapsedMs(state.startedAt, completedAt),
@@ -2209,6 +2233,44 @@ export class AgentTrioService {
         ...(state.estimatedFanoutCostUsd === undefined
           ? {}
           : { estimatedFanoutCostUsd: state.estimatedFanoutCostUsd }),
+        ...(state.routeSource === undefined ? {} : { routeSource: state.routeSource }),
+        ...(selectedPlan === null
+          ? state.snapshot.request.domain === undefined
+            ? {}
+            : { selectedDomain: state.snapshot.request.domain }
+          : {
+              selectedDomain: selectedPlan.domain,
+              selectedWaveCount: planWaveCount(selectedPlan),
+              selectedTierCounts: planTierCounts(selectedPlan),
+              estimatedSerialSeconds: planSerialSeconds(selectedPlan),
+              estimatedCriticalPathSeconds: planCriticalPathSeconds(selectedPlan),
+            }),
+        ...(state.estimatedDirectSeconds === undefined
+          ? {}
+          : { estimatedDirectSeconds: state.estimatedDirectSeconds }),
+        ...(state.estimatedFanoutSeconds === undefined
+          ? {}
+          : { estimatedFanoutSeconds: state.estimatedFanoutSeconds }),
+        ...optionalRatio(
+          "estimatedCostRatio",
+          state.estimatedFanoutCostUsd,
+          state.estimatedDirectCostUsd,
+        ),
+        ...optionalRatio(
+          "estimatedLatencyRatio",
+          state.estimatedFanoutSeconds,
+          state.estimatedDirectSeconds,
+        ),
+        ...optionalRatio(
+          "predictionCostErrorRatio",
+          sumCost(usage),
+          selectedPlan === null ? state.estimatedDirectCostUsd : state.estimatedFanoutCostUsd,
+        ),
+        ...optionalRatio(
+          "predictionLatencyErrorRatio",
+          elapsedMs(state.startedAt, completedAt) / 1_000,
+          selectedPlan === null ? state.estimatedDirectSeconds : state.estimatedFanoutSeconds,
+        ),
         usageByStage: materializeUsageByStage(state.usageByStage),
       },
       ...(details.needsAction === undefined ? {} : { needsAction: details.needsAction }),
@@ -2520,6 +2582,7 @@ function withoutAction(
   return {
     objective: request.objective,
     cwd: request.cwd,
+    ...(request.profile === undefined ? {} : { profile: request.profile }),
     ...(request.hostAccess === undefined ? {} : { hostAccess: request.hostAccess }),
     ...(request.hostApproval === undefined ? {} : { hostApproval: request.hostApproval }),
     ...(request.strategy === undefined ? {} : { strategy: request.strategy }),
@@ -2556,7 +2619,8 @@ function withSuggestedLeafLimit(request: RunRequest, suggested: number | undefin
     return request;
   }
   const requested = request.limits?.maxLeaves;
-  const maxLeaves = requested === undefined ? suggested : Math.min(requested, suggested);
+  const profileMaximum = request.profile === "quality" ? 20 : request.mode === "durable" ? 5 : 3;
+  const maxLeaves = Math.min(profileMaximum, requested ?? suggested, suggested);
   return {
     ...request,
     limits: { ...(request.limits ?? {}), maxLeaves },
@@ -2581,6 +2645,10 @@ function normalizeStartRequest(
   if (input.directTier !== undefined && input.strategy !== "direct") {
     throw new AgentTrioServiceError("invalid_request", "directTier requires strategy=direct");
   }
+  const profile = input.profile ?? "balanced";
+  if (profile !== "balanced" && profile !== "quality") {
+    throw new AgentTrioServiceError("invalid_request", "profile must be balanced or quality");
+  }
   if (
     input.hostAccess !== undefined &&
     input.hostAccess !== "readOnly" &&
@@ -2602,10 +2670,11 @@ function normalizeStartRequest(
       "hostApproval must be never or approveForMe",
     );
   }
-  normalizeExecutionLimitsForMode(defaultMode, input.limits ?? {});
+  normalizeExecutionLimitsForMode(defaultMode, input.limits ?? {}, profile);
   return {
     objective,
     cwd,
+    profile,
     ...(input.hostAccess === undefined ? {} : { hostAccess: input.hostAccess }),
     ...(input.hostApproval === undefined ? {} : { hostApproval: input.hostApproval }),
     ...(input.strategy === undefined ? {} : { strategy: input.strategy }),
@@ -2693,6 +2762,7 @@ function plannerSessionForSnapshot(snapshot: JobSnapshot): PlannerSessionState |
     limits: normalizeExecutionLimitsForMode(
       snapshot.request.mode ?? "foreground",
       snapshot.request.limits ?? {},
+      snapshot.request.profile ?? "balanced",
     ),
     initialPlan: structuredClone(plan),
     plan: structuredClone(plan),
@@ -2736,6 +2806,9 @@ function recoveredRunState(
     workspaceUncertain: false,
     estimatedDirectCostUsd: snapshot.result.metrics?.estimatedDirectCostUsd,
     estimatedFanoutCostUsd: snapshot.result.metrics?.estimatedFanoutCostUsd,
+    estimatedDirectSeconds: snapshot.result.metrics?.estimatedDirectSeconds,
+    estimatedFanoutSeconds: snapshot.result.metrics?.estimatedFanoutSeconds,
+    routeSource: snapshot.result.metrics?.routeSource,
   };
 }
 
@@ -2753,6 +2826,9 @@ function recoveredWaitingRunState(snapshot: JobSnapshot, now: Date): MutableRunS
     workspaceUncertain: false,
     estimatedDirectCostUsd: snapshot.result.metrics?.estimatedDirectCostUsd,
     estimatedFanoutCostUsd: snapshot.result.metrics?.estimatedFanoutCostUsd,
+    estimatedDirectSeconds: snapshot.result.metrics?.estimatedDirectSeconds,
+    estimatedFanoutSeconds: snapshot.result.metrics?.estimatedFanoutSeconds,
+    routeSource: snapshot.result.metrics?.routeSource,
   };
 }
 
@@ -3434,6 +3510,7 @@ function finishSnapshotMetrics(
   const usage = Object.values(usageByStage).flatMap((stageUsage) => stageUsage);
   const startedAt = snapshotStartedAt(snapshot, completedAt);
   return {
+    profile: snapshot.request.profile ?? existing?.profile ?? "balanced",
     startedAt: startedAt.toISOString(),
     completedAt: completedAt.toISOString(),
     elapsedMs: elapsedMs(startedAt, completedAt),
@@ -3464,8 +3541,144 @@ function finishSnapshotMetrics(
     ...(existing?.estimatedFanoutCostUsd === undefined
       ? {}
       : { estimatedFanoutCostUsd: existing.estimatedFanoutCostUsd }),
+    ...(existing?.routeSource === undefined ? {} : { routeSource: existing.routeSource }),
+    ...(existing?.selectedDomain === undefined ? {} : { selectedDomain: existing.selectedDomain }),
+    ...(existing?.selectedWaveCount === undefined
+      ? {}
+      : { selectedWaveCount: existing.selectedWaveCount }),
+    ...(existing?.selectedTierCounts === undefined
+      ? {}
+      : { selectedTierCounts: structuredClone(existing.selectedTierCounts) }),
+    ...(existing?.estimatedSerialSeconds !== undefined
+      ? { estimatedSerialSeconds: existing.estimatedSerialSeconds }
+      : result.plan === null
+        ? {}
+        : { estimatedSerialSeconds: planSerialSeconds(result.plan) }),
+    ...(existing?.estimatedCriticalPathSeconds !== undefined
+      ? { estimatedCriticalPathSeconds: existing.estimatedCriticalPathSeconds }
+      : result.plan === null
+        ? {}
+        : { estimatedCriticalPathSeconds: planCriticalPathSeconds(result.plan) }),
+    ...(existing?.estimatedDirectSeconds === undefined
+      ? {}
+      : { estimatedDirectSeconds: existing.estimatedDirectSeconds }),
+    ...(existing?.estimatedFanoutSeconds === undefined
+      ? {}
+      : { estimatedFanoutSeconds: existing.estimatedFanoutSeconds }),
+    ...(existing?.estimatedCostRatio === undefined
+      ? {}
+      : { estimatedCostRatio: existing.estimatedCostRatio }),
+    ...(existing?.estimatedLatencyRatio === undefined
+      ? {}
+      : { estimatedLatencyRatio: existing.estimatedLatencyRatio }),
+    ...(existing?.predictionCostErrorRatio === undefined
+      ? {}
+      : { predictionCostErrorRatio: existing.predictionCostErrorRatio }),
+    ...(existing?.predictionLatencyErrorRatio === undefined
+      ? {}
+      : { predictionLatencyErrorRatio: existing.predictionLatencyErrorRatio }),
     usageByStage: materializeUsageByStage(usageByStage),
   };
+}
+
+function planWaveCount(plan: ExecutionPlan): number {
+  const tasks = new Map(plan.tasks.map((task) => [task.id, task]));
+  const depths = new Map<string, number>();
+  const visiting = new Set<string>();
+  const depth = (taskId: string): number => {
+    const cached = depths.get(taskId);
+    if (cached !== undefined) {
+      return cached;
+    }
+    if (visiting.has(taskId)) {
+      return 0;
+    }
+    visiting.add(taskId);
+    const task = tasks.get(taskId);
+    const value =
+      task === undefined || task.dependsOn.length === 0
+        ? 1
+        : 1 + Math.max(...task.dependsOn.map(depth));
+    visiting.delete(taskId);
+    depths.set(taskId, value);
+    return value;
+  };
+  return plan.tasks.length === 0 ? 0 : Math.max(...plan.tasks.map((task) => depth(task.id)));
+}
+
+function planTierCounts(plan: ExecutionPlan): NonNullable<BatchMetrics["selectedTierCounts"]> {
+  const counts: NonNullable<BatchMetrics["selectedTierCounts"]> = {};
+  for (const task of plan.tasks) {
+    counts[task.tier] = (counts[task.tier] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function planSerialSeconds(plan: ExecutionPlan): number {
+  return plan.tasks.reduce((total, task) => total + task.expectedSeconds, 0);
+}
+
+function planCriticalPathSeconds(plan: ExecutionPlan): number | null {
+  const tasks = new Map(plan.tasks.map((task) => [task.id, task]));
+  const durations = new Map<string, number>();
+  const visiting = new Set<string>();
+  const duration = (taskId: string): number | null => {
+    const cached = durations.get(taskId);
+    if (cached !== undefined) {
+      return cached;
+    }
+    if (visiting.has(taskId)) {
+      return null;
+    }
+    const task = tasks.get(taskId);
+    if (task === undefined) {
+      return null;
+    }
+    visiting.add(taskId);
+    let dependencySeconds = 0;
+    for (const dependency of task.dependsOn) {
+      const dependencyDuration = duration(dependency);
+      if (dependencyDuration === null) {
+        visiting.delete(taskId);
+        return null;
+      }
+      dependencySeconds = Math.max(dependencySeconds, dependencyDuration);
+    }
+    visiting.delete(taskId);
+    const value = dependencySeconds + task.expectedSeconds;
+    durations.set(taskId, value);
+    return value;
+  };
+  let criticalPath = 0;
+  for (const task of plan.tasks) {
+    const taskDuration = duration(task.id);
+    if (taskDuration === null) {
+      return null;
+    }
+    criticalPath = Math.max(criticalPath, taskDuration);
+  }
+  return criticalPath;
+}
+
+function optionalRatio(
+  key:
+    | "estimatedCostRatio"
+    | "estimatedLatencyRatio"
+    | "predictionCostErrorRatio"
+    | "predictionLatencyErrorRatio",
+  numerator: number | null | undefined,
+  denominator: number | null | undefined,
+): Partial<BatchMetrics> {
+  if (
+    numerator === undefined ||
+    numerator === null ||
+    denominator === undefined ||
+    denominator === null ||
+    denominator <= 0
+  ) {
+    return {};
+  }
+  return { [key]: numerator / denominator };
 }
 
 function checkpointFinishedMetrics(snapshot: JobSnapshot, metrics: BatchMetrics): void {

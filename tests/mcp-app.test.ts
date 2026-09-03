@@ -9,6 +9,8 @@ describe("Agent Trio MCP App", () => {
     expect(MCP_MONITOR_APP_JS).toContain('bridgeRequest("tools/call"');
     expect(MCP_MONITOR_APP_JS).toContain('method === "ui/notifications/tool-input"');
     expect(MCP_MONITOR_APP_JS).toContain("monitorCursor");
+    expect(MCP_MONITOR_APP_JS).toContain("terminalStates.has(status) && !nextIsImmediate");
+    expect(MCP_MONITOR_APP_JS).toContain("poll(nextIsImmediate)");
     expect(MCP_MONITOR_APP_JS).not.toContain("EventSource");
     expect(MCP_MONITOR_APP_JS).not.toContain("fetch(");
     expect(MCP_MONITOR_APP_JS).not.toContain("127.0.0.1");
@@ -18,5 +20,14 @@ describe("Agent Trio MCP App", () => {
     expect(MCP_MONITOR_APP_JS).toContain("state.events.length > 1500");
     expect(MCP_MONITOR_APP_JS).toContain("buildConversationEvents");
     expect(MCP_MONITOR_APP_JS).toContain("item.type) || itemTypeFromMethod");
+    expect(MCP_MONITOR_APP_JS).toContain('/"response"\\s*:\\s*"/');
+  });
+
+  it("renders profile, semantic route, leaf shape, and prediction ratios", () => {
+    expect(MCP_MONITOR_APP_JS).toContain('["Profile"');
+    expect(MCP_MONITOR_APP_JS).toContain('["Route source"');
+    expect(MCP_MONITOR_APP_JS).toContain('["Tier mix"');
+    expect(MCP_MONITOR_APP_JS).toContain("metrics.estimatedCostRatio");
+    expect(MCP_MONITOR_APP_JS).toContain("metrics.estimatedLatencyRatio");
   });
 });

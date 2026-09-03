@@ -8,6 +8,7 @@ import {
   runSealedBenchmarkValidator,
 } from "../src/benchmark-validator.js";
 import { verifyBenchmarkCorpus } from "../src/benchmark.js";
+import { calibrationFixture } from "./benchmark-calibration-fixture.js";
 
 const FAMILIES = [
   "algorithm-exact",
@@ -35,7 +36,8 @@ const CHECKS_PER_INSTANCE: Record<(typeof FAMILIES)[number], number> = {
 
 describe("economic cross-domain benchmark corpus", () => {
   it("seals three independent economic instances in each non-coding domain", async () => {
-    const corpus = createEconomicCrossDomainCorpus();
+    const calibration = calibrationFixture(FAMILIES);
+    const corpus = createEconomicCrossDomainCorpus(calibration);
     const byPath = new Map(corpus.artifacts.map((artifact) => [artifact.path, artifact.bytes]));
 
     expect(corpus.manifest.instances).toHaveLength(15);
@@ -51,7 +53,12 @@ describe("economic cross-domain benchmark corpus", () => {
       const familyId = instance.familyId as (typeof FAMILIES)[number];
       expect(instance).toMatchObject({
         evaluationClass: "economic-decomposable",
-        eligibility: { independentUnits: 3, estimatedMinLeafSeconds: 45 },
+        eligibility: {
+          independentUnits: 3,
+          estimatedMinLeafSeconds: 35,
+          directSolP50Seconds: 120,
+          calibrationEvidenceSha256: calibration.evidenceSha256,
+        },
       });
       const workspaceSeal = instance.artifacts.find(
         (artifact) => artifact.role === "workspace_snapshot",
@@ -122,6 +129,13 @@ describe("economic cross-domain benchmark corpus", () => {
     await expect(
       verifyBenchmarkCorpus(corpus.manifest, async (artifact) => byPath.get(artifact.path)!),
     ).resolves.toBeUndefined();
+  });
+
+  it("does not claim measured economic eligibility without calibration input", () => {
+    const corpus = createEconomicCrossDomainCorpus();
+    expect(corpus.manifest.instances.every((instance) => instance.eligibility === undefined)).toBe(
+      true,
+    );
   });
 
   it("is deterministic and gives every prompt three explicit path partitions", () => {

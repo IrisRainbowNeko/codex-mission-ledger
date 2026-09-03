@@ -188,6 +188,7 @@ describe("V3 MCP server", () => {
       objective: "durable task",
       cwd: "/tmp",
       runId: "generated-run",
+      profile: "balanced",
       constraints: ["agent-trio:root-dispatch"],
     });
     expect(handle).not.toHaveBeenCalled();
@@ -272,6 +273,7 @@ describe("V3 MCP server", () => {
       cwd: "/tmp",
       strategy: "auto",
       runId: "visible-run",
+      profile: "balanced",
       constraints: ["agent-trio:root-dispatch"],
     });
     expect(waitForSettlement).toHaveBeenCalledOnce();

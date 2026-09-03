@@ -88,7 +88,10 @@ const NON_LEAF_COST_ENVELOPES: Readonly<
 > = Object.freeze({
   admission: { tier: "terra", baseInputTokens: 3_500, outputTokens: 2_500 },
   direct: { tier: "terra", baseInputTokens: 6_000, outputTokens: 3_000 },
-  planning: { tier: "sol", baseInputTokens: 10_000, outputTokens: 1_200 },
+  // Reserve against a compact but cold App Server planner turn. Do not rely on provider prompt
+  // caching for budget enforcement; observed balanced plans used roughly 14.5k input tokens when
+  // the shared prefix missed and under 200 output tokens.
+  planning: { tier: "sol", baseInputTokens: 14_500, outputTokens: 250 },
   plan_patch: { tier: "sol", baseInputTokens: 4_500, outputTokens: 1_200 },
   planner_answer: { tier: "sol", baseInputTokens: 3_000, outputTokens: 500 },
   integration: { tier: "terra", baseInputTokens: 4_000, outputTokens: 2_500 },
@@ -199,6 +202,9 @@ export function createDefaultRuntime(options: DefaultRuntimeOptions = {}): Defau
     loadPriceTable(env["AGENT_TRIO_PRICE_TABLE"] ?? DEFAULT_OPENAI_PRICE_TABLE_PATH);
   const allowPlugins = env["AGENT_TRIO_ALLOW_PLUGINS"] === "1";
   const processOptions = options.processOptions ?? {};
+  const pluginRuntimeOptions = allowPlugins
+    ? withInstalledPluginHome(options, processOptions.env ?? env)
+    : options;
   // Every production-owned App Server gets a private instruction namespace by default. The
   // low-level process factory remains backwards-compatible (`inherit`), while this runtime opts
   // into projected homes (or credential-free temporary homes when requested) so a user's global
@@ -226,7 +232,13 @@ export function createDefaultRuntime(options: DefaultRuntimeOptions = {}): Defau
   monitor.attach(appServer);
   const capabilityDiscoveryServer =
     components.capabilityCatalog === undefined && allowPlugins
-      ? createAppServer(cwd, options, ["--enable", "plugins"], processResources, monitor)
+      ? createAppServer(
+          cwd,
+          pluginRuntimeOptions,
+          ["--enable", "plugins"],
+          processResources,
+          monitor,
+        )
       : null;
   const validator =
     components.validator ??
@@ -262,7 +274,7 @@ export function createDefaultRuntime(options: DefaultRuntimeOptions = {}): Defau
         const installedPlugins = await capabilityCatalog.listPlugins();
         return createAppServer(
           leafCwd,
-          options,
+          pluginRuntimeOptions,
           buildPluginIsolationArgs(installedPlugins, capabilities),
           processResources,
           monitor,
@@ -520,6 +532,28 @@ function defaultCodexHomeIsolation(
     return { mode: "temporary" };
   }
   return { mode: "projected", sourceHome, files };
+}
+
+/** Plugin discovery needs the installed-plugin state that a credential-only projection omits. */
+function withInstalledPluginHome(
+  options: DefaultRuntimeOptions,
+  environment: NodeJS.ProcessEnv,
+): DefaultRuntimeOptions {
+  const processOptions = options.processOptions ?? {};
+  const isolation = processOptions.codexHomeIsolation;
+  if (isolation?.mode === "inherit" || isolation?.mode === "explicit" || isolation?.path) {
+    return options;
+  }
+  const sourceHome = resolve(
+    isolation?.sourceHome ?? environment["CODEX_HOME"] ?? join(userHome(environment), ".codex"),
+  );
+  return {
+    ...options,
+    processOptions: {
+      ...processOptions,
+      codexHomeIsolation: { mode: "explicit", path: sourceHome },
+    },
+  };
 }
 
 export function loadPriceTable(path: string | undefined): ModelPriceTable | undefined {

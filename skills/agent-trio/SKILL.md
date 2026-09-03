@@ -1,40 +1,44 @@
 ---
 name: agent-trio
-description: Explicitly delegate one user-selected turn to the Agent Trio V3 MCP runtime for cost-aware direct or parallel multi-agent execution. Use only when the user invokes $agent-trio or explicitly asks for one Agent Trio run. Never continue implicitly on later turns; use $agent-trio-session when the user wants related follow-ups to stay on Agent Trio.
+description: Explicitly use Agent Trio balanced routing for one turn. The root Sol may complete a tiny indivisible task itself; otherwise it delegates one worker or a compact parallel DAG. Never continue implicitly on later turns.
 ---
 
-# Agent Trio
+# Agent Trio Balanced
 
-Delegate the complete request to the `agent_trio` MCP runtime.
+Use the balanced policy once for the complete user request, delegating through the `agent_trio` MCP runtime unless the strict root fast path applies.
 
-This is the single-turn skill. It does not activate Agent Trio for later prompts. A follow-up must
-invoke `$agent-trio` again unless the user explicitly chose `$agent-trio-session` instead.
+## Route Once
 
-## Invocation
+The current Sol makes one lightweight semantic decision, using at most one shallow file listing or
+build-manifest read:
 
-- For a foreground request, generate a unique UUID-style `runId` in the tool arguments and make
-  exactly one `action=run` call. The attached MCP Apps monitor uses the supplied ID to render while
-  the call is running; do not make model-driven status calls or open a separate monitor page.
-- Use `strategy=auto` unless the user explicitly selects `direct` or `fanout`.
-- Pass the complete user goal, excluding the `$agent-trio` invocation marker, as `objective`.
-- Pass the current workspace's absolute path as `cwd`.
-- Pass the current Codex task's permission mode as `hostAccess` on `run` or `submit`: use
-  `readOnly` for read-only, `workspaceWrite` for workspace access, and `fullAccess` for Full access.
-  Copy the active mode exactly. Never request a stronger mode than the current task has.
-- Pass the current Codex task's approval mode as `hostApproval`: use `approveForMe` only when the
-  task uses Approve for me, and `never` when approvals are disabled. Copy the active mode exactly;
-  never enable automatic approval for a caller that does not already have it.
-- Preserve user constraints. Add capabilities only when the user explicitly selected them.
+- Complete in the root and do not call MCP when there is one clear bounded deliverable, no
+  independent workflows, and the root can finish it in one focused edit/analysis/verification
+  sequence, or when Sol-level reasoning is necessary but cannot usefully split. Detailed output
+  requirements do not by themselves justify another worker. No Monitor is expected on this path.
+- Delegate one worker with `profile=balanced`, `strategy=direct`: Luna for bounded mechanical work,
+  extraction, data processing, exact calculation, or a clear local implementation; Terra for
+  state recovery, resume/idempotency logic, coupled multi-file work, ordinary debugging,
+  review/synthesis, or one office artifact. This route must not request an internal plan.
+- Use `profile=balanced`, `strategy=fanout` only for at least two independent packages, each over
+  30 seconds and at least 90 seconds total serial work. Default to two Luna leaves. Use three only
+  for three substantial independent streams when three lowers the predicted critical path by at
+  least 20% versus the best two-leaf grouping; group homogeneous inputs. Foreground plans may not
+  exceed three leaves. Set a Terra floor for recovery, coupled debugging, review/synthesis, and
+  office artifact work; allow at most one Sol leaf.
+- Use `profile=balanced`, `strategy=auto` only when this root is not Sol or reliable boundaries are
+  unavailable.
 
-When the user explicitly asks for a durable background job, use ordinary `action=submit` without
-`monitorFirst`, show the Monitor link after acceptance, and stop without waiting. For a later
-status, resume, or cancel request, use the matching action and the existing `runId`.
+For a foreground MCP run, generate a unique UUID-style `runId`, call `action=submit` with
+`monitorFirst=true`, then immediately make exactly one `action=status` call with the same `runId`
+and `wait=true`. The MCP Apps monitor mounts from the submit response. Do not poll or open another
+monitor page.
 
-Treat the blocking run call's `finalResponse` as the complete foreground delivery. Do not redo
-the work, invoke another orchestrator, or add a second substantive summary after a successful call.
+Pass the complete objective without the skill marker, absolute `cwd`, inferred `domain`, and the
+current `hostAccess` and `hostApproval` exactly. Preserve constraints. Add only exact capabilities
+the user selected. Writer `paths` must be pairwise disjoint; `after` uses task indexes; `merge` is
+`deterministic` or `terra`; `risk` is `low`, `medium`, or `high`.
 
-When the client cannot render MCP Apps and `monitorUrl` is present, keep the Monitor link that
-already prefixes `finalResponse` as the compatibility fallback.
-
-If the MCP call itself fails, report the exact integration error and stop. Do not complete the
-objective directly or silently switch to another execution path unless the user explicitly asks.
+For an explicitly durable job, submit without `monitorFirst`, show its Monitor link, and stop.
+Treat a successful blocking status `finalResponse` as the complete delivery. If MCP fails, report
+the exact error and stop unless the user explicitly requests a fallback.

@@ -2,7 +2,7 @@ import { lstatSync, readdirSync, type Dirent } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { AdmissionDecision } from "./integration.js";
 import type { ExecutionPlan, ModelTier, RunRequest, TaskDomain } from "./contracts.js";
-import { FANOUT_MIN_TASK_SECONDS } from "./policy.js";
+import { fanoutMinTaskSeconds } from "./policy.js";
 
 export interface RouteModelPrice {
   inputPerMillionUsd: number;
@@ -42,22 +42,34 @@ export function recommendDirectTier(request: RunRequest): "luna" | "terra" {
   if ((request.capabilities?.length ?? 0) > 0) {
     return "terra";
   }
-  // A host Sol plan has already bounded and classified this work. If economic admission later
-  // rejects a low-risk read-only fanout, keep the fallback on the intended cheap execution tier
-  // instead of paying for an unrelated Terra pass over the whole task.
-  if (request.semanticPlan?.access === "readOnly" && request.semanticPlan.risk === "low") {
-    return "luna";
-  }
   const objective = request.objective.trim();
   const domain = request.domain ?? "general";
-  if (hasExplicitIndependentReadOnlyPartitions(request)) {
-    return "luna";
+  if (domain === "office") {
+    return "terra";
   }
   const boundedReadOnly =
     objective.length <= 1_200 &&
-    request.constraints?.some((constraint) => /read-only|do not modify/i.test(constraint)) === true;
+    request.constraints?.some((constraint) => explicitReadOnlyInstruction(constraint)) === true;
   if (
     /\b(browser|plugin|skill|document|spreadsheet|presentation|slide|capability)\b/i.test(objective)
+  ) {
+    return "terra";
+  }
+  if (hasExplicitIndependentReadOnlyPartitions(request)) {
+    return "luna";
+  }
+  // If a hard constraint later rejects an uncomplicated low-risk read-only host plan, keep its
+  // single-agent fallback on the intended cheap tier.
+  if (request.semanticPlan?.access === "readOnly" && request.semanticPlan.risk === "low") {
+    return "luna";
+  }
+  if (
+    /\b(?:recover|recovery|resume|checkpoint|rollback|transaction|idempoten|state machine|corrupt|conflict resolution|code review|paper review|peer review|synthesi[sz]e)\b/i.test(
+      objective,
+    ) ||
+    /(?:恢复|续跑|断点|回滚|事务|幂等|状态机|损坏|冲突消解|代码审查|论文评审|审稿|综合分析)/u.test(
+      objective,
+    )
   ) {
     return "terra";
   }
@@ -138,7 +150,7 @@ export interface LocalRouteOptimizerOptions {
   longObjectiveChars?: number;
   modelMap?: Partial<Record<ModelTier, string>>;
   priceTable?: RoutePriceTable;
-  /** Maximum fanout/direct ratios used by automatic selection. */
+  /** Fanout/direct release targets reported in route telemetry. */
   maxCostRatio?: number;
   maxLatencyRatio?: number;
   /** Durable completed runs used to calibrate automatic routing. */
@@ -159,18 +171,18 @@ interface ColdWorkloadProjection {
   directSeconds: number;
   leafCount: number;
   leafSeconds: number;
-  minimumLeafSeconds: number;
-  strongEvidence: boolean;
   signature: string;
 }
 
 const PLANNER_ROUTE_PROFILES: Readonly<Record<"app-server" | "responses", PlannerRouteProfile>> =
   Object.freeze({
     "app-server": {
-      inputTokens: 10_000,
-      outputTokens: 350,
+      // App Server planner turns cannot assume a warm provider cache. The balanced benchmark saw
+      // 17/48 planner turns with no cached prefix, so model the observed cold-capable envelope.
+      inputTokens: 14_500,
+      outputTokens: 180,
       seconds: 24,
-      cachedFraction: 0.9,
+      cachedFraction: 0.5,
     },
     responses: {
       // Current compact plans normally use about 600-650 input tokens. Structural task fields
@@ -192,12 +204,19 @@ const HOST_PLANNER_ROUTE_PROFILE: PlannerRouteProfile = Object.freeze({
   cachedFraction: 0.9,
 });
 
-// Paired App Server runs currently enter the direct turn with roughly 30k-40k cached tokens and
-// less than 1k-2k uncached tokens. Use the low end of observed direct output rather than inflating
-// it from wall time; automatic fanout must pass against a conservative direct baseline.
+const BALANCED_HOST_PLANNER_ROUTE_PROFILE: PlannerRouteProfile = Object.freeze({
+  inputTokens: 14_500,
+  outputTokens: 180,
+  seconds: 12,
+  cachedFraction: 0.5,
+});
+
+// Use the same cache assumption for the root baseline and its host planning turn. Treating direct
+// as 98% cached while the planner is cold creates an impossible comparison; history replaces this
+// envelope once enough matching runs exist.
 const COLD_DIRECT_ROUTE_PROFILE = Object.freeze({
   inputTokens: 40_000,
-  cachedFraction: 0.98,
+  cachedFraction: 0.5,
   outputFactor: 1,
 });
 
@@ -219,7 +238,7 @@ export class LocalRouteOptimizer implements RouteOptimizer {
   readonly #plannerProfile: PlannerRouteProfile;
 
   constructor(options: LocalRouteOptimizerOptions = {}) {
-    this.#longObjectiveChars = options.longObjectiveChars ?? 220;
+    this.#longObjectiveChars = options.longObjectiveChars ?? 900;
     this.#modelMap = options.modelMap ?? {};
     this.#priceTable = options.priceTable;
     this.#maxCostRatio = options.maxCostRatio ?? 0.4;
@@ -254,13 +273,18 @@ export class LocalRouteOptimizer implements RouteOptimizer {
     }
     const strategy = input.request.strategy ?? "auto";
     if (strategy === "direct") {
-      return { route: "direct", reason: "caller selected direct execution" };
+      return {
+        route: "direct",
+        reason: "host Sol selected one execution agent",
+        routeSource: "host_sol",
+      };
     }
     if (input.request.constraints?.includes("agent-trio-benchmark:force-fanout") === true) {
       return {
         route: "fanout",
         reason: "sealed benchmark selected the fanout arm",
         suggestedMaxLeaves: plannerLeafLimit(input.request),
+        routeSource: "internal_sol",
       };
     }
     if ((input.request.semanticPlan?.tasks.length ?? 0) >= 2) {
@@ -274,19 +298,35 @@ export class LocalRouteOptimizer implements RouteOptimizer {
       return this.#economicFanoutDecision(
         input.request,
         "internal",
-        "caller selected adaptive fanout",
+        "caller selected fanout planning",
       );
     }
 
-    const objective = input.request.objective.trim();
-    const domain = input.request.domain ?? "general";
     if (
-      looksExplicitlyDecomposable(objective) ||
-      isLongFanoutDomain(domain, objective, this.#longObjectiveChars)
+      input.request.limits?.maxCostUsd !== undefined &&
+      (this.#price("sol") === null || this.#price(recommendDirectTier(input.request)) === null)
     ) {
-      return this.#economicFanoutDecision(input.request, "internal", "adaptive fanout");
+      return {
+        route: "direct",
+        reason:
+          "automatic planning cannot establish reliable pre-call USD estimates for planning and its single-agent fallback",
+        routeSource: "deterministic_direct",
+      };
     }
-    return { route: "direct", reason: "local route found no reliable parallel work" };
+
+    if (isClearlyBoundedDirect(input.request, this.#longObjectiveChars)) {
+      return {
+        route: "direct",
+        reason: "deterministic fast path proved a bounded single-agent task",
+        routeSource: "deterministic_direct",
+      };
+    }
+    return {
+      route: "adaptive",
+      reason: "internal Sol will choose one worker or a useful DAG",
+      suggestedMaxLeaves: plannerLeafLimit(input.request),
+      routeSource: "internal_sol",
+    };
   }
 
   assessPlan(input: {
@@ -306,12 +346,13 @@ export class LocalRouteOptimizer implements RouteOptimizer {
         route: "fanout",
         reason: "sealed benchmark retained the validated fanout plan",
         suggestedMaxLeaves: input.plan.tasks.length,
+        routeSource: "internal_sol",
       };
     }
     return this.#economicFanoutDecision(
       input.request,
       input.source,
-      "final execution plan passed economic admission",
+      "final execution plan passed hard admission",
       input.plan,
     );
   }
@@ -326,19 +367,48 @@ export class LocalRouteOptimizer implements RouteOptimizer {
       source === "host" &&
       request.semanticPlan?.tasks.some(
         (task) =>
-          !Number.isFinite(task.expectedSeconds) || task.expectedSeconds <= FANOUT_MIN_TASK_SECONDS,
+          !Number.isFinite(task.expectedSeconds) ||
+          task.expectedSeconds <= fanoutMinTaskSeconds(request.profile ?? "balanced"),
       )
+    ) {
+      const minimumSeconds = fanoutMinTaskSeconds(request.profile ?? "balanced");
+      return {
+        route: "direct",
+        reason: `fanout plan contains a leaf that does not exceed ${String(minimumSeconds)} seconds`,
+        routeSource: source === "host" ? "host_sol" : "internal_sol",
+      };
+    }
+    if (
+      request.profile !== "quality" &&
+      source === "host" &&
+      (request.semanticPlan?.tasks.reduce((sum, task) => sum + task.expectedSeconds, 0) ?? 0) < 90
     ) {
       return {
         route: "direct",
-        reason: `fanout plan contains a leaf that does not exceed ${String(FANOUT_MIN_TASK_SECONDS)} seconds`,
+        reason: "balanced fanout plan contains less than 90 seconds of serial work",
+        routeSource: "host_sol",
       };
     }
     const estimate = this.#estimate(request, source, plan);
     if (estimate === null) {
+      if (request.limits?.maxCostUsd === undefined) {
+        return {
+          route: "fanout",
+          reason: `${admittedReason}: runtime economics unavailable; preserving Sol semantic plan`,
+          ...(source === "host"
+            ? plan?.tasks.length !== undefined
+              ? { suggestedMaxLeaves: plan.tasks.length }
+              : request.semanticPlan?.tasks.length !== undefined
+                ? { suggestedMaxLeaves: request.semanticPlan.tasks.length }
+                : {}
+            : { suggestedMaxLeaves: plannerLeafLimit(request) }),
+          routeSource: source === "host" ? "host_sol" : "internal_sol",
+        };
+      }
       return {
         route: "direct",
-        reason: "fanout candidate lacks a complete price, duration, or latency estimate",
+        reason: "fanout cannot be proven within explicit maxCostUsd because pricing is unavailable",
+        routeSource: source === "host" ? "host_sol" : "internal_sol",
       };
     }
     const evidence = {
@@ -347,13 +417,6 @@ export class LocalRouteOptimizer implements RouteOptimizer {
       estimatedDirectSeconds: estimate.directSeconds,
       estimatedFanoutSeconds: estimate.fanoutSeconds,
     };
-    if (!estimate.workloadQualified) {
-      return {
-        route: "direct",
-        reason: `fanout candidate lacks strong evidence that every leaf exceeds ${String(FANOUT_MIN_TASK_SECONDS)} seconds`,
-        ...evidence,
-      };
-    }
     if (
       request.limits?.maxCostUsd !== undefined &&
       estimate.fanoutCostUsd > request.limits.maxCostUsd
@@ -362,23 +425,23 @@ export class LocalRouteOptimizer implements RouteOptimizer {
         route: "direct",
         reason: `fanout estimate $${estimate.fanoutCostUsd.toFixed(4)} exceeds maxCostUsd`,
         ...evidence,
+        routeSource: source === "host" ? "host_sol" : "internal_sol",
       };
     }
-    if (
-      estimate.fanoutCostUsd <= estimate.directCostUsd * this.#maxCostRatio &&
-      estimate.fanoutSeconds <= estimate.directSeconds * this.#maxLatencyRatio
-    ) {
+    if (plan !== undefined && estimate.fanoutSeconds >= estimate.directSeconds) {
       return {
-        route: "fanout",
-        reason: `${admittedReason}: cost $${estimate.fanoutCostUsd.toFixed(4)} / $${estimate.directCostUsd.toFixed(4)}, time ${Math.round(estimate.fanoutSeconds)}s / ${Math.round(estimate.directSeconds)}s`,
+        route: "direct",
+        reason: `planned DAG has no positive predicted wall-time saving (${Math.round(estimate.fanoutSeconds)}s / ${Math.round(estimate.directSeconds)}s)`,
         ...evidence,
-        suggestedMaxLeaves: source === "host" ? estimate.leafCount : plannerLeafLimit(request),
+        routeSource: source === "host" ? "host_sol" : "internal_sol",
       };
     }
     return {
-      route: "direct",
-      reason: `fanout misses cost/time gate (${(estimate.fanoutCostUsd / estimate.directCostUsd).toFixed(2)}x cost, ${(estimate.fanoutSeconds / estimate.directSeconds).toFixed(2)}x time)`,
+      route: "fanout",
+      reason: `${admittedReason}: ${(estimate.fanoutCostUsd / estimate.directCostUsd).toFixed(2)}x cost, ${(estimate.fanoutSeconds / estimate.directSeconds).toFixed(2)}x time; release target ${estimate.fanoutCostUsd <= estimate.directCostUsd * this.#maxCostRatio && estimate.fanoutSeconds <= estimate.directSeconds * this.#maxLatencyRatio ? "met" : "missed"}`,
       ...evidence,
+      suggestedMaxLeaves: source === "host" ? estimate.leafCount : plannerLeafLimit(request),
+      routeSource: source === "host" ? "host_sol" : "internal_sol",
     };
   }
 
@@ -400,37 +463,10 @@ export class LocalRouteOptimizer implements RouteOptimizer {
     const workload = projectColdWorkload(request, source, plan);
     const historical = this.#historicalDirect(request, directTier, workload.signature);
     const baseDirectSeconds = workload.directSeconds;
-    // A Sol-supplied host plan is the authoritative estimate for the work it chose to split.
-    // Direct Sol would perform those independent leaves serially, so use their bounded declared
-    // durations for the direct baseline while retaining measured history when it exists.
-    const structuredHostDurationEvidence =
-      source === "host" &&
-      request.strategy === "fanout" &&
-      request.semanticPlan !== undefined &&
-      request.semanticPlan.tasks.length >= 2 &&
-      request.semanticPlan.tasks.every(
-        (task) =>
-          Number.isFinite(task.expectedSeconds) && task.expectedSeconds > FANOUT_MIN_TASK_SECONDS,
-      ) &&
-      // A structured estimate is trusted only when the workspace profiler independently sees a
-      // substantial workload. This prevents an arbitrary unprofiled host plan from bypassing the
-      // economic gate while removing the old requirement to repeat duration words in the prompt.
-      workload.strongEvidence &&
-      workload.minimumLeafSeconds > FANOUT_MIN_TASK_SECONDS;
-    const hostPlanHasExplicitDurationEvidence =
-      structuredHostDurationEvidence ||
-      /\b(?:long[- ]running|long[- ]duration|takes?\s+(?:more|over|at least)|slow)\b/i.test(
-        request.objective,
-      ) ||
-      /(耗时较长|长时间|预计.*秒|超过.*秒)/u.test(request.objective);
-    const declaredHostSequentialSeconds =
-      source === "host" && hostPlanHasExplicitDurationEvidence && request.semanticPlan !== undefined
-        ? request.semanticPlan.tasks.reduce((sum, task) => sum + task.expectedSeconds, 0) +
-          expectedColdMergeSeconds(request, source, plan)
-        : null;
-    const directSeconds =
-      historical?.latencyP50Seconds ??
-      Math.max(baseDirectSeconds, declaredHostSequentialSeconds ?? 0);
+    // Host expectedSeconds is only a DAG critical-path hint. Using its sum as the direct Sol
+    // baseline lets a planner make its own plan look fast, so direct comes only from calibrated
+    // history or the independent cold-start projection.
+    const directSeconds = historical?.latencyP50Seconds ?? baseDirectSeconds;
     const leafCount =
       plan?.tasks.length ??
       (source === "host"
@@ -465,7 +501,12 @@ export class LocalRouteOptimizer implements RouteOptimizer {
         COLD_DIRECT_ROUTE_PROFILE.inputTokens + objectiveTokens,
         COLD_DIRECT_ROUTE_PROFILE.cachedFraction,
       ) + outputCost(directPrice, directOutputTokens * COLD_DIRECT_ROUTE_PROFILE.outputFactor);
-    const plannerProfile = source === "host" ? HOST_PLANNER_ROUTE_PROFILE : this.#plannerProfile;
+    const plannerProfile =
+      source === "host"
+        ? request.profile === "quality"
+          ? HOST_PLANNER_ROUTE_PROFILE
+          : BALANCED_HOST_PLANNER_ROUTE_PROFILE
+        : this.#plannerProfile;
     const plannerOutputTokens = plannerProfile.outputTokens + leafCount * 20;
     const plannerCost =
       mixedInputCost(
@@ -511,16 +552,10 @@ export class LocalRouteOptimizer implements RouteOptimizer {
     const projectedLeafSeconds =
       workload.leafSeconds * (maxLeafTierFactor / tierLatencyFactor("luna"));
     const declaredPlanSeconds =
-      plan === undefined
-        ? null
-        : calibratedExecutionPlanCriticalPathSeconds(plan.tasks, projectedLeafSeconds);
+      plan === undefined ? null : executionPlanCriticalPathSeconds(plan.tasks);
     const declaredHostSeconds =
       source === "host" && plan === undefined
-        ? calibratedHostPlanCriticalPathSeconds(
-            request.semanticPlan?.tasks ?? [],
-            taskTiers,
-            projectedLeafSeconds,
-          )
+        ? hostPlanCriticalPathSeconds(request.semanticPlan?.tasks ?? [])
         : null;
     if (plan !== undefined && declaredPlanSeconds === null) {
       return null;
@@ -548,24 +583,12 @@ export class LocalRouteOptimizer implements RouteOptimizer {
       plannerSeconds +
       (1 - rejectionProbability) * acceptedFanoutSeconds +
       rejectionProbability * directSeconds;
-    const hostPlanDeclaresLongLeaves =
-      source === "host" &&
-      hostPlanHasExplicitDurationEvidence &&
-      request.semanticPlan !== undefined &&
-      request.semanticPlan.tasks.length >= 2 &&
-      request.semanticPlan.tasks.every(
-        (task) =>
-          Number.isFinite(task.expectedSeconds) && task.expectedSeconds > FANOUT_MIN_TASK_SECONDS,
-      );
     return {
       directCostUsd: directCost,
       fanoutCostUsd: fanoutCost,
       directSeconds,
       fanoutSeconds,
       leafCount,
-      workloadQualified:
-        (workload.strongEvidence || hostPlanDeclaresLongLeaves) &&
-        (hostPlanDeclaresLongLeaves || workload.minimumLeafSeconds > FANOUT_MIN_TASK_SECONDS),
     };
   }
 
@@ -602,7 +625,6 @@ interface RouteEstimate {
   directSeconds: number;
   fanoutSeconds: number;
   leafCount: number;
-  workloadQualified: boolean;
 }
 
 interface DirectRouteHistory {
@@ -843,70 +865,6 @@ function executionPlanCriticalPathSeconds(
   return criticalPath;
 }
 
-function calibratedHostPlanCriticalPathSeconds(
-  tasks: readonly { expectedSeconds: number; after: readonly number[] }[],
-  tiers: readonly ModelTier[],
-  projectedLeafSeconds: number,
-): number | null {
-  if (tasks.length !== tiers.length) {
-    return null;
-  }
-  const scale = declaredDurationScale(
-    tasks.map((task) => task.expectedSeconds),
-    tiers,
-    projectedLeafSeconds,
-  );
-  if (scale === null) {
-    return null;
-  }
-  return hostPlanCriticalPathSeconds(
-    tasks.map((task) => ({ ...task, expectedSeconds: task.expectedSeconds * scale })),
-  );
-}
-
-function calibratedExecutionPlanCriticalPathSeconds(
-  tasks: readonly {
-    id: string;
-    expectedSeconds: number;
-    dependsOn: readonly string[];
-    tier: ModelTier;
-  }[],
-  projectedLeafSeconds: number,
-): number | null {
-  const scale = declaredDurationScale(
-    tasks.map((task) => task.expectedSeconds),
-    tasks.map((task) => task.tier),
-    projectedLeafSeconds,
-  );
-  if (scale === null) {
-    return null;
-  }
-  return executionPlanCriticalPathSeconds(
-    tasks.map((task) => ({ ...task, expectedSeconds: task.expectedSeconds * scale })),
-  );
-}
-
-function declaredDurationScale(
-  expectedSeconds: readonly number[],
-  tiers: readonly ModelTier[],
-  projectedLeafSeconds: number,
-): number | null {
-  if (
-    expectedSeconds.length < 2 ||
-    expectedSeconds.length !== tiers.length ||
-    !Number.isFinite(projectedLeafSeconds) ||
-    projectedLeafSeconds <= 0 ||
-    expectedSeconds.some((seconds) => !Number.isFinite(seconds) || seconds <= 0)
-  ) {
-    return null;
-  }
-  // Sol chooses semantic boundaries and relative DAG weight, but its absolute duration guesses
-  // have overestimated measured Luna turns by more than 3x. Cap the largest declaration with the
-  // independently projected leaf workload; never use declarations to inflate the direct baseline.
-  const largestDeclaredLeaf = Math.max(...expectedSeconds);
-  return Math.min(1, projectedLeafSeconds / largestDeclaredLeaf);
-}
-
 const WORKLOAD_MAX_ROOTS = 8;
 const WORKLOAD_MAX_FILES_PER_ROOT = 32;
 const WORKLOAD_MAX_DEPTH = 2;
@@ -962,21 +920,10 @@ function projectColdWorkload(
           : Math.min(18, profile.files * 1.5 + profile.bytes / 512);
     return operationWork + outputWork + profileWork;
   });
-  const minimumUnitWork = Math.min(...unitWork);
   const maximumUnitWork = Math.max(...unitWork);
-  // Real paired Luna leaves have a roughly 14s fixed turn/tool startup cost. The previous 10s
-  // prior systematically classified measured 30-34s exact/research leaves as sub-threshold.
-  const minimumLeafSeconds = 14 + minimumUnitWork * tierLatencyFactor("luna");
   const leafSeconds = 14 + maximumUnitWork * tierLatencyFactor("luna");
   const mergeSeconds = expectedColdMergeSeconds(request, source, plan);
   const directSeconds = 12 + unitWork.reduce((sum, seconds) => sum + seconds, 0) + mergeSeconds;
-  const completeRootProfile = profiles !== null && profiles.length === boundedUnitCount;
-  const strongOutputEvidence = facetCount >= 5;
-  const strongOperationEvidence =
-    /\b(implement|build|migrate|refactor|debug|prove|derive|systematic review|meta-analysis)\b/i.test(
-      objective,
-    ) || /(实现|构建|迁移|重构|调试|证明|推导|系统综述|荟萃分析)/u.test(objective);
-  const explicitBoundaries = declaredUnits >= 2 || rootGroups.length >= 2 || explicitUnits >= 2;
   const profileSignature =
     profiles === null
       ? "unprofiled"
@@ -995,12 +942,6 @@ function projectColdWorkload(
     directSeconds,
     leafCount: boundedUnitCount,
     leafSeconds,
-    minimumLeafSeconds,
-    strongEvidence:
-      explicitBoundaries &&
-      (completeRootProfile ||
-        strongOutputEvidence ||
-        (strongOperationEvidence && explicitUnits >= 2)),
     signature,
   };
 }
@@ -1120,11 +1061,16 @@ function requestIsReadOnly(request: RunRequest, plan?: ExecutionPlan): boolean {
       plan.tasks.length > 0 &&
       plan.tasks.every((task) => task.access === "readOnly")) ||
     request.semanticPlan?.access === "readOnly" ||
-    request.constraints?.some((constraint) =>
-      /read[- ]?only|do not modify|no writes?|只读|不要修改/iu.test(constraint),
-    ) === true ||
-    /\b(?:read[- ]?only|do not modify|no writes?)\b/i.test(request.objective) ||
-    /只读|不要修改/u.test(request.objective)
+    request.constraints?.some((constraint) => explicitReadOnlyInstruction(constraint)) === true ||
+    explicitReadOnlyInstruction(request.objective)
+  );
+}
+
+function explicitReadOnlyInstruction(text: string): boolean {
+  return (
+    /read[- ]?only|no writes?|(?:do not modify|without modifying)(?:\s+(?:any|the))?\s+(?:files?|workspace|repository|repo|project)\b/iu.test(
+      text,
+    ) || /只读|(?:不要|不得)修改(?:任何|该|此)?(?:文件|工作区|仓库|项目)/u.test(text)
   );
 }
 
@@ -1396,12 +1342,13 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function recommendLeafCount(request: RunRequest, workload: ColdWorkloadProjection): number {
-  const requestedMaximum = request.limits?.maxLeaves ?? 5;
-  return Math.max(2, Math.min(5, requestedMaximum, workload.leafCount));
+  const requestedMaximum = request.limits?.maxLeaves ?? plannerLeafLimit(request);
+  return Math.max(2, Math.min(plannerLeafLimit(request), requestedMaximum, workload.leafCount));
 }
 
 function plannerLeafLimit(request: RunRequest): number {
-  return Math.max(2, Math.min(5, request.limits?.maxLeaves ?? 5));
+  const profileMaximum = request.profile === "quality" ? 5 : request.mode === "durable" ? 5 : 3;
+  return Math.max(2, Math.min(profileMaximum, request.limits?.maxLeaves ?? profileMaximum));
 }
 
 function directOutputEstimate(
@@ -1441,11 +1388,47 @@ function looksExplicitlyDecomposable(objective: string): boolean {
   );
 }
 
+function isClearlyBoundedDirect(request: RunRequest, longObjectiveChars: number): boolean {
+  const objective = request.objective.trim();
+  if (objective.length === 0 || objective.length >= longObjectiveChars) {
+    return false;
+  }
+  if (
+    looksExplicitlyDecomposable(objective) ||
+    /\b(?:project|repository|architecture|research|literature|paper|systematic|comprehensive|end[- ]to[- ]end|front[- ]?end|back[- ]?end)\b/iu.test(
+      objective,
+    ) ||
+    /(?:项目|仓库|架构|调研|研究|文献|论文|全面|完整分析|前端|后端|多模块|跨文件)/u.test(objective)
+  ) {
+    return false;
+  }
+  if (
+    /\b(?:fix|correct)\s+(?:one|a|the)\s+(?:typo|spelling|literal)\b/iu.test(objective) ||
+    /(?:修复|修改|更正)(?:一个|这处)?(?:错别字|拼写|常量)/u.test(objective) ||
+    /\b(?:install|remove|enable|disable)\s+(?:the\s+)?[A-Za-z0-9._+-]+(?:\s+CLI)?(?:\s+and\s+verify)?\b/iu.test(
+      objective,
+    ) ||
+    /(?:安装|卸载|启用|禁用)[^，。；]{1,32}(?:并验证|并确认)?/u.test(objective) ||
+    /\b(?:translate|rewrite|summarize|format)\s+(?:this|the)\s+(?:paragraph|passage|file)\b/iu.test(
+      objective,
+    ) ||
+    /(?:翻译|改写|总结|格式化)(?:这|该)?(?:段|文件)/u.test(objective)
+  ) {
+    return true;
+  }
+  const paths = extractWorkspaceRoots(objective).filter((path) =>
+    isExistingWorkspacePath(request.cwd, path),
+  );
+  return (
+    new Set(paths).size === 1 &&
+    /\b(?:fix|edit|rename|update|inspect)\b/iu.test(objective) &&
+    !/[;,]|\band\b/iu.test(objective)
+  );
+}
+
 function hasExplicitIndependentReadOnlyPartitions(request: RunRequest): boolean {
   const readOnly =
-    request.constraints?.some((constraint) =>
-      /read[- ]?only|do not modify|no writes?|只读|不要修改/iu.test(constraint),
-    ) === true;
+    request.constraints?.some((constraint) => explicitReadOnlyInstruction(constraint)) === true;
   return readOnly && hasExplicitIndependentPartitions(request);
 }
 
@@ -1460,11 +1443,4 @@ function hasExplicitIndependentPartitions(request: RunRequest): boolean {
     (path) => !path.includes("://") && isExistingWorkspacePath(request.cwd, path),
   );
   return new Set(pathMentions).size >= 2;
-}
-
-function isLongFanoutDomain(domain: TaskDomain, objective: string, threshold: number): boolean {
-  return (
-    objective.length >= threshold &&
-    ["coding", "algorithm", "research", "paper", "office", "autoResearch"].includes(domain)
-  );
 }

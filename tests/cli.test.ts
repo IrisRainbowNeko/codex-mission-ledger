@@ -69,6 +69,7 @@ describe("agent-trio CLI", () => {
       action: "run",
       objective: "implement the feature",
       cwd: "/workspace/project",
+      profile: "balanced",
       runId: "run-1",
       hostAccess: "fullAccess",
       hostApproval: "approveForMe",

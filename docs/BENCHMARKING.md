@@ -1,8 +1,8 @@
-# Agent Trio V3 Benchmarking
+# Agent Trio V3.4 Benchmarking
 
-The V3 performance requirements are acceptance targets. They have not been demonstrated merely
+The V3.4 balanced performance requirements are acceptance targets. They have not been demonstrated merely
 because the runtime and evaluator exist. Do not claim that Agent Trio is faster, cheaper, or within
-the quality target until the frozen paired A/B suite passes on the release candidate.
+the quality target until the frozen three-arm suite passes on the release candidate.
 
 The 2026-09-01 tuning checkpoint covers one current instance in every target domain. Coding,
 research, paper, and office are fresh paired runs. Algorithm is a paired run immediately before the
@@ -10,14 +10,14 @@ boundary-only schema; auto research uses a paired run whose raw output was resco
 equivalent-wording validator correction. All are diagnostic rather than release evidence, but every
 corrected row meets the requested gate:
 
-| Domain        | V3/direct time | V3/direct cost | V3 quality | Direct quality |
-| ------------- | -------------: | -------------: | ---------: | -------------: |
-| Coding        |          63.5% |          13.7% |        100 |            100 |
-| Algorithm     |          46.5% |          24.6% |        100 |            100 |
-| Research      |          34.5% |           6.1% |        100 |             67 |
-| Paper         |          36.3% |          20.9% |         97 |            100 |
-| Office        |          60.7% |          25.9% |        100 |            100 |
-| Auto research |          34.9% |           6.2% |        100 |            100 |
+| Domain        | Quality ref/direct time | Quality ref/direct cost | Quality ref | Direct quality |
+| ------------- | ----------------------: | ----------------------: | ----------: | -------------: |
+| Coding        |                   63.5% |                   13.7% |         100 |            100 |
+| Algorithm     |                   46.5% |                   24.6% |         100 |            100 |
+| Research      |                   34.5% |                    6.1% |         100 |             67 |
+| Paper         |                   36.3% |                   20.9% |          97 |            100 |
+| Office        |                   60.7% |                   25.9% |         100 |            100 |
+| Auto research |                   34.9% |                    6.2% |         100 |            100 |
 
 The current coding pair charged 425 uncached input plus 87 output tokens ($0.00344) to Sol planning,
 then used three Luna-medium leaves. The current office pair charged 597 input plus 134 output tokens
@@ -150,13 +150,12 @@ acceptance because the pinned provider did not reliably preserve cache affinity 
 thread IDs. Candidate accounting includes the host Sol plan and every worker turn; it excludes only
 the common pre-task setup turn.
 
-The direct baseline runs at the sealed `gpt-5.6-sol/ultra` setting. A candidate host Sol uses `low`
-effort when it only admits or delegates one bounded worker, and `medium` when it must construct a
-fanout DAG. The internal planner chooses effort from the semantic difficulty: explicit independent
-path partitions use `low`, ordinary DAG planning uses `medium`, and difficult non-decomposable work
-may use `high`. Spending planner-level reasoning on a short machine-readable dispatch decision
-would defeat the tiered-cost design. The model, provider, service tier, task state, and permissions
-remain paired.
+The direct baseline runs at the sealed `gpt-5.6-sol/ultra` setting. A balanced candidate host Sol
+uses `low` effort for routing and compact fanout plans; quality retains `medium` for ordinary
+coupled DAG planning. The internal planner follows the same profile rule and may use `high` for
+difficult algorithms, architecture, security, or hidden correctness work. Spending planner-level
+reasoning on a short machine-readable dispatch decision would defeat the tiered-cost design. The
+model, provider, service tier, task state, and permissions remain paired.
 
 The Agent Trio JobStore is allocated under a separate temporary runtime root, never under the
 materialized fixture workspace. Both the workspace and runtime root are removed when the pair
@@ -188,9 +187,9 @@ The evaluator defines 18 families across six domains:
 | Auto research | `auto-recovery`          | Crash recovery                     |
 | Auto research | `auto-pipeline`          | Cross-artifact pipeline            |
 
-Each family needs at least three independently sealed instances, for at least 54 paired instances
-and 108 total runs. A release may add harder instances, but it must not quietly drop or rewrite a
-failed instance after seeing results.
+Each family needs at least three independently sealed instances. The 54 instances each run once on
+direct Sol, balanced, and quality, for at least 162 arms. A release may add harder instances, but it
+must not quietly drop or rewrite a failed instance after seeing results.
 
 Family shape is not sufficient to decide which performance gate applies to a particular instance.
 Every release instance must pre-seal one of these `evaluationClass` values before either arm runs:
@@ -200,22 +199,51 @@ Every release instance must pre-seal one of these `evaluationClass` values befor
 - `economic-decomposable`: the instance is economically large enough to amortize planning and is
   included in the 40% cost and 70% wall-time aggregates.
 
-An `economic-decomposable` instance may also seal `eligibility` with `independentUnits` (at least
-2), `estimatedMinLeafSeconds` (strictly greater than 30), and the `calibrationRevision` that
-produced that estimate. Classification is an evaluation contract, not a forced route: an economic
-instance remains in both economic aggregates even when V3 ultimately chooses `direct` or
-`delegated`. Conversely, observing a successful fanout does not move a preclassified fast-path
-instance into the economic set. This prevents post-run route selection from hiding an economic
-failure.
+Every release `economic-decomposable` instance must seal `eligibility` derived from an independent
+development calibration table. The table records at least three development instance IDs and their
+direct Sol durations plus the p50 duration of each coarse independent leaf. The generator computes
+`directSolP50Seconds`, `independentUnits`, and `estimatedMinLeafSeconds`, and seals both
+`calibrationRevision` and `calibrationEvidenceSha256`. Release preflight rejects missing or
+generator-authored placeholder calibration. Development generators may omit eligibility entirely.
 
-The release eligibility estimate above applies to the coarse independent units used to prove that
-the complete task can amortize orchestration. It is intentionally distinct from the 15-second
-runtime startup-amortization floor. After admission, Sol may subdivide those units into
-independently scoped leaves above that floor only while the router still predicts total cost at
-most 40% and latency at most 70%. The end-to-end economic gates, rather than a second fixed
-30-second runtime threshold, decide whether smaller Luna leaves are worthwhile. This permits a
-2-5 leaf critical-path optimization; it neither forces fanout nor allows the scheduler to invent
-semantic boundaries without a Sol plan.
+Classification is an evaluation contract, not a forced route: an economic instance remains in both
+balanced economic aggregates even when balanced ultimately chooses `direct` or `delegated`.
+Conversely, observing a successful fanout does not move a preclassified fast-path instance into the
+economic set. This prevents post-run route selection from hiding an economic failure.
+
+The calibration must show direct Sol p50 of at least 90 seconds and at least two independent leaf
+p50 values strictly above 30 seconds. Balanced uses the same 30-second floor and requires at least
+90 seconds of candidate serial work; quality retains the V3.3 15-second startup-amortization floor.
+The 40% and 70% ratios are planning guidance and release gates, not runtime vetoes for an otherwise
+legal Sol plan.
+
+Supply calibration explicitly when sealing a candidate corpus:
+
+```bash
+npm run benchmark:generate-authored-core -- /tmp/agent-trio-held-out \
+  --calibration /absolute/path/development-calibration.json
+```
+
+The calibration file has this shape; durations are real seconds from development tasks, not the
+held-out instances:
+
+```json
+{
+  "schemaVersion": 1,
+  "revision": "development-2026-09-03",
+  "entries": [
+    {
+      "familyId": "coding-cross-module",
+      "developmentInstanceIds": ["dev-01", "dev-02", "dev-03"],
+      "directSolSeconds": [101.2, 118.4, 132.7],
+      "independentLeafP50Seconds": [38.1, 42.6, 47.3]
+    }
+  ]
+}
+```
+
+The generator does not bundle or fabricate measured values. New held-out seeds are sealed only after
+routing and parameters are frozen, and must not reuse the development calibration instances.
 
 Legacy development/diagnostic manifests and observation files may omit `evaluationClass`; the
 library migrates them using the static family `decomposable` flag, never the observed candidate
@@ -301,15 +329,16 @@ These are immediate release blockers regardless of aggregate score:
 - an unrecoverable duplicate side effect;
 - any other predeclared critical failure.
 
-## Paired Harness
+## Three-Arm Harness
 
-`runPairedBenchmark(manifest, executors, options)` accepts separate injected `direct_sol` and `v3`
-executors. This keeps provider authentication and App Server process ownership outside the generic
-harness. Options declare the provider environment and provide readers for sealed inputs and run
-outputs. The harness gives each arm a separate clone of the same verified artifact bytes; executors
-must materialize the task from those bytes and attest every consumed digest in their result. Pair
-order is balanced by default to reduce load-order bias; `direct-first` and `v3-first` are available
-for controlled diagnostics.
+`runPairedBenchmark(manifest, executors, options)` evaluates one candidate profile against direct
+Sol. The real runner invokes it sequentially for balanced and quality while caching one verified
+direct record per instance. This keeps provider authentication and App Server process ownership
+outside the generic harness and produces exactly one `direct_sol`, one `balanced`, and one `quality`
+record per instance. Compare profiles only from one complete three-arm run over the same frozen
+corpus and implementation revision; a separate `--balanced-only` diagnostic is not comparable to
+an earlier quality run. Pair order is balanced by default to reduce load-order bias; `direct-first`
+and the legacy `v3-first` order remain available for controlled diagnostics.
 
 Each executor returns a `BenchmarkRunRecord` containing:
 
@@ -325,17 +354,18 @@ The harness rejects a pair when provider identity/configuration, service tier, p
 tools differ. Tool ordering does not matter, but identity, version, and configuration digest do. It
 also reconciles the observation's USD cost against the sum of its per-stage records, requires a
 price-table digest for locally calculated costs, proves that the baseline arm used only the sealed
-Sol model/effort, and checks that V3 direct and fanout stage evidence agrees with the reported route.
+Sol model/effort, and checks that candidate direct and fanout stage evidence agrees with the
+reported route.
 The output reader hashes each referenced artifact. Scorecards are parsed and must reproduce both the
 reported quality score and the sealed validator/rubric digest. `onRecord` can persist each completed
 arm immediately so evidence survives a later arm failure. No model is built into the harness; tests
 and offline experiments use injected executors.
 
 For a real local App Server run, use the experiment runner added to this repository. It verifies and
-materializes each sealed instance into disposable read-only workspaces, runs direct Sol and V3 with
-the same prompt and snapshot, and writes raw output, validator output, scorecards, usage, and
-observations. The default command runs one decomposable smoke pair; select a family and three
-instances for a development family check, or pass `--full` only for the complete 54-instance suite:
+materializes each sealed instance into disposable workspaces, runs direct Sol, balanced, and quality
+with the same prompt and snapshot, and writes raw output, validator output, scorecards, usage, and
+observations. The default command runs one three-arm smoke instance; select a family and three
+instances for a development family check, or pass `--full` for the complete 54-instance suite:
 
 ```bash
 npm run benchmark:real -- --family coding-cross-module --limit 3 \
@@ -347,35 +377,17 @@ agent-trio benchmark /tmp/agent-trio-coding.observations.json \
 ```
 
 Every completed arm is appended to the output-adjacent `.records.jsonl`. After an OOM, process
-termination, or host restart, repeat the same paired command with `--resume`; the runner revalidates
+termination, or host restart, repeat the same command with `--resume`; the runner revalidates
 the cached records and their evidence hashes, skips their model calls, and executes only missing
 arms. Resume is valid only when code, corpus, provider configuration, output path, and evidence path
 are unchanged. A single unterminated final JSONL fragment is repaired as an interrupted append;
 invalid or duplicate complete lines stop the run.
 
-The runner defaults to a cheap natural root. The root handles one-turn tasks directly and calls
-`strategy=auto` without a semantic plan only when independent parallel work or stronger planning is
-worth the extra turn. The runtime performs economic admission and invokes its compact internal Sol
-planner only for admitted fanout. `--host-sol-plan` measures the optional host-Sol semantic-plan
-path, `--internal-sol-plan` forces the separate internal planner diagnostic, and `--host-plan`
-injects a fixed synthetic plan. Planning-mode flags are mutually exclusive.
-
-Before a natural cheap-root turn, the paired runner executes the same zero-model economic decision
-with the MCP root-dispatch cost included. A direct decision runs on a fork with orchestration MCPs
-disabled, so a model cannot pay for a second Luna after fanout has already been rejected. The direct
-record must therefore contain zero planner turns, leaves, integration turns, and protocol errors.
-The source root remains unchanged for the other arm, and the disposable Codex home removes the fork
-when the pair ends.
-
-When that decision requires the MCP tool, the outer root is Luna regardless of task domain: its
-only work is the exact tool envelope and acknowledgement. Direct decisions still use
-`recommendDirectTier`, so this does not downgrade a real one-turn office, paper, or research task.
-
-The runner otherwise uses `strategy=auto`; a synthetic instance that cannot amortize planning
-remains on the direct path even if its family can be decomposed at production scale. Use
-`--force-fanout` only to diagnose fanout stages. A forced run is not valid evidence for the automatic
-routing gate. The bundled price table is used by default; `AGENT_TRIO_PRICE_TABLE` is only an
-explicit runtime override.
+The release runner uses host Sol semantic routing. Balanced may complete a strict fast-path task in
+the root, delegate one worker, or supply a two-to-three-leaf foreground DAG. Quality always delegates
+and retains the wider V3.3 topology. `--internal-sol-plan` and `--host-plan` remain diagnostic modes;
+forced routes are never release evidence. The bundled price table is used by default;
+`AGENT_TRIO_PRICE_TABLE` is an explicit runtime override.
 
 This runner issues real model calls and therefore consumes provider quota. Synthetic development
 fixtures validate the execution and evidence protocol; they are intentionally too small to support
@@ -385,7 +397,7 @@ acceptance result.
 ## Observation File
 
 `agent-trio benchmark` remains the backwards-compatible offline evaluator. It does not execute
-tasks; use the paired harness above to authenticate and preserve run evidence. A harness result has
+tasks; use the three-arm harness above to authenticate and preserve run evidence. A harness result has
 an `observations` array and can therefore be passed directly to the CLI. Existing inputs may still
 be either an observation array or an object with an `observations` array. Pair rows by `familyId`,
 `instanceId`, and `seed`:
@@ -412,14 +424,30 @@ be either an observation array or an object with an `observations` array. Pair r
       "familyId": "coding-cross-module",
       "instanceId": "repo-a-feature-01",
       "seed": "run-1",
-      "arm": "v3",
+      "arm": "balanced",
       "qualityScore": 94,
       "elapsedMs": 390000,
       "costUsd": 0.9,
       "route": "fanout",
       "launchSkewMs": 1800,
       "plannerTurns": 1,
-      "leafCount": 4,
+      "leafCount": 3,
+      "protocolErrors": 0,
+      "userInterventions": 0,
+      "criticalFailures": []
+    },
+    {
+      "familyId": "coding-cross-module",
+      "instanceId": "repo-a-feature-01",
+      "seed": "run-1",
+      "arm": "quality",
+      "qualityScore": 96,
+      "elapsedMs": 420000,
+      "costUsd": 1.1,
+      "route": "fanout",
+      "launchSkewMs": 1500,
+      "plannerTurns": 0,
+      "leafCount": 3,
       "protocolErrors": 0,
       "userInterventions": 0,
       "criticalFailures": []
@@ -440,12 +468,13 @@ changes the per-family minimum. A partial result is not release evidence.
 
 ## Acceptance Gates
 
-The release candidate passes only when all gates pass:
+Balanced passes only when all gates pass:
 
 | Dimension            | Gate                                                       |
 | -------------------- | ---------------------------------------------------------- |
 | Economic speed       | Preclassified economic macro time ratio is at most 0.70    |
 | Economic cost        | Preclassified economic macro USD ratio is at most 0.40     |
+| Sol planning cost    | Maximum economic family ratio is at most 0.25              |
 | Overall quality      | Ratio is at least 0.95 or absolute gap is at most 3 points |
 | Per-domain quality   | Every domain meets the same 0.95-or-3-point rule           |
 | Direct overhead      | p95 extra elapsed ratio is at most 0.15                    |
@@ -455,10 +484,14 @@ The release candidate passes only when all gates pass:
 | Human continuation   | Zero user interventions for internal readiness             |
 | Critical safety      | Zero critical failures                                     |
 
-The cost and elapsed gates apply to every pair pre-sealed as `economic-decomposable`, regardless of
-the candidate's actual route. Direct overhead and the zero-planner/zero-leaf check apply only to
-pairs pre-sealed as `direct-fast-path`. Reports include counts for both evaluation classes. Missing
-USD data makes the economic cost gate fail; it is never treated as zero.
+The cost and elapsed gates apply to every balanced pair pre-sealed as `economic-decomposable`,
+regardless of its actual route. Direct overhead and the zero-MCP-planner/zero-leaf check apply only
+to balanced pairs pre-sealed as `direct-fast-path`. Candidate quality must also be at least 60.
+Missing USD data makes the economic cost gate fail; it is never treated as zero.
+
+Quality must preserve V3.3 behavior and meet the quality and reliability gates. Its cost, elapsed
+time, planning ratio, direct overhead, and direct-delegation count are reported without blocking the
+quality profile. Protocol errors, user intervention, critical failures, and quality remain blocking.
 
 Report per-family and per-domain results, not only aggregate averages. Include confidence intervals
 or raw distributions where sample size permits, plus the number of replans, promotions, planner

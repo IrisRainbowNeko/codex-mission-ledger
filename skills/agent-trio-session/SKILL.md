@@ -1,57 +1,30 @@
 ---
 name: agent-trio-session
-description: Use only when the user explicitly invokes $agent-trio-session, or when this same conversation previously invoked $agent-trio-session and the current prompt is a related follow-up, correction, extension, continuation, or question about that delegated Agent Trio V3 work. Do not activate from a prior $agent-trio single-turn call, for an unrelated new task, or after the user opts out. Provides cost-aware direct or parallel multi-agent execution.
+description: Use Agent Trio balanced routing when explicitly invoked and for related follow-ups in this conversation. Do not activate from a one-shot call, an unrelated task, or after opt-out.
 ---
 
-# Agent Trio Session
+# Agent Trio Balanced Session
 
-Delegate the complete request to the `agent_trio` MCP runtime and keep related follow-ups on Agent
-Trio for this conversation.
+Apply the same balanced route policy as `$agent-trio` with the `agent_trio` MCP runtime: root
+self-completion for one bounded deliverable without independent workstreams; otherwise
+`profile=balanced` with one Luna/Terra worker or a useful DAG. Use Terra for state recovery,
+resume/idempotency logic, coupled debugging, review/synthesis, or one office artifact. Fanout
+requires independent leaves over 30 seconds and at least 90 seconds serial work, defaults to two
+Luna leaves, and uses three only for three substantial streams.
 
-## Session Boundary
+An explicit `$agent-trio-session` activates this behavior for related corrections, refinements,
+extensions, continuations, and questions. Do not activate from a prior $agent-trio single-turn
+call. Stop when the user opts out or switches to a clearly unrelated task.
+Invoke implicitly only when this conversation previously invoked $agent-trio-session.
 
-- An explicit `$agent-trio-session` invocation activates session routing for the current
-  conversation.
-- On later turns, invoke this skill implicitly only when the current request directly follows up on
-  work delegated after that activation. Related follow-ups include corrections, refinements,
-  extensions, continuation requests, and questions about the result.
-- Do not activate session routing merely because this conversation used the single-turn
-  `$agent-trio` skill or called the `agent_trio` tool for another reason.
-- End session routing when the user explicitly says to stop using Agent Trio, asks to use normal
-  Codex, or switches to a clearly unrelated task. A new conversation starts inactive.
+For each new foreground MCP run, generate a unique UUID-style `runId`, call `action=submit` with
+`monitorFirst=true`, then make exactly one `action=status` call with that ID and `wait=true`. The MCP Apps monitor mounts while work runs; never poll. If a prior run is `waiting_input` and the user
+supplies the requested input, resume that run instead.
 
-## Invocation
+Make each follow-up objective self-contained using only needed prior goals, facts, decisions, and
+artifact paths. Pass absolute `cwd`, inferred `domain`, exact current `hostAccess` and
+`hostApproval`, preserved constraints, and only explicitly selected capabilities. Writer paths
+must be disjoint; use valid dependency indexes and exact merge/risk enums.
 
-- For a foreground request, generate a unique UUID-style `runId` in the tool arguments and make
-  exactly one `action=run` call. The attached MCP Apps monitor uses the supplied ID to render while
-  the call is running; do not make model-driven status calls or open a separate monitor page.
-- Use `strategy=auto` unless the user explicitly selects `direct` or `fanout`.
-- On the activating turn, pass the complete user goal without the `$agent-trio-session` marker as
-  `objective`.
-- For a related follow-up after a completed run, start a new foreground run. Make `objective`
-  self-contained with the new request plus only the prior goal, result facts, decisions, and
-  artifact paths needed to understand it. Do not paste Monitor events, full transcripts, or
-  irrelevant prior output.
-- If the prior run is still `waiting_input` and the new message supplies the requested information,
-  use `action=resume` with that run ID instead of starting a new run. Use `status` or `cancel` only
-  when the user asks for those operations.
-- Pass the current workspace's absolute path as `cwd`.
-- Pass the current Codex task's permission mode as `hostAccess` on `run` or `submit`: use
-  `readOnly` for read-only, `workspaceWrite` for workspace access, and `fullAccess` for Full access.
-  Copy the active mode exactly. Never request a stronger mode than the current task has.
-- Pass the current Codex task's approval mode as `hostApproval`: use `approveForMe` only when the
-  task uses Approve for me, and `never` when approvals are disabled. Copy the active mode exactly;
-  never enable automatic approval for a caller that does not already have it.
-- Preserve user constraints. Add capabilities only when the user explicitly selected them.
-
-When the user explicitly asks for a durable background job, use ordinary `action=submit` without
-`monitorFirst`, show the Monitor link after acceptance, and stop without waiting.
-
-Treat the blocking run call's `finalResponse` as the complete foreground delivery. Do not redo
-the work, invoke another orchestrator, or add a second substantive summary after a successful call.
-
-When the client cannot render MCP Apps and `monitorUrl` is present, keep the Monitor link that
-already prefixes `finalResponse` as the compatibility fallback.
-
-If the MCP call itself fails, report the exact integration error and stop. Do not complete the
-objective directly or silently switch to another execution path unless the user explicitly asks.
+Treat successful `finalResponse` as the complete delivery. Durable jobs submit without
+`monitorFirst`. On MCP failure, report the exact error and stop unless the user asks for fallback.

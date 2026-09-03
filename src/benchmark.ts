@@ -58,7 +58,8 @@ export const BENCHMARK_FAMILIES: readonly BenchmarkFamily[] = Object.freeze([
   },
 ]);
 
-export type BenchmarkArm = "direct_sol" | "v3";
+export type BenchmarkCandidateArm = "v3" | "balanced" | "quality";
+export type BenchmarkArm = "direct_sol" | BenchmarkCandidateArm;
 
 export const BENCHMARK_MANIFEST_VERSION = 1 as const;
 export const BENCHMARK_BASELINE_MODEL = "gpt-5.6-sol" as const;
@@ -123,7 +124,32 @@ export type BenchmarkEvaluationClass = "direct-fast-path" | "economic-decomposab
 export interface BenchmarkEconomicEligibility {
   independentUnits: number;
   estimatedMinLeafSeconds: number;
+  /** Independent development calibration, never measured on the held-out instance. */
+  directSolP50Seconds: number;
   calibrationRevision: string;
+  /** SHA-256 of the calibration table loaded before the held-out corpus is sealed. */
+  calibrationEvidenceSha256?: string;
+}
+
+export interface BenchmarkFamilyCalibration {
+  familyId: string;
+  /** Development instances distinct from every held-out release instance. */
+  developmentInstanceIds: string[];
+  /** End-to-end direct Sol durations, one per development instance. */
+  directSolSeconds: number[];
+  /** Independently measured p50 durations for the coarse parallel work units. */
+  independentLeafP50Seconds: number[];
+}
+
+export interface BenchmarkCalibrationTable {
+  schemaVersion: 1;
+  revision: string;
+  entries: BenchmarkFamilyCalibration[];
+}
+
+export interface LoadedBenchmarkCalibration {
+  table: BenchmarkCalibrationTable;
+  evidenceSha256: string;
 }
 
 export interface BenchmarkManifestDraft {
@@ -233,7 +259,9 @@ export type BenchmarkExecutor = (
 
 export interface BenchmarkExecutors {
   direct_sol: BenchmarkExecutor;
-  v3: BenchmarkExecutor;
+  v3?: BenchmarkExecutor;
+  balanced?: BenchmarkExecutor;
+  quality?: BenchmarkExecutor;
 }
 
 export type BenchmarkArtifactReader = (
@@ -252,6 +280,8 @@ export interface PairedBenchmarkOptions {
   environment: BenchmarkEnvironmentEvidence;
   evaluation?: BenchmarkEvaluationOptions;
   armOrder?: "balanced" | "direct-first" | "v3-first";
+  /** Candidate profile to compare with direct Sol; defaults to legacy v3. */
+  candidateArm?: BenchmarkCandidateArm;
   onRecord?: (record: Readonly<BenchmarkRunRecord>) => void | Promise<void>;
 }
 
@@ -271,6 +301,8 @@ export interface BenchmarkObservation {
   qualityScore: number;
   elapsedMs: number;
   costUsd: number | null;
+  /** Sol planning/admission cost attributed to the candidate root and internal planner. */
+  planningCostUsd?: number | null;
   route: "direct" | "delegated" | "fanout";
   /** Copied from the sealed corpus instance, never inferred from the observed route. */
   evaluationClass?: BenchmarkEvaluationClass;
@@ -301,6 +333,7 @@ export interface BenchmarkEvaluation {
   evaluationClassCounts: Record<BenchmarkEvaluationClass, number>;
   speedRatio: number | null;
   costRatio: number | null;
+  planningCostRatio: number | null;
   qualityRatio: number | null;
   qualityGap: number | null;
   directOverheadP95: number | null;
@@ -314,6 +347,8 @@ export interface BenchmarkEvaluationOptions {
   requireAllFamilies?: boolean;
   /** Release evaluation must reject observations without the pre-sealed class. */
   requireSealedEvaluationClass?: boolean;
+  /** Candidate profile to evaluate; inferred when observations contain only one candidate arm. */
+  candidateArm?: BenchmarkCandidateArm;
 }
 
 interface Pair {
@@ -325,6 +360,123 @@ interface Pair {
 
 export function hashBenchmarkBytes(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+export function parseBenchmarkCalibrationTable(
+  source: string | Uint8Array,
+): LoadedBenchmarkCalibration {
+  const bytes = typeof source === "string" ? new TextEncoder().encode(source) : source;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch (error) {
+    throw new Error(`invalid benchmark calibration JSON: ${normalizeError(error)}`, {
+      cause: error,
+    });
+  }
+  assertBenchmarkCalibrationTable(parsed);
+  return {
+    table: structuredClone(parsed),
+    evidenceSha256: hashBenchmarkBytes(bytes),
+  };
+}
+
+export async function loadBenchmarkCalibrationTable(
+  path: string,
+): Promise<LoadedBenchmarkCalibration> {
+  requireNonEmpty(path, "calibration path");
+  return parseBenchmarkCalibrationTable(new Uint8Array(await readFile(resolve(path))));
+}
+
+export function economicEligibilityFromCalibration(
+  calibration: Readonly<LoadedBenchmarkCalibration> | undefined,
+  familyId: string,
+  independentUnits: number,
+): BenchmarkEconomicEligibility | undefined {
+  if (calibration === undefined) {
+    return undefined;
+  }
+  const entry = calibration.table.entries.find((candidate) => candidate.familyId === familyId);
+  if (entry === undefined) {
+    throw new Error(`calibration ${calibration.table.revision} has no entry for ${familyId}`);
+  }
+  if (entry.independentLeafP50Seconds.length !== independentUnits) {
+    throw new Error(
+      `calibration ${calibration.table.revision} declares ${String(entry.independentLeafP50Seconds.length)} independent units for ${familyId}; corpus requires ${String(independentUnits)}`,
+    );
+  }
+  const directSolP50Seconds = median(entry.directSolSeconds);
+  const estimatedMinLeafSeconds = Math.min(...entry.independentLeafP50Seconds);
+  if (directSolP50Seconds < 90 || estimatedMinLeafSeconds <= 30) {
+    throw new Error(
+      `calibration ${calibration.table.revision} does not qualify ${familyId}: direct Sol p50 must be at least 90 seconds and every independent leaf p50 must exceed 30 seconds`,
+    );
+  }
+  return {
+    independentUnits,
+    estimatedMinLeafSeconds,
+    directSolP50Seconds,
+    calibrationRevision: calibration.table.revision,
+    calibrationEvidenceSha256: calibration.evidenceSha256,
+  };
+}
+
+function assertBenchmarkCalibrationTable(
+  value: unknown,
+): asserts value is BenchmarkCalibrationTable {
+  if (!isRecord(value) || value["schemaVersion"] !== 1) {
+    throw new Error("benchmark calibration schemaVersion must be 1");
+  }
+  requireNonEmpty(value["revision"], "benchmark calibration revision");
+  const entries = value["entries"];
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new Error("benchmark calibration entries must be a non-empty array");
+  }
+  const families = new Set<string>();
+  for (const [index, candidate] of entries.entries()) {
+    const label = `benchmark calibration entries[${String(index)}]`;
+    if (!isRecord(candidate)) {
+      throw new Error(`${label} must be an object`);
+    }
+    requireNonEmpty(candidate["familyId"], `${label}.familyId`);
+    const familyId = candidate["familyId"];
+    if (!BENCHMARK_FAMILIES.some((family) => family.id === familyId)) {
+      throw new Error(`${label}.familyId is unknown: ${familyId}`);
+    }
+    if (families.has(familyId)) {
+      throw new Error(`benchmark calibration contains duplicate family: ${familyId}`);
+    }
+    families.add(familyId);
+    const developmentInstanceIds = candidate["developmentInstanceIds"];
+    if (!Array.isArray(developmentInstanceIds) || developmentInstanceIds.length < 3) {
+      throw new Error(`${label}.developmentInstanceIds must contain at least three samples`);
+    }
+    const uniqueIds = new Set<string>();
+    for (const [sampleIndex, id] of developmentInstanceIds.entries()) {
+      requireNonEmpty(id, `${label}.developmentInstanceIds[${String(sampleIndex)}]`);
+      if (uniqueIds.has(id)) {
+        throw new Error(`${label}.developmentInstanceIds must be unique`);
+      }
+      uniqueIds.add(id);
+    }
+    const directSolSeconds = candidate["directSolSeconds"];
+    if (
+      !Array.isArray(directSolSeconds) ||
+      directSolSeconds.length !== developmentInstanceIds.length
+    ) {
+      throw new Error(`${label}.directSolSeconds must match developmentInstanceIds`);
+    }
+    directSolSeconds.forEach((seconds, sampleIndex) =>
+      requirePositiveFinite(seconds, `${label}.directSolSeconds[${String(sampleIndex)}]`),
+    );
+    const leafSeconds = candidate["independentLeafP50Seconds"];
+    if (!Array.isArray(leafSeconds) || leafSeconds.length < 2) {
+      throw new Error(`${label}.independentLeafP50Seconds must contain at least two units`);
+    }
+    leafSeconds.forEach((seconds, unitIndex) =>
+      requirePositiveFinite(seconds, `${label}.independentLeafP50Seconds[${String(unitIndex)}]`),
+    );
+  }
 }
 
 export function benchmarkInstanceSha256(instance: Readonly<BenchmarkCorpusInstance>): string {
@@ -543,7 +695,8 @@ export async function runPairedBenchmark(
   for (const [pairIndex, instance] of manifest.instances.entries()) {
     const instanceSha256 = benchmarkInstanceSha256(instance);
     const artifacts = await loadVerifiedInstanceArtifacts(instance, options.artifactReader);
-    const order = benchmarkArmOrder(armOrder, pairIndex);
+    const candidateArm = options.candidateArm ?? "v3";
+    const order = benchmarkArmOrder(armOrder, pairIndex, candidateArm);
     const pairRecords = new Map<BenchmarkArm, BenchmarkRunRecord>();
     for (const [orderInPair, arm] of order.entries()) {
       const executor = executors[arm];
@@ -574,7 +727,7 @@ export async function runPairedBenchmark(
     }
     assertMatchingEnvironment(
       requireMapValue(pairRecords, "direct_sol"),
-      requireMapValue(pairRecords, "v3"),
+      requireMapValue(pairRecords, candidateArm),
       instance,
     );
   }
@@ -598,6 +751,7 @@ export function evaluateBenchmark(
   }
   observations.forEach(validateObservation);
   const families = new Map(BENCHMARK_FAMILIES.map((family) => [family.id, family]));
+  const candidateArm = resolveCandidateArm(observations, options.candidateArm);
   const byPair = new Map<string, Partial<Record<BenchmarkArm, BenchmarkObservation>>>();
   for (const observation of observations) {
     if (!families.has(observation.familyId)) {
@@ -617,22 +771,23 @@ export function evaluateBenchmark(
   const errors: string[] = [];
   const pairs: Pair[] = [];
   for (const [key, value] of byPair) {
-    if (value.direct_sol === undefined || value.v3 === undefined) {
+    const candidate = value[candidateArm];
+    if (value.direct_sol === undefined || candidate === undefined) {
       errors.push(`unpaired observation: ${key.replaceAll("\u0000", "/")}`);
       continue;
     }
     const evaluationClass = resolvePairEvaluationClass(
       value.direct_sol,
-      value.v3,
-      families.get(value.v3.familyId)!,
+      candidate,
+      families.get(candidate.familyId)!,
       options,
       errors,
     );
     pairs.push({
-      family: families.get(value.v3.familyId)!,
+      family: families.get(candidate.familyId)!,
       evaluationClass,
       direct: value.direct_sol,
-      candidate: value.v3,
+      candidate,
     });
   }
 
@@ -671,6 +826,7 @@ export function evaluateBenchmark(
       pair.candidate.costUsd > 0,
   );
   const costRatio = costComplete ? macroRatio(economicPairs, (item) => item.costUsd ?? 0) : null;
+  const planningCostRatio = maximumFamilyPlanningCostRatio(economicPairs);
   const quality = macroQuality(pairs);
   const absoluteQualityFloor =
     pairs.length === 0 ? null : Math.min(...pairs.map((pair) => pair.candidate.qualityScore));
@@ -699,24 +855,39 @@ export function evaluateBenchmark(
   ).length;
   const domainQualityFailures = domainQualityGates(pairs).filter((gate) => !gate.passed);
   const scopedEvaluation = options.requireAllFamilies === false;
+  const qualityReportingOnly = candidateArm === "quality";
 
   const gates: BenchmarkGate[] = [
-    applicableGate(
-      "economic decomposable wall time",
-      speedRatio,
-      0.7,
-      "max",
-      economicPairs.length > 0,
-      scopedEvaluation,
-    ),
-    applicableGate(
-      "economic decomposable cost",
-      costRatio,
-      0.4,
-      "max",
-      economicPairs.length > 0,
-      scopedEvaluation,
-    ),
+    qualityReportingOnly
+      ? reportOnlyGate("economic decomposable wall time", speedRatio)
+      : applicableGate(
+          "economic decomposable wall time",
+          speedRatio,
+          0.7,
+          "max",
+          economicPairs.length > 0,
+          scopedEvaluation,
+        ),
+    qualityReportingOnly
+      ? reportOnlyGate("economic decomposable cost", costRatio)
+      : applicableGate(
+          "economic decomposable cost",
+          costRatio,
+          0.4,
+          "max",
+          economicPairs.length > 0,
+          scopedEvaluation,
+        ),
+    candidateArm !== "balanced"
+      ? reportOnlyGate("Sol planning cost by family", planningCostRatio)
+      : applicableGate(
+          "Sol planning cost by family",
+          planningCostRatio,
+          0.25,
+          "max",
+          economicPairs.length > 0,
+          scopedEvaluation,
+        ),
     {
       name: "overall quality",
       passed:
@@ -739,14 +910,16 @@ export function evaluateBenchmark(
       limit: "every domain passes",
     },
     gate("absolute quality floor", absoluteQualityFloor, 60, "min"),
-    applicableGate(
-      "direct overhead p95",
-      directOverheadP95,
-      0.15,
-      "max",
-      directFastPathPairs.length > 0,
-      scopedEvaluation,
-    ),
+    qualityReportingOnly
+      ? reportOnlyGate("direct overhead p95", directOverheadP95)
+      : applicableGate(
+          "direct overhead p95",
+          directOverheadP95,
+          0.15,
+          "max",
+          directFastPathPairs.length > 0,
+          scopedEvaluation,
+        ),
     applicableGate(
       "launch skew p95 ms",
       launchSkewP95Ms,
@@ -755,7 +928,9 @@ export function evaluateBenchmark(
       actualFanoutPairs.length > 0,
       scopedEvaluation,
     ),
-    exactGate("direct routing violations", directRoutingViolations, 0),
+    qualityReportingOnly
+      ? reportOnlyGate("direct routing violations", directRoutingViolations)
+      : exactGate("direct routing violations", directRoutingViolations, 0),
     exactGate("protocol errors", protocolErrors, 0),
     exactGate("user interventions", interventions, 0),
     exactGate("critical failures", criticalFailures.length, 0),
@@ -772,6 +947,7 @@ export function evaluateBenchmark(
     evaluationClassCounts,
     speedRatio,
     costRatio,
+    planningCostRatio,
     qualityRatio: quality.ratio,
     qualityGap: quality.gap,
     directOverheadP95,
@@ -863,8 +1039,8 @@ function validateObservation(value: BenchmarkObservation): void {
   requireNonEmpty(value.familyId, "familyId");
   requireNonEmpty(value.instanceId, "instanceId");
   requireNonEmpty(value.seed, "seed");
-  if (value.arm !== "direct_sol" && value.arm !== "v3") {
-    throw new Error("arm must be direct_sol or v3");
+  if (!isBenchmarkArm(value.arm)) {
+    throw new Error("arm must be direct_sol, balanced, quality, or v3");
   }
   if (value.route !== "direct" && value.route !== "delegated" && value.route !== "fanout") {
     throw new Error("route must be direct, delegated, or fanout");
@@ -891,6 +1067,13 @@ function validateObservation(value: BenchmarkObservation): void {
   }
   if (value.costUsd !== null && (!Number.isFinite(value.costUsd) || value.costUsd < 0)) {
     throw new Error("costUsd must be null or a finite non-negative number");
+  }
+  if (
+    value.planningCostUsd !== undefined &&
+    value.planningCostUsd !== null &&
+    (!Number.isFinite(value.planningCostUsd) || value.planningCostUsd < 0)
+  ) {
+    throw new Error("planningCostUsd must be null or a finite non-negative number");
   }
   if (value.hostPlanned !== undefined && typeof value.hostPlanned !== "boolean") {
     throw new Error("hostPlanned must be boolean when provided");
@@ -1054,7 +1237,21 @@ function validateEvaluationClassification(
   ) {
     throw new Error(`${label}.eligibility.estimatedMinLeafSeconds must be greater than 30`);
   }
+  const directSolP50Seconds = eligibility["directSolP50Seconds"];
+  if (
+    typeof directSolP50Seconds !== "number" ||
+    !Number.isFinite(directSolP50Seconds) ||
+    directSolP50Seconds < 90
+  ) {
+    throw new Error(`${label}.eligibility.directSolP50Seconds must be at least 90`);
+  }
   requireNonEmpty(eligibility["calibrationRevision"], `${label}.eligibility.calibrationRevision`);
+  if (eligibility["calibrationEvidenceSha256"] !== undefined) {
+    requireSha256(
+      eligibility["calibrationEvidenceSha256"],
+      `${label}.eligibility.calibrationEvidenceSha256`,
+    );
+  }
 }
 
 function validateOptionalProvenance(value: unknown, label: string): void {
@@ -1639,14 +1836,40 @@ function compareToolEvidence(left: BenchmarkToolEvidence, right: BenchmarkToolEv
 function benchmarkArmOrder(
   order: NonNullable<PairedBenchmarkOptions["armOrder"]>,
   pairIndex: number,
+  candidateArm: BenchmarkCandidateArm = "v3",
 ): readonly BenchmarkArm[] {
   if (order === "direct-first") {
-    return ["direct_sol", "v3"];
+    return ["direct_sol", candidateArm];
   }
   if (order === "v3-first") {
-    return ["v3", "direct_sol"];
+    return [candidateArm, "direct_sol"];
   }
-  return pairIndex % 2 === 0 ? ["direct_sol", "v3"] : ["v3", "direct_sol"];
+  return pairIndex % 2 === 0 ? ["direct_sol", candidateArm] : [candidateArm, "direct_sol"];
+}
+
+function resolveCandidateArm(
+  observations: readonly BenchmarkObservation[],
+  requested: BenchmarkCandidateArm | undefined,
+): BenchmarkCandidateArm {
+  if (requested !== undefined) {
+    return requested;
+  }
+  const candidates = new Set(
+    observations.flatMap((observation) =>
+      observation.arm === "direct_sol" ? [] : [observation.arm],
+    ),
+  );
+  if (candidates.size === 1) {
+    return [...candidates][0]!;
+  }
+  if (candidates.has("balanced")) {
+    return "balanced";
+  }
+  return "v3";
+}
+
+function isBenchmarkArm(value: unknown): value is BenchmarkArm {
+  return value === "direct_sol" || value === "v3" || value === "balanced" || value === "quality";
 }
 
 function requireMapValue(
@@ -1696,6 +1919,20 @@ function requireNonNegativeInteger(value: unknown, label: string): asserts value
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
     throw new Error(`${label} must be a non-negative integer`);
   }
+}
+
+function requirePositiveFinite(value: unknown, label: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`${label} must be a positive finite number`);
+  }
+}
+
+function median(values: readonly number[]): number {
+  const ordered = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2 === 0
+    ? (ordered[middle - 1]! + ordered[middle]!) / 2
+    : ordered[middle]!;
 }
 
 function requireTimestamp(value: unknown, label: string): number {
@@ -1774,6 +2011,30 @@ function macroQuality(pairs: readonly Pair[]): { ratio: number | null; gap: numb
   return { ratio: mean(ratios), gap: mean(gaps) };
 }
 
+function maximumFamilyPlanningCostRatio(pairs: readonly Pair[]): number | null {
+  const ratios: number[] = [];
+  for (const group of groupPairs(pairs).values()) {
+    if (
+      group.some(
+        (pair) =>
+          pair.direct.costUsd === null ||
+          pair.direct.costUsd <= 0 ||
+          pair.candidate.planningCostUsd === undefined ||
+          pair.candidate.planningCostUsd === null,
+      )
+    ) {
+      return null;
+    }
+    ratios.push(
+      ratio(
+        group.reduce((total, pair) => total + pair.candidate.planningCostUsd!, 0),
+        group.reduce((total, pair) => total + pair.direct.costUsd!, 0),
+      ),
+    );
+  }
+  return ratios.length === 0 ? null : Math.max(...ratios);
+}
+
 function domainQualityGates(pairs: readonly Pair[]): BenchmarkGate[] {
   const domains = new Set(pairs.map((pair) => pair.family.domain));
   return [...domains].map((domain) => {
@@ -1841,6 +2102,10 @@ function gate(
     actual,
     limit,
   };
+}
+
+function reportOnlyGate(name: string, actual: number | null): BenchmarkGate {
+  return { name, passed: true, actual, limit: "reported only" };
 }
 
 function applicableGate(

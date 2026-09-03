@@ -136,20 +136,24 @@ describe("CapabilityResolver", () => {
     );
   });
 
-  it.each(["agent-trio", "agent-trio-session", "hierarchical_codex", "codex mission ledger"])(
-    "always rejects recursive orchestration capability %s",
-    async (name) => {
-      const root = mkdtempSync(join(tmpdir(), "agent-trio-cap-"));
-      roots.push(root);
-      const skill = join(root, "agent-trio");
-      mkdirSync(skill);
-      const resolver = new CapabilityResolver({
-        listSkills: async () => [{ name, path: skill, enabled: true, pluginId: null }],
-        listPlugins: async () => [],
-      });
-      await expect(resolver.resolve([{ kind: "skill", name }], root)).rejects.toThrow("forbidden");
-    },
-  );
+  it.each([
+    "agent-trio",
+    "agent-trio-session",
+    "agent-trio-quality",
+    "agent-trio-quality-session",
+    "hierarchical_codex",
+    "codex mission ledger",
+  ])("always rejects recursive orchestration capability %s", async (name) => {
+    const root = mkdtempSync(join(tmpdir(), "agent-trio-cap-"));
+    roots.push(root);
+    const skill = join(root, "agent-trio");
+    mkdirSync(skill);
+    const resolver = new CapabilityResolver({
+      listSkills: async () => [{ name, path: skill, enabled: true, pluginId: null }],
+      listPlugins: async () => [],
+    });
+    await expect(resolver.resolve([{ kind: "skill", name }], root)).rejects.toThrow("forbidden");
+  });
 
   it("rejects recursive plugins and skills owned by recursive plugins", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-trio-cap-"));

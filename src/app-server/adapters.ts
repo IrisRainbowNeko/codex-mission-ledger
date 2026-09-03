@@ -102,6 +102,7 @@ const LEAF_DEVELOPER_INSTRUCTIONS = [
   "Put the complete user-visible leaf deliverable in summary. Complete every requested item before optional explanation, budget space across repeated items, and use a compact table or fixed template when the contract permits it.",
   "For numeric decisions, preserve the exact observed value, governing threshold, and derived margin for every failed criterion; a margin alone is incomplete. State that the observed value fails, exceeds, or falls below the threshold by a nonnegative magnitude; do not encode failure only as a signed margin.",
   "For exhaustive comparisons or screening, cover every required entity and every mandatory criterion; do not stop after the first failure.",
+  "For exact algorithm or numeric portfolios, use a local executable script or exhaustive solver when the inputs and tools are available, then independently verify every requested tie-break, ordering rule, and arithmetic check; never extrapolate repeated-looking cases or rely on mental calculation.",
   "Preserve required qualifiers such as sole, only, exact, at least, and at most in every repeated item; do not weaken an exclusive result to a generic eligible or selected label.",
   "Before returning, silently check every requested item against explicit tie-break, ordering, threshold, and completeness rules and correct the summary in place.",
   "Copy bracketed source identifiers from owned files byte-for-byte; never add, remove, or duplicate an identifier prefix.",

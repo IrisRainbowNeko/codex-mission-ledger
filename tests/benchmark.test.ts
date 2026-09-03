@@ -32,9 +32,11 @@ import {
   assertBenchmarkManifestCoverage,
   benchmarkInstanceSha256,
   createFileBenchmarkArtifactReader,
+  economicEligibilityFromCalibration,
   evaluateBenchmark,
   hashBenchmarkBytes,
   parseBenchmarkManifest,
+  parseBenchmarkCalibrationTable,
   runPairedBenchmark,
   sealBenchmarkManifest,
   type BenchmarkArtifactReader,
@@ -129,7 +131,7 @@ describe("real benchmark runner", () => {
   });
 
   it("uses the existing root Sol by default and keeps diagnostic planner modes explicit", () => {
-    expect(parseOptions([]).planningMode).toBe("internal-sol");
+    expect(parseOptions([]).planningMode).toBe("host-sol");
     expect(parseOptions([]).release).toBe(false);
     expect(parseOptions(["--release", "--full"])).toMatchObject({ release: true, full: true });
     expect(parseOptions(["--dynamic-tool", "--force-delegated"])).toMatchObject({
@@ -144,6 +146,7 @@ describe("real benchmark runner", () => {
     expect(parseOptions(["--internal-sol-plan"]).planningMode).toBe("internal-sol");
     expect(parseOptions(["--host-plan"]).planningMode).toBe("diagnostic-host");
     expect(parseOptions(["--instance", "coding-02"]).instance).toBe("coding-02");
+    expect(parseOptions(["--balanced-only"]).balancedOnly).toBe(true);
     expect(parseOptions(["--resume"]).resume).toBe(true);
     expect(() => parseOptions(["--resume", "--v3-only"])).toThrow(
       "only supported for paired benchmark runs",
@@ -151,6 +154,74 @@ describe("real benchmark runner", () => {
     expect(() => parseOptions(["--internal-sol-plan", "--host-sol-plan"])).toThrow(
       "planning mode flags are mutually exclusive",
     );
+    expect(() => parseOptions(["--balanced-only", "--v3-only"])).toThrow("mutually exclusive");
+    expect(() => parseOptions(["--release", "--balanced-only"])).toThrow(
+      "release evidence requires all arms",
+    );
+  });
+
+  it("evaluates balanced and quality observations against the same direct baseline", () => {
+    const legacy = passingObservations();
+    const direct = legacy.filter((item) => item.arm === "direct_sol");
+    const balanced = legacy
+      .filter((item) => item.arm === "v3")
+      .map((item) => ({ ...item, arm: "balanced" as const, planningCostUsd: 0.2 }));
+    const quality = legacy
+      .filter((item) => item.arm === "v3")
+      .map((item) => ({ ...item, arm: "quality" as const, qualityScore: 100 }));
+
+    expect(
+      evaluateBenchmark([...direct, ...balanced, ...quality], {
+        minimumInstancesPerFamily: 1,
+        candidateArm: "balanced",
+      }).passed,
+    ).toBe(true);
+    expect(
+      evaluateBenchmark([...direct, ...balanced, ...quality], {
+        minimumInstancesPerFamily: 1,
+        candidateArm: "quality",
+      }).qualityRatio,
+    ).toBe(1);
+  });
+
+  it("reports quality economics without blocking and enforces balanced planning cost", () => {
+    const legacy = passingObservations();
+    const direct = legacy.filter((item) => item.arm === "direct_sol");
+    const quality = legacy
+      .filter((item) => item.arm === "v3")
+      .map((item) => ({
+        ...item,
+        arm: "quality" as const,
+        route: item.evaluationClass === "direct-fast-path" ? ("delegated" as const) : item.route,
+        elapsedMs: item.evaluationClass === "economic-decomposable" ? 950 : item.elapsedMs,
+        costUsd: item.evaluationClass === "economic-decomposable" ? 0.9 : item.costUsd,
+        planningCostUsd: 0.8,
+        qualityScore: 100,
+      }));
+    const qualityReport = evaluateBenchmark([...direct, ...quality], {
+      minimumInstancesPerFamily: 1,
+      candidateArm: "quality",
+    });
+    expect(qualityReport.gates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "economic decomposable wall time", passed: true }),
+        expect.objectContaining({ name: "economic decomposable cost", passed: true }),
+        expect.objectContaining({ name: "Sol planning cost by family", passed: true }),
+        expect.objectContaining({ name: "direct routing violations", passed: true }),
+      ]),
+    );
+
+    const balanced = legacy
+      .filter((item) => item.arm === "v3")
+      .map((item) => ({ ...item, arm: "balanced" as const, planningCostUsd: 0.26 }));
+    const balancedReport = evaluateBenchmark([...direct, ...balanced], {
+      minimumInstancesPerFamily: 1,
+      candidateArm: "balanced",
+    });
+    expect(balancedReport.gates).toContainEqual(
+      expect.objectContaining({ name: "Sol planning cost by family", passed: false }),
+    );
+    expect(balancedReport.passed).toBe(false);
   });
 
   it("resumes completed arms and discards only an unterminated JSONL tail", async () => {
@@ -199,13 +270,19 @@ describe("real benchmark runner", () => {
 
   it("rejects diagnostic corpora before a paid release run", async () => {
     const fixture = benchmarkFixture();
+    const draft = structuredClone(fixture.manifest) as BenchmarkManifestDraft & {
+      manifestSha256?: string;
+    };
+    delete draft.manifestSha256;
+    delete draft.instances[0]!.eligibility;
+    const uncalibrated = sealBenchmarkManifest(draft);
     await expect(
       assertReleaseBenchmarkCorpus(
-        fixture.manifest,
+        uncalibrated,
         fixture.reader,
         parseOptions(["--release", "--full", "--corpus", "/tmp/release-corpus"]),
       ),
-    ).rejects.toThrow("release corpus preflight failed");
+    ).rejects.toThrow("missing independent development calibration");
   });
 
   it("requires the root Sol to declare the read-only deterministic host-plan boundary", () => {
@@ -250,6 +327,18 @@ describe("real benchmark runner", () => {
       parseRootSolRouteDecision(
         JSON.stringify({
           mode: "direct",
+          answer: "delegate:terra",
+          access: "workspaceWrite",
+          merge: "terra",
+          risk: "medium",
+          tasks: [],
+        }),
+      ),
+    ).toEqual({ mode: "delegate", tier: "terra" });
+    expect(
+      parseRootSolRouteDecision(
+        JSON.stringify({
+          mode: "direct",
           answer: "complete final answer",
           access: null,
           merge: null,
@@ -261,6 +350,17 @@ describe("real benchmark runner", () => {
     expect(
       parseRootSolRouteDecision(JSON.stringify({ mode: "plan", answer: null, ...plan })),
     ).toEqual({ mode: "plan", plan });
+    expect(
+      parseRootSolRouteDecision(
+        JSON.stringify({
+          mode: "plan",
+          answer: null,
+          ...plan,
+          merge: "terra",
+          risk: "high",
+        }),
+      ),
+    ).toMatchObject({ mode: "plan", plan: { merge: "terra", risk: "high" } });
     expect(() =>
       parseRootSolRouteDecision(
         JSON.stringify({
@@ -602,6 +702,51 @@ describe("evaluateBenchmark", () => {
 });
 
 describe("paired benchmark harness", () => {
+  it("runs balanced and quality against one cached direct record per instance", async () => {
+    const fixture = benchmarkFixture();
+    const directCalls: string[] = [];
+    const rawDirect = executorFor("direct_sol", fixture.manifest, directCalls);
+    const directRecords = new Map<string, BenchmarkRunRecord>();
+    const direct: BenchmarkExecutor = async (request) => {
+      const key = `${request.instance.familyId}\u0000${request.instance.instanceId}`;
+      const cached = directRecords.get(key);
+      if (cached !== undefined) return structuredClone(cached);
+      const record = await rawDirect(request);
+      directRecords.set(key, structuredClone(record));
+      return record;
+    };
+    const common = {
+      artifactReader: fixture.reader,
+      runArtifactReader: fixture.runArtifactReader,
+      environment: fixture.environment,
+      evaluation: { minimumInstancesPerFamily: 1, requireAllFamilies: false },
+    };
+    const balanced = await runPairedBenchmark(
+      fixture.manifest,
+      { direct_sol: direct, balanced: executorFor("balanced", fixture.manifest, []) },
+      { ...common, candidateArm: "balanced" },
+    );
+    const quality = await runPairedBenchmark(
+      fixture.manifest,
+      { direct_sol: direct, quality: executorFor("quality", fixture.manifest, []) },
+      { ...common, candidateArm: "quality" },
+    );
+    const records = new Map(
+      [...balanced.records, ...quality.records].map((record) => [
+        `${record.observation.familyId}\u0000${record.observation.instanceId}\u0000${record.observation.arm}`,
+        record,
+      ]),
+    );
+
+    expect(directCalls).toHaveLength(fixture.manifest.instances.length);
+    expect(records.size).toBe(fixture.manifest.instances.length * 3);
+    for (const arm of ["direct_sol", "balanced", "quality"] as const) {
+      expect([...records.values()].filter((record) => record.observation.arm === arm)).toHaveLength(
+        fixture.manifest.instances.length,
+      );
+    }
+  });
+
   it("rejects corpus artifacts that escape through a symbolic link", async () => {
     const temporary = await mkdtemp(join(tmpdir(), "agent-trio-benchmark-"));
     const corpus = join(temporary, "corpus");
@@ -905,11 +1050,59 @@ describe("paired benchmark harness", () => {
     directWithEligibility.instances[1]!.eligibility = {
       independentUnits: 2,
       estimatedMinLeafSeconds: 31,
+      directSolP50Seconds: 90,
       calibrationRevision: "fixture-calibration-v1",
     };
     expect(() => sealBenchmarkManifest(directWithEligibility)).toThrow(
       "eligibility is only valid for an economic-decomposable instance",
     );
+  });
+
+  it("derives economic eligibility only from an independent calibration table", () => {
+    const source = JSON.stringify({
+      schemaVersion: 1,
+      revision: "development-calibration-v7",
+      entries: [
+        {
+          familyId: "coding-cross-module",
+          developmentInstanceIds: ["dev-a", "dev-b", "dev-c"],
+          directSolSeconds: [95, 125, 110],
+          independentLeafP50Seconds: [31, 48, 52],
+        },
+      ],
+    });
+    const calibration = parseBenchmarkCalibrationTable(source);
+
+    expect(economicEligibilityFromCalibration(calibration, "coding-cross-module", 3)).toEqual({
+      independentUnits: 3,
+      estimatedMinLeafSeconds: 31,
+      directSolP50Seconds: 110,
+      calibrationRevision: "development-calibration-v7",
+      calibrationEvidenceSha256: hashBenchmarkBytes(source),
+    });
+    expect(economicEligibilityFromCalibration(undefined, "coding-cross-module", 3)).toBeUndefined();
+    expect(() => economicEligibilityFromCalibration(calibration, "coding-cross-module", 2)).toThrow(
+      "corpus requires 2",
+    );
+  });
+
+  it("rejects calibration tables with too few development samples", () => {
+    expect(() =>
+      parseBenchmarkCalibrationTable(
+        JSON.stringify({
+          schemaVersion: 1,
+          revision: "invalid",
+          entries: [
+            {
+              familyId: "coding-cross-module",
+              developmentInstanceIds: ["dev-a", "dev-b"],
+              directSolSeconds: [100, 110],
+              independentLeafP50Seconds: [40, 45],
+            },
+          ],
+        }),
+      ),
+    ).toThrow("at least three samples");
   });
 
   it("verifies every artifact before either executor can run", async () => {
@@ -1138,7 +1331,9 @@ function benchmarkFixture(): BenchmarkFixture {
             eligibility: {
               independentUnits: 2,
               estimatedMinLeafSeconds: 45,
+              directSolP50Seconds: 120,
               calibrationRevision: "fixture-calibration-v1",
+              calibrationEvidenceSha256: hashBenchmarkBytes("fixture-calibration-v1"),
             },
           }
         : {}),
@@ -1190,7 +1385,7 @@ function addFixtureArtifact(
 }
 
 function executorFor(
-  arm: "direct_sol" | "v3",
+  arm: BenchmarkExecutionRequest["arm"],
   manifest: BenchmarkCorpusManifest,
   calls: string[],
   mutate?: (record: BenchmarkRunRecord) => void,
@@ -1213,10 +1408,11 @@ function benchmarkRecord(
   manifest: BenchmarkCorpusManifest,
 ): BenchmarkRunRecord {
   const decomposable = request.instance.familyId === "coding-cross-module";
-  const route = request.arm === "v3" && decomposable ? "fanout" : "direct";
-  const elapsedMs = request.arm === "v3" ? (decomposable ? 650 : 1_100) : 1_000;
-  const costUsd = request.arm === "v3" ? (decomposable ? 0.35 : 0.5) : 1;
-  const qualityScore = request.arm === "v3" ? 97 : 100;
+  const candidate = request.arm !== "direct_sol";
+  const route = candidate && decomposable ? "fanout" : "direct";
+  const elapsedMs = candidate ? (decomposable ? 650 : 1_100) : 1_000;
+  const costUsd = candidate ? (decomposable ? 0.35 : 0.5) : 1;
+  const qualityScore = candidate ? 97 : 100;
   const qualityDefinitionSha256 = request.instance.artifacts.find(
     (artifact) => artifact.role === "validator",
   )!.sha256;

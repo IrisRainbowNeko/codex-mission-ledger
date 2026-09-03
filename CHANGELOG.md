@@ -2,6 +2,52 @@
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-09-03
+
+### Added
+
+- Added `balanced` and `quality` execution profiles across the runtime, one MCP tool, CLI,
+  snapshots, metrics, recovery, and both Monitor presentations. `balanced` is the public default.
+- Added `$agent-trio-quality` and `$agent-trio-quality-session`; the existing one-shot and session
+  skills now select balanced routing.
+- Added calibration-backed economic benchmark eligibility and a three-arm direct/balanced/quality
+  runner that reuses each direct Sol baseline record.
+- Added route telemetry for profile, route source, domain, leaves, waves, tier mix, critical path,
+  predicted ratios, and prediction error.
+
+### Changed
+
+- Balanced internal planning uses low effort by default and caps its workspace file index at 24
+  entries. Host routing retains normal Sol effort because that turn may directly execute work; the
+  benchmark warms each measured effort and estimates cold App Server planning with a 50% cache
+  assumption instead of assuming a 90% hit rate.
+- Detailed bounded tasks can take the zero-model direct path up to 900 objective characters;
+  explicit direct requests and valid host semantic plans still start no internal Sol planner.
+- Recovery/resume/idempotency work, review and synthesis, and office artifact capabilities retain
+  a Terra execution floor instead of being mechanically downgraded to Luna.
+- Balanced three-leaf plans must predict at least 20% lower critical-path time than the best
+  two-leaf grouping. Host benchmark plans retain Terra merge and medium/high risk choices.
+- Balanced host routing may finish a genuinely tiny or indivisible Sol task in the root, delegate
+  one Luna/Terra worker without planning, or submit a two-to-three-leaf foreground DAG.
+- Balanced fanout requires at least two independent 30-second units and 90 seconds of serial work;
+  quality keeps the V3.3 15-second, two-to-five-leaf policy and always delegates explicit calls.
+- Cost and latency predictions use matching history or an independent cold projection. Declared
+  leaf durations affect the candidate critical path but no longer inflate the direct baseline.
+- Exact caller-selected document, spreadsheet, presentation, and browser capabilities are carried
+  into host-planned leaves without broad domain-based capability activation.
+
+### Fixed
+
+- Authored numerical, paper-edit, DOCX, and PPTX validators accept equivalent correct notation and
+  natural labels while continuing to require every sealed value and artifact.
+- Host route parsing normalizes harmless plan metadata on an otherwise unambiguous direct/delegate
+  decision instead of aborting a benchmark pair.
+- Profile selection now survives process recovery, while legacy snapshots normalize to balanced.
+- Economic release preflight rejects unmeasured eligibility instead of accepting generator-authored
+  duration constants as development calibration.
+
+## [3.3.0] - 2026-09-02
+
 ### Added
 
 - Install two user-selectable skills over the same `agent_trio` MCP service: `$agent-trio` remains
@@ -9,11 +55,23 @@
   one explicit activation.
 - Session follow-ups start a new run with only the necessary prior goal, result, decisions, and
   artifact paths. A prior `waiting_input` run is resumed instead of duplicated.
+- Route observability reports whether the decision came from host Sol, internal Sol, or the
+  deterministic direct fast path, together with domain, leaves, waves, tier mix, and predicted
+  cost/time ratios.
 
 ### Changed
 
 - User installation, verification, doctor output, manifests, upgrades, and uninstall now manage
   both skills without adding hooks, global instructions, agent profiles, or another MCP service.
+- The current root Sol now owns semantic routing for explicit skill calls. It selects direct versus
+  fanout, domain, 2-5 complete work units, dependencies, and model floors; the runtime enforces only
+  permissions, limits, ownership, budget, DAG validity, and positive critical-path saving.
+- CLI and context-poor `auto` calls now use one adaptive Sol plan that may return one tightly coupled
+  execution task or a 2-5-leaf DAG. Cost and latency ratios are release metrics rather than lexical
+  admission gates.
+- Host plans support dependencies, multiple waves, Terra integration, medium/high risk, and one
+  anomaly-triggered lazy `PlanPatch`. Normal host execution starts no internal Sol thread and high
+  risk alone does not force a review.
 
 ## [3.2.0] - 2026-09-01
 

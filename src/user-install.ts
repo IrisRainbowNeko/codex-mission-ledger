@@ -45,6 +45,8 @@ export interface UserInstallLayout {
   agentsHome: string;
   skillDirectory: string;
   sessionSkillDirectory: string;
+  qualitySkillDirectory: string;
+  qualitySessionSkillDirectory: string;
   legacySkillDirectories: string[];
   profileDirectory: string;
   configToml: string;
@@ -65,6 +67,7 @@ export interface UserInstallOptions {
   jobRoot?: string;
   priceTable?: string;
   packageRoot?: string;
+  codexHome?: string;
 }
 
 export interface UserInstallResult {
@@ -114,6 +117,13 @@ export function resolveUserLayout(paths: UserInstallPaths): UserInstallLayout {
     agentsHome: join(paths.homeDirectory, ".agents"),
     skillDirectory: join(paths.homeDirectory, ".agents", "skills", "agent-trio"),
     sessionSkillDirectory: join(paths.homeDirectory, ".agents", "skills", "agent-trio-session"),
+    qualitySkillDirectory: join(paths.homeDirectory, ".agents", "skills", "agent-trio-quality"),
+    qualitySessionSkillDirectory: join(
+      paths.homeDirectory,
+      ".agents",
+      "skills",
+      "agent-trio-quality-session",
+    ),
     legacySkillDirectories: [
       join(paths.codexHome, "skills", "agent-trio"),
       join(paths.codexHome, "skills", "sol-terra-luna"),
@@ -152,6 +162,7 @@ export function installUserScope(
   const nextConfig = mergeUserConfig(existingConfig, {
     ...options,
     packageRoot: paths.packageRoot,
+    codexHome: paths.codexHome,
     jobRoot: options.jobRoot ?? join(layout.installDirectory, "jobs"),
   });
   if (nextConfig !== existingConfig) {
@@ -196,11 +207,32 @@ export function installUserScope(
     backups,
     removedLegacy,
   );
+  replaceUserSkill(
+    sourceSkillDirectory(paths.packageRoot, "agent-trio-quality"),
+    layout.qualitySkillDirectory,
+    previousManifest?.files.includes(layout.qualitySkillDirectory) ?? false,
+    layout.backupDirectory,
+    backups,
+    removedLegacy,
+  );
+  replaceUserSkill(
+    sourceSkillDirectory(paths.packageRoot, "agent-trio-quality-session"),
+    layout.qualitySessionSkillDirectory,
+    previousManifest?.files.includes(layout.qualitySessionSkillDirectory) ?? false,
+    layout.backupDirectory,
+    backups,
+    removedLegacy,
+  );
   const manifest: InstallManifest = {
     version: 3,
     packageRoot: paths.packageRoot,
-    files: [layout.skillDirectory, layout.sessionSkillDirectory],
-    mcpExecutable: mcpExecutable(paths.packageRoot),
+    files: [
+      layout.skillDirectory,
+      layout.sessionSkillDirectory,
+      layout.qualitySkillDirectory,
+      layout.qualitySessionSkillDirectory,
+    ],
+    mcpExecutable: mcpLauncher(paths.packageRoot),
   };
   atomicWrite(layout.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
@@ -210,6 +242,8 @@ export function installUserScope(
       layout.configToml,
       layout.skillDirectory,
       layout.sessionSkillDirectory,
+      layout.qualitySkillDirectory,
+      layout.qualitySessionSkillDirectory,
       layout.userAgentsMd,
       layout.manifestPath,
     ],
@@ -242,6 +276,14 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
   const skillMetadata = join(layout.skillDirectory, "agents", "openai.yaml");
   const sessionSkillMd = join(layout.sessionSkillDirectory, "SKILL.md");
   const sessionSkillMetadata = join(layout.sessionSkillDirectory, "agents", "openai.yaml");
+  const qualitySkillMd = join(layout.qualitySkillDirectory, "SKILL.md");
+  const qualitySkillMetadata = join(layout.qualitySkillDirectory, "agents", "openai.yaml");
+  const qualitySessionSkillMd = join(layout.qualitySessionSkillDirectory, "SKILL.md");
+  const qualitySessionSkillMetadata = join(
+    layout.qualitySessionSkillDirectory,
+    "agents",
+    "openai.yaml",
+  );
   const required = [
     layout.configToml,
     layout.manifestPath,
@@ -249,6 +291,10 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
     skillMetadata,
     sessionSkillMd,
     sessionSkillMetadata,
+    qualitySkillMd,
+    qualitySkillMetadata,
+    qualitySessionSkillMd,
+    qualitySessionSkillMetadata,
   ];
   for (const path of required) {
     if (!existsSync(path)) {
@@ -263,8 +309,11 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
   if (countTomlTable(config, "mcp_servers.agent_trio") !== 1) {
     problems.push("config.toml must contain exactly one mcp_servers.agent_trio table");
   }
-  if (!config.includes(JSON.stringify(mcpExecutable(paths.packageRoot)))) {
+  if (!config.includes(JSON.stringify(mcpLauncher(paths.packageRoot)))) {
     problems.push("mcp_servers.agent_trio does not point to this V3 package");
+  }
+  if (!config.includes(JSON.stringify(paths.codexHome))) {
+    problems.push("mcp_servers.agent_trio does not load this Codex home environment");
   }
   if (!/default_tools_approval_mode\s*=\s*"approve"/u.test(config)) {
     problems.push("mcp_servers.agent_trio must auto-approve its trusted local tool");
@@ -277,12 +326,19 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
   if (!manifest?.files.includes(layout.sessionSkillDirectory)) {
     problems.push("install manifest does not own the Agent Trio Session skill");
   }
+  if (!manifest?.files.includes(layout.qualitySkillDirectory)) {
+    problems.push("install manifest does not own the Agent Trio Quality skill");
+  }
+  if (!manifest?.files.includes(layout.qualitySessionSkillDirectory)) {
+    problems.push("install manifest does not own the Agent Trio Quality Session skill");
+  }
   const skillText = readOptional(skillMd);
   if (
     !/^name:\s*agent-trio\s*$/mu.test(skillText) ||
-    !skillText.includes("`agent_trio` MCP runtime") ||
-    !skillText.includes("exactly one `action=run` call") ||
-    !skillText.includes("MCP Apps monitor")
+    !skillText.includes("`agent_trio` MCP") ||
+    !skillText.includes("`monitorFirst=true`") ||
+    !skillText.includes("exactly one `action=status` call") ||
+    !/MCP\s+Apps monitor/mu.test(skillText)
   ) {
     problems.push("installed agent-trio skill does not implement embedded Monitor delegation");
   }
@@ -296,9 +352,10 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
   const sessionSkillText = readOptional(sessionSkillMd);
   if (
     !/^name:\s*agent-trio-session\s*$/mu.test(sessionSkillText) ||
-    !sessionSkillText.includes("`agent_trio` MCP runtime") ||
-    !sessionSkillText.includes("exactly one `action=run` call") ||
-    !sessionSkillText.includes("MCP Apps monitor") ||
+    !sessionSkillText.includes("`agent_trio` MCP") ||
+    !sessionSkillText.includes("`monitorFirst=true`") ||
+    !sessionSkillText.includes("exactly one `action=status` call") ||
+    !/MCP\s+Apps monitor/mu.test(sessionSkillText) ||
     !sessionSkillText.includes("previously invoked $agent-trio-session")
   ) {
     problems.push(
@@ -312,6 +369,20 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
   if (!/^\s*value:\s*"agent_trio"\s*$/mu.test(sessionMetadataText)) {
     problems.push("installed agent-trio-session skill must declare the agent_trio MCP dependency");
   }
+  verifyProfileSkill(
+    problems,
+    readOptional(qualitySkillMd),
+    readOptional(qualitySkillMetadata),
+    "agent-trio-quality",
+    false,
+  );
+  verifyProfileSkill(
+    problems,
+    readOptional(qualitySessionSkillMd),
+    readOptional(qualitySessionSkillMetadata),
+    "agent-trio-quality-session",
+    true,
+  );
 
   const agentsText = readOptional(layout.userAgentsMd);
   if (containsAgentInstructions(agentsText)) {
@@ -341,15 +412,43 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
   return { problems, warnings };
 }
 
+function verifyProfileSkill(
+  problems: string[],
+  skillText: string,
+  metadataText: string,
+  name: "agent-trio-quality" | "agent-trio-quality-session",
+  implicit: boolean,
+): void {
+  if (
+    !new RegExp(`^name:\\s*${name}\\s*$`, "mu").test(skillText) ||
+    !skillText.includes("`profile=quality`") ||
+    !skillText.includes("`monitorFirst=true`") ||
+    !/MCP\s+Apps monitor/mu.test(skillText)
+  ) {
+    problems.push(`installed ${name} skill does not implement quality-profile delegation`);
+  }
+  if (
+    !new RegExp(`^\\s*allow_implicit_invocation:\\s*${String(implicit)}\\s*$`, "mu").test(
+      metadataText,
+    )
+  ) {
+    problems.push(`installed ${name} skill has the wrong implicit invocation policy`);
+  }
+  if (!/^\s*value:\s*"agent_trio"\s*$/mu.test(metadataText)) {
+    problems.push(`installed ${name} skill must declare the agent_trio MCP dependency`);
+  }
+}
+
 export function mergeUserConfig(source: string, options: UserInstallOptions = {}): string {
   const packageRoot = options.packageRoot ?? process.cwd();
   const jobRoot = options.jobRoot ?? join(packageRoot, ".agent-trio-jobs");
+  const codexHome = options.codexHome ?? process.env["CODEX_HOME"] ?? join(userHome(), ".codex");
   const nodePath = options.nodePath ?? process.execPath;
   const next = cleanupLegacyConfig(source).trimEnd();
   const block = [
     "[mcp_servers.agent_trio]",
     `command = ${JSON.stringify(nodePath)}`,
-    `args = [${JSON.stringify(mcpExecutable(packageRoot))}]`,
+    `args = [${JSON.stringify(mcpLauncher(packageRoot))}, "--env-dir", ${JSON.stringify(codexHome)}]`,
     "startup_timeout_sec = 30",
     "tool_timeout_sec = 86400",
     'default_tools_approval_mode = "approve"',
@@ -435,13 +534,13 @@ function countTomlTable(source: string, table: string): number {
   return source.split(/\r?\n/u).filter((line) => line.trim() === header).length;
 }
 
-function mcpExecutable(packageRoot: string): string {
-  return join(packageRoot, "dist", "mcp", "server.js");
+function mcpLauncher(packageRoot: string): string {
+  return join(packageRoot, "dist", "mcp", "launcher.js");
 }
 
 function sourceSkillDirectory(
   packageRoot: string,
-  name: "agent-trio" | "agent-trio-session",
+  name: "agent-trio" | "agent-trio-session" | "agent-trio-quality" | "agent-trio-quality-session",
 ): string {
   return join(packageRoot, "skills", name);
 }
@@ -544,6 +643,14 @@ function assertInstallable(paths: UserInstallPaths): void {
     join(sourceSkillDirectory(paths.packageRoot, "agent-trio"), "agents", "openai.yaml"),
     join(sourceSkillDirectory(paths.packageRoot, "agent-trio-session"), "SKILL.md"),
     join(sourceSkillDirectory(paths.packageRoot, "agent-trio-session"), "agents", "openai.yaml"),
+    join(sourceSkillDirectory(paths.packageRoot, "agent-trio-quality"), "SKILL.md"),
+    join(sourceSkillDirectory(paths.packageRoot, "agent-trio-quality"), "agents", "openai.yaml"),
+    join(sourceSkillDirectory(paths.packageRoot, "agent-trio-quality-session"), "SKILL.md"),
+    join(
+      sourceSkillDirectory(paths.packageRoot, "agent-trio-quality-session"),
+      "agents",
+      "openai.yaml",
+    ),
   ];
   const missing = required.filter((path) => !existsSync(path));
   if (missing.length > 0) {
@@ -662,8 +769,8 @@ function scrubManagedCommands(value: unknown): unknown {
   );
 }
 
-function containsLegacyRuntime(source: string): boolean {
-  return /mcp_servers\.(?:hierarchical_codex|codex_mission_ledger)|codex-mission-ledger\/|hierarchical-codex\/(?:pre_|subagent_|run_hook)|task_claim|MISSION_ROUTE/u.test(
+export function containsLegacyRuntime(source: string): boolean {
+  return /mcp_servers\.(?:hierarchical_codex|codex_mission_ledger)|(?:codex-mission-ledger|hierarchical-codex)\/(?:pre_|subagent_|run_hook)|task_claim|MISSION_ROUTE/u.test(
     source,
   );
 }

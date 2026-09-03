@@ -1,7 +1,8 @@
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe as vitestDescribe, expect, it } from "vitest";
 import {
   createAuthoredCoreCorpus,
   createAuthoredCoreRoutingCorpus,
@@ -12,6 +13,12 @@ import {
   runSealedBenchmarkValidator,
 } from "../src/benchmark-validator.js";
 import { assertReleaseBenchmarkCorpus, parseOptions } from "../scripts/run-real-benchmark.js";
+import { calibrationFixture, ECONOMIC_FAMILY_IDS } from "./benchmark-calibration-fixture.js";
+
+const describe =
+  process.env["AGENT_TRIO_RUN_AUTHORED_CORE_TESTS"] === "1" && commandAvailable("soffice")
+    ? vitestDescribe
+    : vitestDescribe.skip;
 
 describe("authored core benchmark corpus", () => {
   it("covers all eighteen families with three distinct sealed instances", async () => {
@@ -91,7 +98,7 @@ describe("authored core benchmark corpus", () => {
   }, 300_000);
 
   it("passes the release corpus structural preflight", async () => {
-    const corpus = await createAuthoredCoreCorpus();
+    const corpus = await createAuthoredCoreCorpus(calibrationFixture(ECONOMIC_FAMILY_IDS));
     const byPath = new Map(corpus.artifacts.map((artifact) => [artifact.path, artifact.bytes]));
     const options = parseOptions(["--release", "--dynamic-tool", "--full"]);
     await expect(
@@ -454,3 +461,109 @@ describe("authored core benchmark corpus", () => {
     }
   }, 120_000);
 });
+
+vitestDescribe("authored core lightweight output contracts", () => {
+  it("accepts equivalent numerical notation and natural paper-edit wording", async () => {
+    const corpus = await createAuthoredCoreRoutingCorpus();
+    const byPath = new Map(corpus.artifacts.map((artifact) => [artifact.path, artifact.bytes]));
+    const workspace = await mkdtemp(join(tmpdir(), "agent-trio-light-contracts-"));
+    try {
+      const outputPath = join(workspace, ".agent-trio-benchmark", "model-output.txt");
+      await mkdir(dirname(outputPath), { recursive: true });
+      for (const [instanceId, output] of [
+        [
+          "algorithm-numerical-authored-01",
+          "[item:num-1a-case-01] mean 6.000; variance 8.500; trapezoid 18.000; S=2+5+7+10=24",
+        ],
+        [
+          "paper-edit-authored-01",
+          "[item:paper-edit-1] In this observational study of 184 participants, the exposed group reported an outcome that was 3.2 points higher on average, with a 95% CI from 0.8 to 5.6. Assignment was observational rather than randomized, and the outcome was self-reported. The estimate therefore describes an association and does not establish causality. The interval summarizes uncertainty around the estimated difference, while possible confounding, selection effects, and reporting error remain important limitations. These design constraints should guide interpretation of the result and prevent stronger causal conclusions from being drawn from the available evidence alone.",
+        ],
+      ] as const) {
+        const instance = corpus.manifest.instances.find(
+          (candidate) => candidate.instanceId === instanceId,
+        )!;
+        const validatorSeal = instance.artifacts.find((artifact) => artifact.role === "validator")!;
+        const full = parseSealedBenchmarkValidatorV1(
+          JSON.parse(new TextDecoder().decode(byPath.get(validatorSeal.path)!)) as unknown,
+        );
+        await writeFile(outputPath, output, "utf8");
+        await expect(
+          runSealedBenchmarkValidator(
+            { ...full, commandChecks: [full.commandChecks[0]!], requiredDeliverables: [] },
+            { workspace },
+          ),
+        ).resolves.toMatchObject({ score: 100, passedChecks: 1, totalChecks: 1 });
+      }
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts natural labels while retaining every office decision value", async () => {
+    const corpus = await createAuthoredCoreRoutingCorpus();
+    const byPath = new Map(corpus.artifacts.map((artifact) => [artifact.path, artifact.bytes]));
+    const workspace = await mkdtemp(join(tmpdir(), "agent-trio-office-contracts-"));
+    try {
+      const cases = [
+        {
+          instanceId: "office-document-authored-01",
+          checkId: "document-1a-json",
+          path: "data/document-1a/result.json",
+          content: JSON.stringify({
+            paragraphs: [
+              "Decision: Select Option B.",
+              "Option A costs $196,000 and exceeds the $180,000 cap by $16,000.",
+              "Option B costs $169,000 and is $11,000 below the cap.",
+              "Deadline 8 weeks. Mina owns confirmation due 2026-10-12.",
+            ],
+          }),
+        },
+        {
+          instanceId: "office-slides-authored-01",
+          checkId: "slides-1a-json",
+          path: "data/slides-1a/result.json",
+          content: JSON.stringify({
+            slides: [
+              { title: "Executive Status", bullets: ["Program slides-1a", "Completion: 62%"] },
+              {
+                title: "Budget and Delivery",
+                bullets: ["Approved budget: $420,000", "Spent: $365,000"],
+              },
+              {
+                title: "Risks and Actions",
+                bullets: ["Risk: supplier delay", "Owner: Mina", "Next gate: 2026-11-15"],
+              },
+            ],
+          }),
+        },
+      ] as const;
+      for (const testCase of cases) {
+        const instance = corpus.manifest.instances.find(
+          (candidate) => candidate.instanceId === testCase.instanceId,
+        )!;
+        const validatorSeal = instance.artifacts.find((artifact) => artifact.role === "validator")!;
+        const full = parseSealedBenchmarkValidatorV1(
+          JSON.parse(new TextDecoder().decode(byPath.get(validatorSeal.path)!)) as unknown,
+        );
+        const check = full.commandChecks.find((candidate) => candidate.id === testCase.checkId)!;
+        const target = join(workspace, testCase.path);
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, testCase.content, "utf8");
+        await expect(
+          runSealedBenchmarkValidator(
+            { ...full, commandChecks: [check], requiredDeliverables: [] },
+            { workspace },
+          ),
+        ).resolves.toMatchObject({ score: 100, passedChecks: 1, totalChecks: 1 });
+      }
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+function commandAvailable(command: string): boolean {
+  const result = spawnSync(command, ["--version"], { stdio: "ignore", timeout: 5_000 });
+  return result.status === 0;
+}

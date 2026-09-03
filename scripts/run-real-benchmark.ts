@@ -41,7 +41,10 @@ import {
   verifyBenchmarkCorpus,
   type BenchmarkEnvironmentEvidence,
   type BenchmarkArtifactReader,
+  type BenchmarkArm,
+  type BenchmarkCandidateArm,
   type BenchmarkExecutionRequest,
+  type BenchmarkExecutors,
   type BenchmarkModelUsageEvidence,
   type BenchmarkRunRecord,
   type BenchmarkUsageByStage,
@@ -66,6 +69,7 @@ import type { AppServer, JsonObject, TurnStartParams } from "../src/app-server/t
 import type {
   AgentTrioRequest,
   BatchResult,
+  CapabilityRef,
   HostSemanticPlan,
   JobSnapshot,
   ModelUsage,
@@ -141,6 +145,7 @@ export interface RunnerOptions {
   release: boolean;
   recoveryProfile: boolean;
   dynamicTool: boolean;
+  balancedOnly: boolean;
   v3Only: boolean;
   resume: boolean;
   planningMode: "host-sol" | "internal-sol" | "diagnostic-host";
@@ -393,27 +398,36 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     );
     return;
   }
-  let result: Awaited<ReturnType<typeof runPairedBenchmark>>;
+  let profileResults: Partial<
+    Record<Exclude<BenchmarkCandidateArm, "v3">, Awaited<ReturnType<typeof runPairedBenchmark>>>
+  >;
   try {
-    result = await runPairedBenchmark(
-      selectedManifest,
-      {
+    const completed: Partial<typeof profileResults> = {};
+    const profiles: readonly ("balanced" | "quality")[] = options.balancedOnly
+      ? ["balanced"]
+      : ["balanced", "quality"];
+    for (const profile of profiles) {
+      const executors: BenchmarkExecutors = {
         direct_sol: (request) =>
           executeOrReuseBenchmarkArm(completedRecords, request, () =>
             executeDirect(request, environment, evidenceRoot),
           ),
-        v3: (request) =>
+        [profile]: (request: Readonly<BenchmarkExecutionRequest>) =>
           executeOrReuseBenchmarkArm(completedRecords, request, () =>
             executeV3(request, environment, evidenceRoot),
           ),
-      },
-      {
+      };
+      completed[profile] = await runPairedBenchmark(selectedManifest, executors, {
         artifactReader,
         runArtifactReader,
         environment,
-        evaluation: options.release
-          ? { minimumInstancesPerFamily: 3, requireAllFamilies: true }
-          : { minimumInstancesPerFamily: 1, requireAllFamilies: false },
+        candidateArm: profile,
+        evaluation: {
+          ...(options.release
+            ? { minimumInstancesPerFamily: 3, requireAllFamilies: true }
+            : { minimumInstancesPerFamily: 1, requireAllFamilies: false }),
+          candidateArm: profile,
+        },
         onRecord: async (record) => {
           const key = benchmarkRecordKey(record.observation);
           if (!completedRecords.has(key)) {
@@ -425,11 +439,30 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
               `cost=${String(record.observation.costUsd)} elapsed=${String(record.observation.elapsedMs)}ms\n`,
           );
         },
-      },
-    );
+      });
+    }
+    profileResults = completed;
   } finally {
     await disposeAllPairRuntimes();
   }
+
+  const balancedResult = profileResults.balanced;
+  if (balancedResult === undefined) {
+    throw new Error("balanced benchmark did not produce an evaluation");
+  }
+
+  const records = [...completedRecords.values()];
+  const observations = records.map((record) => record.observation);
+  const result = {
+    suiteId: selectedManifest.suiteId,
+    manifestSha256: selectedManifest.manifestSha256,
+    records,
+    observations,
+    evaluation: balancedResult.evaluation,
+    evaluations: Object.fromEntries(
+      Object.entries(profileResults).map(([profile, value]) => [profile, value.evaluation]),
+    ),
+  };
 
   await writeFile(
     outputPath,
@@ -463,6 +496,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       observations: observationPath,
       pairCount: result.evaluation.pairCount,
       evaluation: result.evaluation,
+      evaluations: result.evaluations,
       ...(activeReleaseRecoveryProfile === null
         ? {}
         : { recoveryProfile: activeReleaseRecoveryProfile.path }),
@@ -499,10 +533,14 @@ function benchmarkRecordKey(
     familyId: string;
     instanceId: string;
     seed: string;
-    arm: "direct_sol" | "v3";
+    arm: BenchmarkArm;
   }>,
 ): string {
   return [value.familyId, value.instanceId, value.seed, value.arm].join("\0");
+}
+
+function benchmarkProfile(arm: BenchmarkArm): "balanced" | "quality" {
+  return arm === "quality" ? "quality" : "balanced";
 }
 
 export async function loadPartialBenchmarkRecords(
@@ -563,7 +601,12 @@ function partialBenchmarkRecord(value: unknown, line: number): BenchmarkRunRecor
       );
     }
   }
-  if (fields["arm"] !== "direct_sol" && fields["arm"] !== "v3") {
+  if (
+    fields["arm"] !== "direct_sol" &&
+    fields["arm"] !== "v3" &&
+    fields["arm"] !== "balanced" &&
+    fields["arm"] !== "quality"
+  ) {
     throw new Error(`benchmark resume record at line ${String(line)} has invalid observation.arm`);
   }
   return value as BenchmarkRunRecord;
@@ -663,9 +706,10 @@ export function parseOptions(argv: readonly string[]): RunnerOptions {
   let release = false;
   let recoveryProfile = false;
   let dynamicTool = false;
+  let balancedOnly = false;
   let v3Only = false;
   let resume = false;
-  let planningMode: RunnerOptions["planningMode"] = "internal-sol";
+  let planningMode: RunnerOptions["planningMode"] = "host-sol";
   const planningFlags = new Set<string>();
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -677,6 +721,8 @@ export function parseOptions(argv: readonly string[]): RunnerOptions {
       recoveryProfile = true;
     } else if (argument === "--dynamic-tool") {
       dynamicTool = true;
+    } else if (argument === "--balanced-only") {
+      balancedOnly = true;
     } else if (argument === "--v3-only") {
       v3Only = true;
     } else if (argument === "--resume") {
@@ -718,7 +764,7 @@ export function parseOptions(argv: readonly string[]): RunnerOptions {
       index += 1;
     } else if (argument === "--help" || argument === "-h") {
       process.stdout.write(
-        "usage: tsx scripts/run-real-benchmark.ts [--full] [--release --recovery-profile] [--dynamic-tool] [--resume] [--v3-only] [--force-delegated|--force-fanout] [--internal-sol-plan|--host-sol-plan|--host-plan] [--family ID] [--instance ID] [--limit N] [--corpus DIR] [--evidence DIR] [--output FILE]\n\nThe default measures a cheap root that completes one-turn work directly and calls strategy=auto only when fanout or stronger planning is warranted. The runtime then performs deterministic economic admission and invokes its internal Sol planner only for admitted fanout. --host-sol-plan measures the optional host-Sol semantic-plan path, and --host-plan injects a fixed diagnostic plan. --resume reuses verified completed arms from the output .records.jsonl after an interrupted paired run; use it only with unchanged code, corpus, provider, and evidence paths. --v3-only is an unpaired transport diagnostic and is never release evidence for the full suite. --force-delegated and --force-fanout are diagnostic route probes. --release requires --recovery-profile, --dynamic-tool, a complete release-qualified corpus, and natural runtime routing.\n",
+        "usage: tsx scripts/run-real-benchmark.ts [--full] [--release --recovery-profile] [--dynamic-tool] [--resume] [--balanced-only|--v3-only] [--force-delegated|--force-fanout] [--internal-sol-plan|--host-sol-plan|--host-plan] [--family ID] [--instance ID] [--limit N] [--corpus DIR] [--evidence DIR] [--output FILE]\n\nThe normal run executes direct Sol, balanced, and quality while reusing one verified direct record per instance. --balanced-only runs only the paired direct Sol and balanced arms. Host Sol selects root completion, one delegated worker, or a semantic DAG for balanced; quality always delegates and retains the wider V3.3 policy. --internal-sol-plan and --host-plan are diagnostics. --resume reuses verified completed arms from the output .records.jsonl only with unchanged code, corpus, provider configuration, and evidence paths. --v3-only, forced delegation, and forced fanout are diagnostics and never release evidence. --release requires --recovery-profile, --dynamic-tool, a complete calibration-qualified corpus, and natural host-Sol routing.\n",
       );
       process.exit(0);
     } else {
@@ -736,6 +782,12 @@ export function parseOptions(argv: readonly string[]): RunnerOptions {
   }
   if (release && v3Only) {
     throw new Error("--release forbids --v3-only");
+  }
+  if (release && balancedOnly) {
+    throw new Error("--release forbids --balanced-only because release evidence requires all arms");
+  }
+  if (v3Only && balancedOnly) {
+    throw new Error("--v3-only and --balanced-only are mutually exclusive");
   }
   if (resume && v3Only) {
     throw new Error("--resume is only supported for paired benchmark runs");
@@ -756,6 +808,7 @@ export function parseOptions(argv: readonly string[]): RunnerOptions {
     release,
     recoveryProfile,
     dynamicTool,
+    balancedOnly,
     v3Only,
     resume,
     planningMode,
@@ -1120,11 +1173,11 @@ export async function assertReleaseBenchmarkCorpus(
   if (!config.full || config.family !== null || config.instance !== null || config.limit !== null) {
     errors.push("release benchmark must run the full unfiltered corpus");
   }
-  if (config.planningMode !== "internal-sol" || config.forceFanout || config.forceDelegated) {
-    errors.push("release benchmark must use natural cheap-root routing without forced delegation");
+  if (config.planningMode !== "host-sol" || config.forceFanout || config.forceDelegated) {
+    errors.push("release benchmark must use natural host-Sol routing without forced delegation");
   }
   if (!config.dynamicTool) {
-    errors.push("release benchmark must include the complete cheap-root dynamic tool turn");
+    errors.push("release benchmark must include the complete host-Sol dynamic tool turn");
   }
   if (/diagnostic|development|synthetic|training/iu.test(manifest.suiteId)) {
     errors.push(
@@ -1142,6 +1195,11 @@ export async function assertReleaseBenchmarkCorpus(
     familyCounts.set(instance.familyId, (familyCounts.get(instance.familyId) ?? 0) + 1);
     if (instance.evaluationClass === "economic-decomposable") {
       economicInstanceCount += 1;
+      if (instance.eligibility === undefined) {
+        errors.push(`${identity} is missing independent development calibration`);
+      } else if (instance.eligibility.calibrationEvidenceSha256 === undefined) {
+        errors.push(`${identity} eligibility is not backed by a sealed calibration table`);
+      }
     } else if (instance.evaluationClass === "direct-fast-path") {
       directInstanceCount += 1;
     } else {
@@ -1621,6 +1679,7 @@ async function pairRuntimeFor(
         ...process.env,
         AGENT_TRIO_PRICE_TABLE: PRICE_TABLE_PATH,
         AGENT_TRIO_CODEX_HOME_MODE: "projected",
+        AGENT_TRIO_ALLOW_PLUGINS: "1",
       },
       turnTimeoutMs: BENCHMARK_TURN_TIMEOUT_MS,
     });
@@ -1658,9 +1717,22 @@ async function pairRuntimeFor(
         // The paired task text is already sealed. Root models sometimes normalize whitespace or
         // append a visible file index while constructing tool arguments; execute the canonical
         // objective so both arms still receive byte-identical task text.
+        const requestedLimits = parsed.limits ?? {};
         const canonicalRequest = markInternalPlannerDispatch({
           ...parsed,
           objective: promptFor(request),
+          limits: {
+            ...requestedLimits,
+            maxConcurrent: Math.min(requestedLimits.maxConcurrent ?? 3, 3),
+            maxLeaves: Math.min(requestedLimits.maxLeaves ?? 5, 5),
+            maxWaves: Math.min(requestedLimits.maxWaves ?? 3, 3),
+            maxSolLeaves: Math.min(requestedLimits.maxSolLeaves ?? 1, 1),
+            maxReplans: Math.min(requestedLimits.maxReplans ?? 1, 1),
+            deadlineMs: Math.min(
+              requestedLimits.deadlineMs ?? BENCHMARK_RUN_DEADLINE_MS,
+              BENCHMARK_RUN_DEADLINE_MS,
+            ),
+          },
         });
         const batch = await activeRuntime.service.handle(canonicalRequest);
         toolState.runs.push({ request: canonicalRequest, batch });
@@ -1716,7 +1788,14 @@ async function pairRuntimeFor(
       }
       toolState.phase = "warmup";
     }
-    for (const [model, effort] of [[request.baseline.model, request.baseline.effort]] as const) {
+    // Prompt caches are effort-specific on the measured provider. Warm every root effort used by
+    // the three arms so a cold low/medium route turn is not compared with a warm ultra baseline.
+    // Setup usage is intentionally excluded from every arm.
+    const warmupEfforts = [
+      ...new Set([request.baseline.effort, HOST_SOL_ADMISSION_EFFORT, HOST_SOL_PLANNER_EFFORT]),
+    ];
+    for (const effort of warmupEfforts) {
+      const model = request.baseline.model;
       const warmup = await hostAppServer.turnStart({
         threadId: sourceThreadId,
         input: [
@@ -2039,7 +2118,9 @@ async function executeV3(
   const routeRequest: RunRequest = {
     objective: promptFor(request),
     cwd: pair.workspace,
+    profile: benchmarkProfile(request.arm),
     domain: domainForFamily(request.instance.familyId),
+    capabilities: benchmarkCapabilitiesForFamily(request.instance.familyId),
     constraints: [
       pair.workspaceConfig.access === "readOnly"
         ? "read-only benchmark: do not modify files"
@@ -2061,14 +2142,14 @@ async function executeV3(
   try {
     if (localRoute?.route === "direct") {
       delegatedTier = recommendDirectTier(routeRequest);
-      const base = benchmarkEvidenceBase(evidenceRoot, request, "v3");
+      const base = benchmarkEvidenceBase(evidenceRoot, request, request.arm);
       await mkdir(base, { recursive: true });
       await writeFile(
         join(base, "local-route.json"),
         `${JSON.stringify({ decision: localRoute, tier: delegatedTier }, null, 2)}\n`,
         "utf8",
       );
-    } else if (decomposable && options.planningMode === "host-sol") {
+    } else if (options.planningMode === "host-sol") {
       const routed = await generateHostSolRouteDecision(pair, request, environment);
       if (routed.decision.mode === "plan") {
         semanticPlan = routed.decision.plan;
@@ -2076,7 +2157,7 @@ async function executeV3(
         delegatedTier = routed.decision.tier;
       }
       hostPlanningTurnId = routed.turnId;
-      const base = benchmarkEvidenceBase(evidenceRoot, request, "v3");
+      const base = benchmarkEvidenceBase(evidenceRoot, request, request.arm);
       await mkdir(base, { recursive: true });
       await writeFile(
         join(base, "host-route.json"),
@@ -2086,7 +2167,7 @@ async function executeV3(
       if (routed.decision.mode === "self") {
         const record = await buildRecord({
           request,
-          arm: "v3",
+          arm: request.arm,
           environment,
           startedAt,
           completedAt: new Date(),
@@ -2125,18 +2206,24 @@ async function executeV3(
       ...(semanticPlan === undefined ? {} : { semanticPlan }),
       integrate: true,
       limits: {
-        maxConcurrent: 5,
-        maxLeaves: 8,
+        maxConcurrent: 3,
+        maxLeaves: benchmarkProfile(request.arm) === "balanced" ? 3 : 5,
         maxWaves: 3,
         maxSolLeaves: 1,
-        maxReplans: semanticPlan === undefined ? 1 : 0,
+        maxReplans: 1,
         deadlineMs: BENCHMARK_RUN_DEADLINE_MS,
       },
     });
     const completedAt = new Date();
     const output = batch.finalResponse ?? batch.error ?? batch.needsAction ?? "";
     const actualRoute =
-      batch.plan === null ? (delegatedTier === null ? "direct" : "delegated") : "fanout";
+      batch.plan === null
+        ? delegatedTier === null && hostPlanningUsage.length === 0
+          ? "direct"
+          : "delegated"
+        : batch.leaves.length >= 2
+          ? "fanout"
+          : "delegated";
     const usageByStage =
       batch.metrics?.usageByStage === undefined
         ? emptyUsageByStage()
@@ -2149,7 +2236,7 @@ async function executeV3(
     usageByStage.planning = [...hostPlanningUsage, ...(usageByStage.planning ?? [])];
     const record = await buildRecord({
       request,
-      arm: "v3",
+      arm: request.arm,
       environment,
       startedAt,
       completedAt,
@@ -2193,7 +2280,9 @@ async function executeDynamicToolV3(
     const routeRequest: RunRequest = {
       objective: promptFor(request),
       cwd: pair.workspace,
+      profile: benchmarkProfile(request.arm),
       domain: domainForFamily(request.instance.familyId),
+      capabilities: benchmarkCapabilitiesForFamily(request.instance.familyId),
       constraints: [
         MCP_ROOT_DISPATCH_CONSTRAINT,
         pair.workspaceConfig.access === "readOnly"
@@ -2208,7 +2297,7 @@ async function executeDynamicToolV3(
     const rootMustAnswerDirectly = localRoute?.route === "direct";
     pair.toolState.phase = rootMustAnswerDirectly ? "v3-direct" : "v3";
     if (localRoute !== null) {
-      const base = benchmarkEvidenceBase(evidenceRoot, request, "v3");
+      const base = benchmarkEvidenceBase(evidenceRoot, request, request.arm);
       await mkdir(base, { recursive: true });
       await writeFile(
         join(base, "local-route.json"),
@@ -2238,8 +2327,10 @@ async function executeDynamicToolV3(
             action: "run",
             objective: promptFor(request),
             cwd: pair.workspace,
+            profile: benchmarkProfile(request.arm),
             strategy: "fanout",
             domain: domainForFamily(request.instance.familyId),
+            capabilities: routeRequest.capabilities,
             semanticPlan: diagnosticPathPlan(request, pair.workspaceConfig.access),
             integrate: true,
           }),
@@ -2255,9 +2346,11 @@ async function executeDynamicToolV3(
                 action: "run",
                 objective: promptFor(request),
                 cwd: pair.workspace,
+                profile: benchmarkProfile(request.arm),
                 strategy: "direct",
                 directTier: "luna",
                 domain: domainForFamily(request.instance.familyId),
+                capabilities: routeRequest.capabilities,
                 constraints: [
                   pair.workspaceConfig.access === "readOnly"
                     ? "read-only benchmark: do not modify files"
@@ -2271,16 +2364,20 @@ async function executeDynamicToolV3(
             ? [
                 "MODE: TOOL. This is a mandatory host-Sol fanout probe. Do not solve the task yourself.",
                 "Create a valid 2-5 task semanticPlan from the task and workspace file index already supplied, then call mcp__agent_trio__agent_trio exactly once.",
-                `Use action=run, objective=${JSON.stringify(promptFor(request))}, cwd=${JSON.stringify(pair.workspace)}, strategy=fanout, domain=${JSON.stringify(domainForFamily(request.instance.familyId))}, integrate=true, and the semanticPlan.`,
+                `Use action=run, objective=${JSON.stringify(promptFor(request))}, cwd=${JSON.stringify(pair.workspace)}, profile=${benchmarkProfile(request.arm)}, strategy=fanout, domain=${JSON.stringify(domainForFamily(request.instance.familyId))}, capabilities=${JSON.stringify(routeRequest.capabilities)}, integrate=true, and the semanticPlan.`,
                 `The plan must use access=${pair.workspaceConfig.access}, merge=deterministic, risk=low. Each task must contain only goal, paths, after, floor, and expectedSeconds; use floor=null for Luna, only real workspace-relative paths, and a real worker-time estimate above ${String(FANOUT_MIN_TASK_SECONDS)} seconds.`,
                 "Choose the smallest useful 2-5 leaves that minimize end-to-end wall time while keeping total cost below 40% of direct Sol. Add leaves only when their predicted parallel gain repays fixed startup cost.",
                 "The complete tool result is user-visible. After it returns, reply only: Agent Trio completed. Do not repeat finalResponse.",
               ].join("\n\n")
             : [
-                "Complete the task already supplied. The agent_trio tool description and schema are binding: call it exactly once only when you can provide an economically valid fanout semanticPlan; otherwise answer directly.",
-                `A tool call must reuse the supplied task as objective and set cwd=${JSON.stringify(pair.workspace)}, domain=${JSON.stringify(domainForFamily(request.instance.familyId))}, action=run, strategy=fanout, and integrate=true.`,
-                "When planning, use only the supplied objective and Workspace file index; do not run commands or inspect files. semanticPlan must contain access, merge, risk, and tasks. Every task contains only goal, paths, after, floor, and expectedSeconds; never add id.",
-                "After a successful tool call reply only: Agent Trio completed. If no call is worthwhile, return only the final task answer.",
+                benchmarkProfile(request.arm) === "balanced"
+                  ? "MODE: ROUTE. Make one semantic choice. For a clear single deliverable needing one focused inspect/edit/verify sequence, or indivisible Sol reasoning, fully solve and verify it now without calling a tool; never return a promise or future-tense status. Otherwise call mcp__agent_trio__agent_trio exactly once."
+                  : "MODE: TOOL. Quality profile always delegates. Do not solve, inspect, modify, or validate the task yourself. Call mcp__agent_trio__agent_trio exactly once.",
+                `Reuse the supplied task as objective and set cwd=${JSON.stringify(pair.workspace)}, domain=${JSON.stringify(domainForFamily(request.instance.familyId))}, profile=${benchmarkProfile(request.arm)}, capabilities=${JSON.stringify(routeRequest.capabilities)}, action=run, hostAccess=workspaceWrite, hostApproval=never, and integrate=true. Do not invent another permission or approval value.`,
+                "For a tightly coupled task choose strategy=direct and directTier=luna or terra. Use Luna for bounded local implementation, extraction, mechanical editing, and exact work with a clear contract. Use Terra for state recovery, resume/idempotency logic, coupled multi-file work, ordinary debugging, review/synthesis, and one office artifact.",
+                `For useful parallel work choose strategy=fanout and provide semanticPlan with access=${pair.workspaceConfig.access} and ${benchmarkProfile(request.arm) === "balanced" ? "2-3" : "2-5"} complete tasks. Set merge to deterministic unless semantic synthesis truly requires terra and set risk to low, medium, or high. Default to two tasks and group homogeneous inputs. ${benchmarkProfile(request.arm) === "balanced" ? "Use three only for three substantial streams when it lowers the critical path by at least 20% versus the best two-task grouping; every leaf must exceed 30 seconds and total serial work must be at least 90 seconds." : "Use three for three real streams and reserve four or five for large corpora; every leaf must exceed 15 seconds."} Every added leaf must reduce the critical path.`,
+                "Each semanticPlan task contains only goal, paths, after, floor, and expectedSeconds. In workspace-write plans, paths grant exclusive write ownership: make them pairwise disjoint and include only files or directories that leaf may modify. Do not include README, tests, shared manifests, or other read-only context unless exactly one leaf must edit them. Default floor=null for Luna; use Terra or at most one Sol specialist only when the leaf truly requires it. Use only the supplied objective and Workspace file index, and do not add review or audit leaves.",
+                "After the tool returns reply only: Agent Trio completed. Do not repeat finalResponse.",
               ].join("\n\n");
     const rootThreadId = rootMustAnswerDirectly
       ? await requireThreadFork(pair.hostAppServer)({
@@ -2342,14 +2439,19 @@ async function executeDynamicToolV3(
     });
     const toolRun = pair.toolState.runs[0];
     if (toolRun === undefined) {
-      if (options.forceDelegated || options.forceFanout || localRouteRequiresTool(localRoute)) {
+      if (
+        (hostSolMode && benchmarkProfile(request.arm) === "quality") ||
+        options.forceDelegated ||
+        options.forceFanout ||
+        localRouteRequiresTool(localRoute)
+      ) {
         throw new Error(
           `root model did not perform the required agent_trio tool call; final output: ${rootOutput.slice(0, 2_000)}`,
         );
       }
       const record = await buildRecord({
         request,
-        arm: "v3",
+        arm: request.arm,
         environment,
         startedAt,
         completedAt: new Date(),
@@ -2381,7 +2483,11 @@ async function executeDynamicToolV3(
 
     const { batch } = toolRun;
     const output = batch.finalResponse ?? batch.error ?? batch.needsAction ?? "";
-    const actualRoute = batch.plan === null ? "delegated" : "fanout";
+    const actualRoute =
+      (toolRun.request.action === "run" && toolRun.request.strategy === "fanout") ||
+      batch.plan !== null
+        ? "fanout"
+        : "delegated";
     const usageByStage = batchUsageByStage(batch);
     const hostPlanned = batch.plan !== null && batch.metrics?.plannerSkipped === true;
     const rootStage: BenchmarkUsageStage = rootUsesSol
@@ -2392,7 +2498,7 @@ async function executeDynamicToolV3(
     usageByStage[rootStage] = [...rootUsage, ...(usageByStage[rootStage] ?? [])];
     const record = await buildRecord({
       request,
-      arm: "v3",
+      arm: request.arm,
       environment,
       startedAt,
       completedAt: new Date(),
@@ -2558,6 +2664,11 @@ async function generateHostSolRouteDecision(
   request: Readonly<BenchmarkExecutionRequest>,
   environment: BenchmarkEnvironmentEvidence,
 ) {
+  const profile = benchmarkProfile(request.arm);
+  const minimumSeconds = profile === "balanced" ? 30 : 15;
+  // The same host turn may execute a bounded task, so it needs normal Sol reliability. Only the
+  // separate internal fallback planner uses low effort for ordinary Balanced planning.
+  const routeEffort = HOST_SOL_PLANNER_EFFORT;
   const threadId = pair.sourceThreadId;
   const turn = await pair.hostAppServer.turnStart({
     threadId,
@@ -2565,10 +2676,12 @@ async function generateHostSolRouteDecision(
       textInput(
         [
           "Choose the cheapest execution shape for the task already supplied.",
-          "MODE: ROUTE. Delegation pays for this Sol turn plus every worker. Delegate only when total cost is likely at most 40% of completing with Sol and latency at most 70%; a concise single-Sol answer below about 700 output tokens usually cannot repay delegation, so complete it now.",
-          "To complete now, return mode=direct with the full final answer in answer, access/merge/risk=null, and tasks=[]. To delegate the whole bounded task, use the exact answer delegate:luna or delegate:terra instead; prefer Luna unless materially insufficient.",
-          `Return mode=plan, answer=null, access=${pair.workspaceConfig.access}, merge=deterministic, risk=low, and a compact plan only when at least two independent tasks are each expected to take over ${String(FANOUT_MIN_TASK_SECONDS)} seconds and parallel execution will repay planning and integration overhead.`,
-          "For a plan use the smallest useful 2-5 tasks. For homogeneous path partitions set goal=null; otherwise keep it under 80 characters. paths are workspace-relative; after contains zero-based prerequisite task indexes. Use floor=null unless Luna is insufficient. The runtime creates ids and derives all other fields.",
+          profile === "balanced"
+            ? "MODE: ROUTE. Fully complete and verify a clear single deliverable here when it is confined to one file or target plus its focused verification, or when it needs indivisible Sol reasoning. Use the required inspect/edit/test tools before returning mode=direct; a promise, plan, or future-tense status is not completion. A few ordinary tool calls are still direct work, and delegating an explicit single-file fix or similarly bounded task is a routing failure. Otherwise delegate one worker or a useful DAG. Cost and latency targets are guidance, not output-contract gates."
+            : "MODE: ROUTE. Quality profile always delegates. Never solve the task in this turn; choose one worker or a useful DAG.",
+          `${profile === "balanced" ? "To complete now, return mode=direct with the full final answer in answer, access/merge/risk=null, and tasks=[]. " : ""}To delegate the whole bounded task, use the exact answer delegate:luna or delegate:terra. Prefer Luna for mechanical work; use Terra for state recovery, resume/idempotency logic, coupled debugging, review/synthesis, or one office artifact.`,
+          `Return mode=plan and answer=null only when at least two independent tasks each exceed ${String(minimumSeconds)} seconds${profile === "balanced" ? " and total serial work is at least 90 seconds" : ""}. Set access=${pair.workspaceConfig.access}, merge=deterministic unless semantic synthesis requires terra, and risk=low, medium, or high from the actual task.`,
+          `For a plan use the smallest useful ${profile === "balanced" ? "2-3" : "2-5"} tasks. Group homogeneous inputs.${profile === "balanced" ? " Use three only when it lowers the critical path by at least 20% versus the best two-task grouping." : ""} For homogeneous path partitions set goal=null; otherwise keep it under 80 characters. paths are workspace-relative; after contains zero-based prerequisite indexes. Use floor=null unless Luna is insufficient.`,
           ...(options.forceFanout
             ? ["This diagnostic run explicitly requires fanout; return a valid plan."]
             : []),
@@ -2587,7 +2700,7 @@ async function generateHostSolRouteDecision(
     },
     model: request.baseline.model,
     ...(environment.serviceTier === "default" ? {} : { serviceTier: environment.serviceTier }),
-    effort: HOST_SOL_PLANNER_EFFORT,
+    effort: routeEffort,
     summary: "none",
     personality: "pragmatic",
     outputSchema: jsonValue(ROOT_SOL_OUTPUT_SCHEMA),
@@ -2598,13 +2711,16 @@ async function generateHostSolRouteDecision(
   });
   assertNoSubAgentActivity(completed.items, "host Sol router");
   const decision = parseRootSolRouteDecision(finalMessage(completed.items));
+  if (profile === "quality" && decision.mode === "self") {
+    throw new Error("quality host Sol returned self completion instead of delegation");
+  }
   const usage = await captureTurnUsage({
     server: pair.hostAppServer,
     threadId,
     turnId,
     model: request.baseline.model,
     tier: "sol",
-    effort: HOST_SOL_PLANNER_EFFORT,
+    effort: routeEffort,
     priceTable: prices,
   });
   return { decision, usage, turnId };
@@ -2670,9 +2786,13 @@ function rootSolOutputSchema(): Readonly<Record<string, unknown>> {
       merge: {
         ...hostSchema.properties.merge,
         type: ["string", "null"],
-        enum: ["deterministic", null],
+        enum: ["deterministic", "terra", null],
       },
-      risk: { ...hostSchema.properties.risk, type: ["string", "null"], enum: ["low", null] },
+      risk: {
+        ...hostSchema.properties.risk,
+        type: ["string", "null"],
+        enum: ["low", "medium", "high", null],
+      },
       tasks: {
         type: "array",
         minItems: 0,
@@ -2687,8 +2807,8 @@ function parseRootSolEnvelope(output: string): {
   mode: "direct" | "plan";
   answer: string | null;
   access: "readOnly" | "workspaceWrite" | null;
-  merge: "deterministic" | null;
-  risk: "low" | null;
+  merge: "deterministic" | "terra" | null;
+  risk: "low" | "medium" | "high" | null;
   tasks: unknown[];
 } {
   const parsed = JSON.parse(output) as unknown;
@@ -2711,11 +2831,11 @@ function parseRootSolEnvelope(output: string): {
   if (access !== null && access !== "readOnly" && access !== "workspaceWrite") {
     throw new Error("root Sol output access must be readOnly, workspaceWrite, or null");
   }
-  if (merge !== null && merge !== "deterministic") {
-    throw new Error("root Sol output merge must be deterministic or null");
+  if (merge !== null && merge !== "deterministic" && merge !== "terra") {
+    throw new Error("root Sol output merge must be deterministic, terra, or null");
   }
-  if (risk !== null && risk !== "low") {
-    throw new Error("root Sol output risk must be low or null");
+  if (risk !== null && risk !== "low" && risk !== "medium" && risk !== "high") {
+    throw new Error("root Sol output risk must be low, medium, high, or null");
   }
   return {
     mode: record["mode"],
@@ -2775,13 +2895,10 @@ export function parseRootSolRouteDecision(output: string): RootSolRouteDecision 
   if (envelope.mode === "plan") {
     return { mode: "plan", plan: parseRootSolPlanOutput(output) };
   }
-  if (
-    envelope.answer === null ||
-    envelope.access !== null ||
-    envelope.merge !== null ||
-    envelope.risk !== null ||
-    envelope.tasks.length !== 0
-  ) {
+  // For direct/delegate decisions the plan metadata has no semantic effect. Structured-output
+  // models occasionally repeat valid access/merge/risk values even when tasks is empty; normalize
+  // that mechanical noise instead of failing an otherwise unambiguous route.
+  if (envelope.answer === null || envelope.tasks.length !== 0) {
     throw new Error("route decision must return a direct answer or delegation with no plan fields");
   }
   if (envelope.answer === "delegate:luna" || envelope.answer === "delegate:terra") {
@@ -2795,7 +2912,7 @@ export function parseRootSolRouteDecision(output: string): RootSolRouteDecision 
 
 interface RecordInput {
   request: Readonly<BenchmarkExecutionRequest>;
-  arm: "direct_sol" | "v3";
+  arm: BenchmarkArm;
   environment: BenchmarkEnvironmentEvidence;
   startedAt: Date;
   completedAt: Date;
@@ -2879,6 +2996,9 @@ async function buildRecord(input: RecordInput): Promise<BenchmarkRunRecord> {
   const costUsd = Object.values(usage)
     .flat()
     .reduce((sum, item) => sum + (item.estimatedCostUsd ?? 0), 0);
+  const planningCostUsd = [...usage.admission, ...usage.planning, ...usage.replan]
+    .filter((item) => item.tier === "sol")
+    .reduce((sum, item) => sum + (item.estimatedCostUsd ?? 0), 0);
   const observation: BenchmarkObservation = {
     familyId: input.request.instance.familyId,
     instanceId: input.request.instance.instanceId,
@@ -2887,6 +3007,7 @@ async function buildRecord(input: RecordInput): Promise<BenchmarkRunRecord> {
     qualityScore,
     elapsedMs,
     costUsd: costUsd > 0 ? costUsd : null,
+    planningCostUsd,
     route: input.route,
     launchSkewMs: input.launchSkewMs,
     plannerTurns: input.plannerTurns,
@@ -2920,7 +3041,7 @@ async function buildRecord(input: RecordInput): Promise<BenchmarkRunRecord> {
 function benchmarkEvidenceBase(
   evidenceRoot: string,
   request: Readonly<BenchmarkExecutionRequest>,
-  arm: "direct_sol" | "v3",
+  arm: BenchmarkArm,
 ): string {
   const family = safeEvidenceSegment(request.instance.familyId, "familyId");
   const instance = safeEvidenceSegment(request.instance.instanceId, "instanceId");
@@ -3117,7 +3238,7 @@ function scoreOutput(
 function toBenchmarkUsage(
   source: Partial<Record<BenchmarkUsageStage, readonly ModelUsage[]>>,
   request: Readonly<BenchmarkExecutionRequest>,
-  arm: "direct_sol" | "v3",
+  arm: BenchmarkArm,
   ids: { threadId: string | null; turnId: string | null },
 ): BenchmarkUsageByStage {
   const result = emptyUsageByStage();
@@ -3125,7 +3246,7 @@ function toBenchmarkUsage(
     const entries = source[stage] ?? [];
     result[stage] = entries.map((usage) => {
       const rootSolDirect =
-        arm === "v3" &&
+        arm !== "direct_sol" &&
         stage === "direct" &&
         usage.model === request.baseline.model &&
         ids.threadId !== null;
@@ -3204,6 +3325,21 @@ function domainForFamily(
     return prefix;
   }
   return "autoResearch";
+}
+
+function benchmarkCapabilitiesForFamily(familyId: string): CapabilityRef[] {
+  switch (familyId) {
+    case "office-sheet":
+      return [{ kind: "skill", name: "spreadsheets:Spreadsheets" }];
+    case "office-document":
+      return [{ kind: "skill", name: "documents:documents" }];
+    case "office-slides":
+      return [{ kind: "skill", name: "presentations:Presentations" }];
+    case "research-live":
+      return [{ kind: "skill", name: "browser:control-in-app-browser" }];
+    default:
+      return [];
+  }
 }
 
 function isDecomposableFamily(familyId: string): boolean {

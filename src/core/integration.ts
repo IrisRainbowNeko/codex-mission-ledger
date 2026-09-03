@@ -14,6 +14,9 @@ import type {
 export type MaybePromise<T> = T | Promise<T>;
 
 export type PlannedExecutionRoute = "fanout" | "planned_single";
+export type PlannerRequestedRoute = PlannedExecutionRoute | "adaptive";
+
+export type RouteSource = "host_sol" | "internal_sol" | "deterministic_direct";
 
 export interface WaitingTurnContext {
   threadId: string;
@@ -34,9 +37,10 @@ export type AdmissionDecision =
       estimatedDirectSeconds?: number | null;
       estimatedFanoutSeconds?: number | null;
       suggestedMaxLeaves?: number;
+      routeSource?: RouteSource;
     }
   | {
-      route: PlannedExecutionRoute;
+      route: PlannerRequestedRoute;
       reason: string;
       usage?: ModelUsage[];
       threadId?: string | null;
@@ -45,6 +49,7 @@ export type AdmissionDecision =
       estimatedDirectSeconds?: number | null;
       estimatedFanoutSeconds?: number | null;
       suggestedMaxLeaves?: number;
+      routeSource?: RouteSource;
     }
   | {
       route: "waiting_input";
@@ -58,6 +63,7 @@ export type AdmissionDecision =
       estimatedDirectSeconds?: number | null;
       estimatedFanoutSeconds?: number | null;
       suggestedMaxLeaves?: number;
+      routeSource?: RouteSource;
     };
 
 export interface AdmissionController {

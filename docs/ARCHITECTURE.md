@@ -1,13 +1,14 @@
-# Agent Trio V3 Architecture
+# Agent Trio V3.4 Architecture
 
 ## Objective
 
-Agent Trio V3 minimizes elapsed time and actual model cost subject to quality staying close to a
-direct `gpt-5.6-sol/ultra` baseline. It separates semantic decisions from execution mechanics:
+Agent Trio V3.4 exposes two policies over the same runtime: `balanced` minimizes elapsed time and
+actual model cost while staying close to a direct `gpt-5.6-sol/ultra` baseline; `quality` preserves
+the wider, always-delegate V3.3 policy. Both separate semantic decisions from execution mechanics:
 
 - Sol decides how a complex task should be decomposed and which model tier each package needs.
-- TypeScript performs zero-model economic admission, decides when a ready package starts, joins
-  dependencies, and stops at hard limits.
+- TypeScript handles the bounded direct fast path, validates hard execution constraints, decides
+  when a ready package starts, joins dependencies, and stops at explicit limits.
 - Terra performs capability-dependent admission, difficult direct work, and semantic integration
   only when local reduction is insufficient.
 - Luna is the default leaf for bounded work; Terra handles genuine cross-file reasoning;
@@ -46,25 +47,38 @@ version or `userAgent` string.
 
 ## Request Flow
 
-### Direct Path
+### Semantic Routing
 
 ```text
-RunRequest -> local economic router -> direct execution -> BatchResult
+balanced Sol host -> root completion -----------> no runtime call
+                  |-> direct + tier ------------> one execution agent
+                  `-> fanout + semanticPlan ----> validated 2-3 leaf DAG
+
+quality Sol host  -> direct + tier -------------> one execution agent
+                  `-> fanout + semanticPlan ----> validated 2-5 leaf DAG
+
+CLI / uncertain caller -> deterministic direct fast path
+                       `-> one adaptive Sol turn -> one agent or DAG
 ```
 
 The local router returns one of:
 
-- `direct` for short, sequential, highly coupled, or otherwise unsuitable work;
-- `fanout` when parallel work is likely to repay planning and integration;
+- `direct` when host Sol selects one execution agent or the positive fast path proves a small,
+  bounded single objective;
+- `fanout` when host Sol supplies a semantic plan or explicit fanout is requested;
+- `adaptive` when one internal Sol turn must choose between a single task and a profile-bounded DAG;
 - `waiting_input` when real permission or external information is missing.
 
-A direct result does not start Sol Planner or any leaf. Automatic fanout is admitted only with a
-complete price table and estimates at or below 40% of direct-Sol cost and 70% of direct-Sol
-latency. Small decomposable tasks therefore remain direct when Sol planning cannot repay itself.
-Bounded coding/general direct tasks use Luna to avoid paying Terra for a cold child context.
-Only difficult algorithmic, research, architectural, and security-sensitive direct work uses Terra;
-bounded exact calculations remain on Luna. Capability-dependent tasks retain Terra admission and can
-continue in that thread.
+A runtime direct result does not start Sol Planner or fanout leaves. A balanced skill may instead
+finish one bounded deliverable or an indivisible Sol task in the root without calling MCP; quality
+always delegates.
+The zero-model runtime fast path is positive, not exhaustive: it recognizes only clearly bounded
+single-objective work. Prompt length, Chinese character count, domain, and decomposition keywords
+do not prove direct or fanout. All uncertain medium or larger `auto` requests go to adaptive
+internal Sol planning.
+
+Bounded coding/general direct tasks use Luna. Difficult algorithmic, research, architectural, and
+security-sensitive coupled work uses Terra; bounded exact calculations remain on Luna.
 
 Caller-selected skills are supplied as structured App Server inputs during admission, so Terra can
 finish a small document or office task in that first turn. Without an explicit selection, Terra
@@ -72,36 +86,46 @@ sees a compact capability catalog: unique skill names omit paths, while duplicat
 for deterministic disambiguation. Terra may request only exact catalog entries for its one direct
 continuation; the resolver remains authoritative and rejects unavailable or disabled capabilities.
 
-### Fanout Path
+### Planned Execution
 
 ```text
-local economic admission
+host semanticPlan or adaptive Sol micro-plan
       |
       v
-Sol micro-plan -> validate -> prepare workspaces -> run DAG
+validate hard constraints -> prepare workspaces -> run DAG
                                                   |
                                                   v
                        local reduction or Terra integration + validation
                                                   |
                                                   v
-                                  optional same-thread Sol review
+                                  anomaly-only lazy Sol PlanPatch
                                                   |
                                                   v
                                   apply isolated writer patches
 ```
 
-Automatic admission compares the full candidate path against the product baseline,
-`gpt-5.6-sol/ultra`, rather than against the cheaper Luna/Terra direct fallback. The estimate uses
-the configured internal planner transport: App Server carries its measured cold Codex context,
-while Responses uses the compact tool-free envelope. This prevents both false rejection of useful
-fanout and false admission caused by pretending the heavy planner input is cached.
+Cost and latency projections compare the complete candidate path against direct
+`gpt-5.6-sol/ultra`. Matching historical p50/p95 data supplies the direct baseline; an independent
+cold projection is used when no history exists. Host-declared leaf durations affect only the DAG
+critical path and cannot inflate that baseline. Ratios are reported in metrics and used by Sol as
+planning guidance and by the release benchmark. Missing the 40% cost or 70% latency target does not
+veto a valid host plan.
+Runtime rejection is limited to hard failures: permission mismatch, cycles, unsafe concurrent write
+ownership, explicit limits or `maxCostUsd`, fewer than two useful concurrently runnable leaves, or
+no positive critical-path saving using the plan's declared durations.
 
-There are two Sol entry paths. In Desktop, the current root Sol can supply the compact
-`semanticPlan` directly with the `agent_trio` call. The runtime expands IDs, low-risk defaults,
-effort, and scheduler fields mechanically, adopts the plan with zero additional planner usage, and
-sets `maxReplans=0`. This path is limited to low-risk deterministic fanout; semantic integration,
-high-risk work, or contract changes use the full internal Sol planner session instead. The internal
-path remains available to CLI callers that do not already have a Sol plan.
+There are two Sol entry paths. In Desktop, VS Code, and interactive CLI, the current root Sol can
+supply the compact `semanticPlan` directly with the `agent_trio` call. The runtime expands IDs,
+effort, and scheduler fields mechanically and adopts low/medium/high-risk, dependency-bearing,
+multi-wave, deterministic or Terra-integrated plans with zero additional planning usage. The host
+session has a logical `external:<runId>` ID. It creates no internal Sol thread during normal
+execution.
+
+If a leaf reports a blocker or contract change, results materially conflict, a non-mechanical
+validator fails, or confidence becomes too low, the first PlanPatch request lazily starts one real
+internal Sol thread. That continuation receives the host plan, completed results, and trigger and
+may change only affected work. Its thread ID is persisted for recovery. Successful tasks are never
+replayed merely because the continuation was created.
 
 The internal planner has two transports. The default `auto` mode resolves a Responses-compatible
 provider from explicit environment variables or the active local Codex configuration and auth,
@@ -110,11 +134,12 @@ and strict JSON schema, with no executable tools or Codex skill catalog. Plan an
 self-contained, so the transport can keep local thread identity without storing provider-side
 responses.
 
-The root Sol uses low effort for a bounded admission or single-worker delegation and medium effort
-when it constructs a fanout plan. Internal Sol planning uses low for an explicit independent path
-partition, high for difficult algorithm, architecture, security, cryptography, consensus, or race
-condition planning, and medium otherwise. This keeps expensive reasoning on semantic decisions
-that need it without charging high effort for obvious partitions.
+The root Sol chooses the semantic route before its tool call at the root session's current effort;
+the paired harness uses medium because that same turn may directly execute a bounded task. Only
+Balanced internal adaptive planning uses low effort by default. Difficult algorithm, architecture,
+security, cryptography, consensus, or race-condition planning still uses high effort. Quality uses
+medium effort for ordinary coupled planning. This keeps expensive reasoning on semantic decisions
+that need it without charging another planner turn after a valid host plan.
 
 When a low-risk objective explicitly names independent roots, requires no capability assignment,
 and the workspace is read-only or a clean Git repository, the strict Sol schema contains only the
@@ -123,29 +148,27 @@ deterministic integration. Sol still chooses the semantic partition; it does not
 tokens repeating mechanical defaults. Dirty or non-Git writer tasks and dependency-bearing DAGs
 cannot use this profile.
 
-Host tasks with no explicit tier floor are bounded Luna work and default to low effort. A
-`floor=terra` or `floor=sol` remains authoritative. The host protocol carries only `goal`, `paths`,
-numeric dependency indexes, and `floor`; the runtime, not Sol, supplies repetitive transport and
-policy fields.
+Host tasks with no explicit tier floor are bounded Luna work unless their contract requires a
+capability, office artifact, state recovery, resume/idempotency behavior, review, or semantic
+synthesis; those shapes retain Terra. A `floor=terra` or `floor=sol` remains authoritative. The host
+protocol carries only `goal`, `paths`, numeric dependency indexes, and `floor`; the runtime, not
+Sol, supplies repetitive transport and policy fields.
 
-The initial Sol turn returns a strict compact wire plan. The router selects a useful 2-5 leaf
-ceiling before this turn and binds that ceiling into Sol's output schema. Sol supplies only the
-semantic partition, tier floors, dependency indexes, capability indexes, expected durations, risk,
-and merge choice; TypeScript derives repetitive execution fields. The planner receives the user
-objective, domain, constraints, a bounded relevant-file index, relevant capability keys, compact
-model economics, route, and leaf ceiling. It does not receive cwd, key-file excerpts, full domain
-recipes, or the complete execution-limit object.
+The adaptive Sol turn returns a strict compact wire plan within the active profile ceiling. One
+task becomes `planned_single`; multiple tasks become a DAG. Balanced uses a 30-second leaf floor,
+at least 90 seconds of serial work, and at most three foreground or five durable leaves. Quality
+uses the V3.3 15-second floor and wider ceiling. Sol supplies domain when the caller did not, semantic
+partition, tier floors, dependency indexes, capability indexes, expected durations, risk, and merge
+choice; TypeScript derives repetitive execution fields. The planner receives the user objective,
+constraints, a bounded relevant-file index, relevant capability keys, compact model economics, and
+execution ceilings. It does not receive cwd, key-file excerpts, full domain recipes, or an
+unbounded workspace dump.
 
-After deterministic admission has already selected fanout, the outer MCP host performs only an
-exact tool call and fixed acknowledgement, so the benchmark and cost model use Luna for that
-dispatch. A direct decision still routes the real task to Luna or Terra by difficulty. This keeps
-the outer envelope from costing more than the work it dispatches.
-
-When capability admission created a Terra thread, it is reused for semantic integration. The
-original Sol planner identity is reused for the single allowed `PlanPatch` and for a risk-triggered
-final review. App Server resumes the provider thread. Responses restores the synthetic identity and
-sends a self-contained compact prompt, so process recovery never falls back to an App Server Sol
-thread.
+When capability admission created a Terra thread, it is reused for semantic integration. Internal
+plans reuse their planner identity for the single allowed `PlanPatch`; host plans lazily create and
+then reuse a continuation identity only after a real anomaly. Responses restores the synthetic
+identity and sends a self-contained compact prompt, so process recovery never substitutes a
+different planner transport.
 
 ## ExecutionPlan Contract
 
@@ -174,20 +197,20 @@ The scheduler repeatedly computes ready DAG nodes and starts up to `maxConcurren
 `Promise.all`. It joins each concurrently launched batch, retains successful sibling results, and
 schedules only dependencies that completed successfully.
 
-Default foreground limits are:
+Profile limits are:
 
-| Limit                 | Default | Foreground max | Durable max |
-| --------------------- | ------: | -------------: | ----------: |
-| Concurrent leaves     |       5 |              5 |           5 |
-| Total leaves          |       8 |              8 |          20 |
-| Dependency waves      |       3 |              3 |           3 |
-| Sol specialist leaves |       1 |              1 |           1 |
-| Sol replans           |       1 |              1 |           1 |
+| Limit                 | Balanced foreground | Balanced durable | Quality foreground | Quality durable |
+| --------------------- | ------------------: | ---------------: | -----------------: | --------------: |
+| Concurrent leaves     |                   3 |                3 |                  5 |               5 |
+| Total leaves          |                   3 |                5 |                  8 |              20 |
+| Dependency waves      |                   3 |                3 |                  3 |               3 |
+| Sol specialist leaves |                   1 |                1 |                  1 |               1 |
+| Sol replans           |                   1 |                1 |                  1 |               1 |
 
-The public schema accepts the durable ceiling, while the service rejects foreground requests above
-eight leaves. Durable auto-research runs are the intended users of the larger ceiling. A deadline
-or USD budget can further constrain the run. Plan validation checks predicted bounds, and the
-scheduler checks observed usage before starting more work.
+The public schema accepts the quality durable ceiling, but the service applies the selected profile
+and mode before any worker starts. A deadline or USD budget can further constrain the run. Plan
+validation checks predicted bounds, and the scheduler checks observed usage before starting more
+work.
 
 A leaf that fails specifically because its reasoning was insufficient can be promoted once:
 `Luna -> Terra -> Sol`. A mechanical validator repair promotes Luna only to Terra-medium. In both
@@ -209,7 +232,7 @@ leaf is bounded and strongly validated; explicit `minTier` prevents an unsafe do
 | Work shape                                                             | Default tier | Allowed effort |
 | ---------------------------------------------------------------------- | ------------ | -------------- |
 | Search, extraction, data processing, mechanical edits, focused tests   | Luna         | low, medium    |
-| Cross-file semantic reasoning, difficult debugging, synthesis          | Terra        | medium, high   |
+| Recovery/stateful work, coupled debugging, review/synthesis, office    | Terra        | medium, high   |
 | Difficult algorithms, architecture, security, hidden correctness risks | Sol          | high, xhigh    |
 
 The default model map is `gpt-5.6-luna`, `gpt-5.6-terra`, and `gpt-5.6-sol`. Providers, service
@@ -374,11 +397,11 @@ with no review requirement are reduced locally from structured results; this use
 Other plans use one Terra semantic integration turn and aggregate validation. There is no default
 reviewer or producer/verifier ceremony.
 
-Sol final review is optional. It runs on the existing planner thread when the integration contract
-requests it, or when risk evidence requires it: high plan risk, a Sol `PlanPatch`, non-passing
-aggregate validation, failed leaf validation, or low confidence on a critical leaf. It is not
-inserted into every fanout. For clean Git writers, it completes before isolated patches are applied
-to the user's workspace.
+Sol final review is optional and is not inserted into every fanout. A host plan, including a
+high-risk host plan, does not receive an eager review merely because of its risk label; real anomaly
+evidence first goes through the single lazy `PlanPatch`. An internal plan may explicitly request a
+review through its integration contract. For clean Git writers, any requested review completes
+before isolated patches are applied to the user's workspace.
 
 ## Persistence And Recovery
 
@@ -391,11 +414,12 @@ the first snapshot exists. The supervisor then waits for that same run and exits
 the submitting process. There is no daemon database, lease renewer, heartbeat loop, or separate
 workflow state machine.
 
-Explicit foreground skill invocations generate a unique run ID and issue one ordinary blocking MCP
-`run` call. The attached MCP Apps resource receives that ID through the tool-input notification and
-renders while the call remains active. Its cursor-based `status` long polls are component traffic,
-not model turns. The legacy `submit(monitorFirst=true)` plus one `status(wait=true)` flow remains
-accepted for clients that cannot mount a component before completion.
+Explicit foreground skill invocations generate a unique run ID and issue
+`submit(monitorFirst=true)`. The detached foreground supervisor returns after its first durable
+snapshot, allowing the attached MCP Apps resource to mount near the start of execution. The skill
+then issues exactly one `status(wait=true)` call for the same run; that call waits on persisted state
+and starts no model work. The component's cursor-based `status` long polls are component traffic,
+not model turns.
 
 Snapshots record App Server thread and turn IDs at `thread_started`, `running`, and confirmed
 `terminal` states. Recovery attempts to resolve those IDs through App Server. Read-only turns can
@@ -441,16 +465,22 @@ Local Codex clients expose exactly one MCP tool, `agent_trio`, with `run`, `subm
 `resume`, and `cancel` actions. The CLI provides the same five operations plus `benchmark`. Both
 call the same `AgentTrioService`; neither reimplements scheduling policy.
 
-The public tool also accepts legacy action-scoped presentation flags: `monitorFirst` only on
+The public tool accepts action-scoped foreground presentation flags: `monitorFirst` only on
 `submit`, and `wait` only on `status`. The embedded component uses cursor, revision, and long-poll
 fields on `status`; they do not expose another tool or alter execution semantics.
 
 The user installer registers that MCP server and installs two user skills. `$agent-trio` delegates
 one explicitly selected turn. `$agent-trio-session` permits implicit selection only for related
 follow-ups after it was explicitly invoked in the same conversation; completed follow-ups start a
-new run with compact prior context, while `waiting_input` continues the existing run. Both skills
-are excluded from child capability discovery. V3 installs no model profile, hook, or global
+new run with compact prior context, while `waiting_input` continues the existing run. All four
+Agent Trio skills are excluded from child capability discovery. V3 installs no model profile, hook, or global
 `AGENTS.md` instructions, and it does not change the user's selected root model.
+
+The installed MCP command enters through `dist/mcp/launcher.js`. Before constructing the runtime,
+the launcher reads assignment-style `*.env` files from the installed Codex home into its process
+environment. App Server workers already inherit that environment, so custom-provider credentials
+cross the desktop/VS Code MCP process boundary without appearing in `config.toml`. The loader treats
+files as data and never evaluates shell commands.
 
 ## Explicit Non-Goals
 
@@ -461,4 +491,4 @@ V3 intentionally excludes:
 - model-driven status polling or launch loops;
 - recursive use of Agent Trio by child threads;
 - automatic user-scope installation;
-- performance claims before the frozen paired A/B suite passes.
+- performance claims before the frozen three-arm suite passes.

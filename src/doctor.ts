@@ -50,9 +50,11 @@ export async function runDoctor(
       "src/supervisor.ts",
       "src/mcp/protocol.ts",
       "src/mcp/server.ts",
+      "src/mcp/launcher.ts",
       "src/app-server/client.ts",
       "src/core/scheduler.ts",
       "dist/mcp/server.js",
+      "dist/mcp/launcher.js",
     ];
     const missing = required.filter((path) => !existsSync(join(packageRoot, path)));
     if (missing.length > 0) {
@@ -65,8 +67,12 @@ export async function runDoctor(
     const forbidden = [
       ".agents/skills/agent-trio/SKILL.md",
       ".agents/skills/agent-trio-session/SKILL.md",
+      ".agents/skills/agent-trio-quality/SKILL.md",
+      ".agents/skills/agent-trio-quality-session/SKILL.md",
       ".codex/skills/agent-trio/SKILL.md",
       ".codex/skills/agent-trio-session/SKILL.md",
+      ".codex/skills/agent-trio-quality/SKILL.md",
+      ".codex/skills/agent-trio-quality-session/SKILL.md",
       "profiles/luna-worker.toml",
       "profiles/terra-worker.toml",
       "profiles/sol-specialist.toml",
@@ -86,12 +92,16 @@ export async function runDoctor(
       "skills/agent-trio/agents/openai.yaml",
       "skills/agent-trio-session/SKILL.md",
       "skills/agent-trio-session/agents/openai.yaml",
+      "skills/agent-trio-quality/SKILL.md",
+      "skills/agent-trio-quality/agents/openai.yaml",
+      "skills/agent-trio-quality-session/SKILL.md",
+      "skills/agent-trio-quality-session/agents/openai.yaml",
     ];
     const missingSkill = packagedSkill.filter((path) => !existsSync(join(packageRoot, path)));
     if (missingSkill.length > 0) {
       throw new Error(`missing user skill sources: ${missingSkill.join(", ")}`);
     }
-    return "no recursive project integration; one-shot and session skills are packaged separately";
+    return "no recursive project integration; balanced and quality skills are packaged separately";
   });
 
   const configuredPriceTable = env["AGENT_TRIO_PRICE_TABLE"];
@@ -124,7 +134,7 @@ export async function runDoctor(
       ok: report.problems.length === 0,
       detail:
         report.problems.length === 0
-          ? "one agent_trio MCP registration with one-shot and session user skills"
+          ? "one agent_trio MCP registration with balanced and quality user skills"
           : report.problems.join("; "),
     });
     warnings.push(...report.warnings);

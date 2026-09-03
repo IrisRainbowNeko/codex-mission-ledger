@@ -5,9 +5,12 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   BENCHMARK_MANIFEST_VERSION,
+  economicEligibilityFromCalibration,
   hashBenchmarkBytes,
+  loadBenchmarkCalibrationTable,
   sealBenchmarkManifest,
   type BenchmarkArtifactRole,
+  type LoadedBenchmarkCalibration,
   type BenchmarkManifestDraft,
 } from "../src/benchmark.js";
 import { parseSealedBenchmarkValidatorV1 } from "../src/benchmark-validator.js";
@@ -542,7 +545,7 @@ function promptFor(definition: InstanceDefinition): string {
   ].join("\n");
 }
 
-export function createEconomicCodingCorpus(): {
+export function createEconomicCodingCorpus(calibration?: Readonly<LoadedBenchmarkCalibration>): {
   manifest: ReturnType<typeof sealBenchmarkManifest>;
   artifacts: Array<{ path: string; bytes: Uint8Array }>;
 } {
@@ -566,17 +569,18 @@ export function createEconomicCodingCorpus(): {
     if (workspace === undefined) {
       throw new Error(`missing workspace for ${definition.id}`);
     }
+    const eligibility = economicEligibilityFromCalibration(
+      calibration,
+      "coding-cross-module",
+      definition.modules.length,
+    );
     instances.push({
       familyId: "coding-cross-module",
       instanceId: definition.id,
       seed: definition.seed,
       sourceRevision: "generated diagnostic economic coding v1",
       evaluationClass: "economic-decomposable",
-      eligibility: {
-        independentUnits: definition.modules.length,
-        estimatedMinLeafSeconds: 45,
-        calibrationRevision: "economic-coding-v2",
-      },
+      ...(eligibility === undefined ? {} : { eligibility }),
       initialStateSha256: workspace.sha256,
       artifacts: seals,
     });
@@ -597,9 +601,16 @@ export function createEconomicCodingCorpus(): {
   };
 }
 
-export async function generateEconomicCodingCorpus(rootDirectory = DEFAULT_ROOT): Promise<string> {
+export async function generateEconomicCodingCorpus(
+  rootDirectory = DEFAULT_ROOT,
+  calibrationPath?: string,
+): Promise<string> {
   const root = resolve(rootDirectory);
-  const corpus = createEconomicCodingCorpus();
+  const calibration =
+    calibrationPath === undefined
+      ? undefined
+      : await loadBenchmarkCalibrationTable(calibrationPath);
+  const corpus = createEconomicCodingCorpus(calibration);
   for (const artifact of corpus.artifacts) {
     const target = resolve(root, artifact.path);
     await mkdir(dirname(target), { recursive: true });
@@ -615,6 +626,26 @@ if (
   process.argv[1] !== undefined &&
   resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
 ) {
-  const path = await generateEconomicCodingCorpus(process.argv[2]);
+  const { rootDirectory, calibrationPath } = generatorArguments(process.argv.slice(2));
+  const path = await generateEconomicCodingCorpus(rootDirectory, calibrationPath);
   process.stdout.write(`${path}\n`);
+}
+
+function generatorArguments(args: readonly string[]): {
+  rootDirectory: string | undefined;
+  calibrationPath: string | undefined;
+} {
+  const calibrationIndex = args.indexOf("--calibration");
+  const calibrationPath = calibrationIndex < 0 ? undefined : args[calibrationIndex + 1];
+  if (calibrationIndex >= 0 && calibrationPath === undefined) {
+    throw new Error("--calibration requires a JSON file path");
+  }
+  const positional =
+    calibrationIndex < 0
+      ? [...args]
+      : args.filter((_, index) => index !== calibrationIndex && index !== calibrationIndex + 1);
+  if (positional.length > 1) {
+    throw new Error("usage: generate-economic-coding-benchmark [root] [--calibration file.json]");
+  }
+  return { rootDirectory: positional[0], calibrationPath };
 }

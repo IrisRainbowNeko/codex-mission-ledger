@@ -103,6 +103,14 @@ describe("V3 execution policy", () => {
       expect.objectContaining<Partial<PolicyError>>({ code: "limit_exceeded" }),
     );
     expect(normalizeExecutionLimitsForMode("durable", { maxLeaves: 20 }).maxLeaves).toBe(20);
+    expect(normalizeExecutionLimitsForMode("foreground", {}, "balanced")).toMatchObject({
+      maxConcurrent: 3,
+      maxLeaves: 3,
+    });
+    expect(normalizeExecutionLimitsForMode("durable", {}, "balanced").maxLeaves).toBe(5);
+    expect(() =>
+      normalizeExecutionLimitsForMode("foreground", { maxLeaves: 4 }, "balanced"),
+    ).toThrowError(expect.objectContaining<Partial<PolicyError>>({ code: "limit_exceeded" }));
   });
 
   it("pins supported effort ranges to each tier", () => {
@@ -197,8 +205,30 @@ describe("V3 execution policy", () => {
       expect.objectContaining({ id: "writer", tier: "luna", effort: "medium" }),
       expect.objectContaining({ id: "reader", tier: "luna", effort: "low" }),
       expect.objectContaining({ id: "algorithm", tier: "luna", effort: "medium" }),
-      expect.objectContaining({ id: "office-writer", tier: "luna", effort: "low" }),
+      expect.objectContaining({ id: "office-writer", tier: "terra", effort: "medium" }),
     ]);
+  });
+
+  it("keeps stateful recovery and review leaves above Luna", () => {
+    for (const objective of [
+      "Resume an idempotent recovery checkpoint",
+      "Perform the paper review and synthesize the findings",
+      "恢复事务状态并验证断点续跑",
+    ]) {
+      expect(
+        recommendEffectiveTier({
+          tier: "luna",
+          difficulty: 0.2,
+          ambiguity: 0.1,
+          critical: false,
+          validation: [],
+          validatorStrength: "none",
+          domain: "general",
+          objective,
+          capabilities: [],
+        }),
+      ).toBe("terra");
+    }
   });
 
   it("admits only fanout that beats serial work with long, independent ready packages", () => {

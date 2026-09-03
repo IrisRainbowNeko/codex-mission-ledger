@@ -507,6 +507,31 @@ describe("PlannerService", () => {
     ).toThrow("must be a positive finite number");
   });
 
+  it("routes malformed host semantic fields through one internal Sol repair", async () => {
+    const planner = new PlannerService(new FakePlannerTransport(executionPlan()));
+    const malformed = {
+      ...hostPlan([
+        { goal: "Inspect alpha", paths: [], after: [], floor: null },
+        { goal: "Inspect beta", paths: [], after: [], floor: null },
+      ]),
+      merge: "invalid",
+    };
+
+    await expect(
+      planner.adoptHostPlan(
+        {
+          objective: "Inspect two independent tasks",
+          cwd: "/workspace/project",
+          semanticPlan: malformed as never,
+        },
+        "host-malformed-run",
+      ),
+    ).rejects.toMatchObject({
+      code: "host_plan_requires_internal_sol",
+      message: expect.stringContaining("$.merge"),
+    });
+  });
+
   it("rejects a cycle after expanding numeric host dependencies", async () => {
     const planner = new PlannerService(new FakePlannerTransport(executionPlan()));
 
@@ -548,7 +573,7 @@ describe("PlannerService", () => {
       kind: "execution_plan",
       model: "gpt-5.6-sol",
       tier: "sol",
-      effort: "medium",
+      effort: "low",
       forkTurns: "none",
       responseFormat: {
         type: "json_schema",
@@ -633,6 +658,7 @@ describe("PlannerService", () => {
     await planner.plan({
       objective: "Analyze each independent portfolio in parallel and return one combined report.",
       cwd: "/workspace/project",
+      profile: "quality",
       constraints: ["read-only; do not modify files"],
       limits: { maxConcurrent: 5, maxLeaves: 8 },
     });
@@ -669,6 +695,7 @@ describe("PlannerService", () => {
     await planner.plan({
       objective: "Analyze each independent root in parallel.",
       cwd: "/workspace/project",
+      profile: "quality",
       constraints: ["read-only; do not modify files"],
       limits: { maxConcurrent: 5, maxLeaves: 8 },
     });
@@ -702,6 +729,7 @@ describe("PlannerService", () => {
       objective:
         "Read-only: process [unit:one], [unit:two], and [unit:three] from the independent roots data/root-1/, data/root-2/, and data/root-3/. in parallel.",
       cwd: "/workspace/project",
+      profile: "quality",
       limits: { maxConcurrent: 5, maxLeaves: 8 },
     });
 
@@ -734,6 +762,7 @@ describe("PlannerService", () => {
     await planner.plan({
       objective: "Produce a decision memo for each independent case in parallel.",
       cwd: "/workspace/project",
+      profile: "quality",
       domain: "office",
       constraints: ["read-only; do not modify files"],
       limits: { maxConcurrent: 5, maxLeaves: 8 },
@@ -885,6 +914,7 @@ describe("PlannerService", () => {
       objective:
         "Implement the independent roots packages/alpha/, packages/beta/, and packages/gamma/ in parallel and make the validation tests pass.",
       cwd: "/workspace/project",
+      profile: "quality",
       domain: "coding",
       limits: { maxLeaves: 5 },
     });
@@ -981,6 +1011,7 @@ describe("PlannerService", () => {
     const session = await new PlannerService(transport).plan({
       objective: "Inspect five independent modules",
       cwd: "/workspace/project",
+      profile: "quality",
       domain: "coding",
       limits: { maxLeaves: 5 },
     });
@@ -1008,6 +1039,7 @@ describe("PlannerService", () => {
     const session = await new PlannerService(transport).plan({
       objective: "Inspect four independent fragments",
       cwd: "/workspace/project",
+      profile: "quality",
       domain: "coding",
       limits: { maxLeaves: 4 },
     });
@@ -1022,7 +1054,7 @@ describe("PlannerService", () => {
     ]);
   });
 
-  it("adopts a host Sol plan with zero model usage and no patch turn", async () => {
+  it("adopts a host Sol plan with zero initial model usage and lazily enables one patch", async () => {
     const transport = new FakePlannerTransport(executionPlan());
     const planner = new PlannerService(transport);
     const semanticPlan = hostPlan(
@@ -1045,15 +1077,39 @@ describe("PlannerService", () => {
 
     expect(session).toMatchObject({
       threadId: "external:host-run",
-      limits: { maxReplans: 0 },
+      limits: { maxReplans: 1 },
       usage: [],
       plan: { planId: "host-plan", tasks: [{ tier: "luna" }, { tier: "luna" }] },
     });
     expect(session.plan.tasks[0]!.objective).toContain("Inspect alpha and beta");
     expect(session.plan.tasks[0]!.objective).toContain("complete user-visible leaf deliverable");
     expect(session.plan.tasks[0]!.objective.match(/Inspect alpha and beta/g)).toHaveLength(1);
-    expect(planner.createReplanHandler(session)).toBeUndefined();
+    expect(planner.createReplanHandler(session)).toMatchObject({
+      replan: expect.any(Function),
+      answer: expect.any(Function),
+    });
     expect(transport.starts).toHaveLength(0);
+
+    transport.startOutput = {
+      protocolVersion: 1,
+      planId: "host-plan",
+      reason: "The first host leaf needs repair",
+      operations: [
+        {
+          op: "replace",
+          taskId: "leaf-1",
+          task: { ...session.plan.tasks[0]!, objective: "Repair the first host leaf" },
+        },
+      ],
+    };
+    const patched = await planner.requestPatch(session, [trigger]);
+    expect(patched).toMatchObject({
+      continuationThreadId: "planner-thread",
+      replanCount: 1,
+      patch: { reason: "The first host leaf needs repair" },
+    });
+    expect(transport.starts).toHaveLength(1);
+    expect(transport.continuations).toHaveLength(0);
   });
 
   it("removes sibling-specific objective lines from path-scoped leaves", async () => {
@@ -1139,6 +1195,7 @@ describe("PlannerService", () => {
       {
         objective: "Inspect five independent modules",
         cwd: "/workspace/project",
+        profile: "quality",
         domain: "coding",
         semanticPlan: hostPlan(tasks),
       },
@@ -1149,6 +1206,45 @@ describe("PlannerService", () => {
     expect(session.plan.tasks.map((task) => task.ownedPaths)).toEqual(
       tasks.map((task) => task.paths),
     );
+  });
+
+  it("propagates only explicitly selected capabilities to host-plan leaves", async () => {
+    const planner = new PlannerService(new FakePlannerTransport(executionPlan()), {
+      contextProvider: {
+        load: async () => ({
+          workspaceKind: "directory" as const,
+          workspaceDirty: false,
+          workspaceFiles: [],
+          keyFiles: [],
+          capabilities: [
+            { kind: "skill" as const, name: "documents", source: "system" as const },
+            { kind: "skill" as const, name: "presentations", source: "system" as const },
+          ],
+          economics: [],
+        }),
+      },
+    });
+
+    const session = await planner.adoptHostPlan(
+      {
+        objective: "Prepare two document sections",
+        cwd: "/workspace/project",
+        profile: "quality",
+        domain: "office",
+        capabilities: [{ kind: "skill", name: "documents" }],
+        semanticPlan: hostPlan([
+          { goal: "Prepare section alpha", paths: [], after: [], floor: null },
+          { goal: "Prepare section beta", paths: [], after: [], floor: null },
+        ]),
+      },
+      "host-capability-run",
+    );
+
+    expect(session.plan.tasks.every((task) => task.capabilities.length === 1)).toBe(true);
+    expect(session.plan.tasks.map((task) => task.capabilities[0])).toEqual([
+      { kind: "skill", name: "documents" },
+      { kind: "skill", name: "documents" },
+    ]);
   });
 
   it("adopts disjoint bounded writers and preserves their declared write access", async () => {
@@ -1182,10 +1278,12 @@ describe("PlannerService", () => {
   });
 
   it.each([
-    ["semantic merge", { merge: "terra" as const }],
-    ["medium risk", { risk: "medium" as const }],
-  ])("routes %s host plans back to the internal Sol planner", async (_label, overrides) => {
-    const planner = new PlannerService(new FakePlannerTransport(executionPlan()));
+    ["semantic merge", { merge: "terra" as const }, "low"],
+    ["medium risk", { risk: "medium" as const }, "medium"],
+    ["high risk", { risk: "high" as const }, "high"],
+  ])("adopts %s host plans without an eager internal Sol turn", async (_label, overrides, risk) => {
+    const transport = new FakePlannerTransport(executionPlan());
+    const planner = new PlannerService(transport);
     await expect(
       planner.adoptHostPlan(
         {
@@ -1201,7 +1299,48 @@ describe("PlannerService", () => {
         },
         "unsafe-host-run",
       ),
-    ).rejects.toMatchObject({ code: "host_plan_requires_internal_sol" });
+    ).resolves.toMatchObject({
+      plan: {
+        risk,
+        integration: {
+          aggregation: "merge" in overrides ? overrides.merge : "deterministic",
+          finalReview: "never",
+        },
+      },
+      usage: [],
+    });
+    expect(transport.starts).toHaveLength(0);
+  });
+
+  it("adopts a dependent multi-wave host DAG when a later wave has real parallelism", async () => {
+    const transport = new FakePlannerTransport(executionPlan());
+    const session = await new PlannerService(transport).adoptHostPlan(
+      {
+        objective: "Inspect the manifest, then analyze two independent subsystems",
+        cwd: "/workspace/project",
+        domain: "coding",
+        semanticPlan: hostPlan(
+          [
+            { goal: "Inspect the build manifest", paths: [], after: [], floor: null },
+            { goal: "Analyze subsystem alpha", paths: [], after: [0], floor: null },
+            { goal: "Analyze subsystem beta", paths: [], after: [0], floor: null },
+          ],
+          { merge: "terra", risk: "medium" },
+        ),
+      },
+      "host-multi-wave",
+    );
+
+    expect(session.plan).toMatchObject({
+      risk: "medium",
+      tasks: [
+        { id: "leaf-1", dependsOn: [] },
+        { id: "leaf-2", dependsOn: ["leaf-1"] },
+        { id: "leaf-3", dependsOn: ["leaf-1"] },
+      ],
+      integration: { aggregation: "terra", finalReview: "never" },
+    });
+    expect(transport.starts).toHaveLength(0);
   });
 
   it.each([
@@ -1245,6 +1384,37 @@ describe("PlannerService", () => {
     );
 
     expect(session.plan.tasks.every((task) => task.access === "readOnly")).toBe(true);
+  });
+
+  it("allows output writes when the objective protects only input files", async () => {
+    const planner = new PlannerService(new FakePlannerTransport(executionPlan()));
+    const session = await planner.adoptHostPlan(
+      {
+        objective: "Read observations.csv, create metrics.json, and do not modify inputs.",
+        cwd: "/workspace/project",
+        constraints: ["workspace-write: modify only requested deliverables"],
+        semanticPlan: hostPlan(
+          [
+            {
+              goal: "Create alpha metrics without modifying inputs",
+              paths: ["data/alpha/metrics.json"],
+              after: [],
+              floor: null,
+            },
+            {
+              goal: "Create beta metrics without modifying inputs",
+              paths: ["data/beta/metrics.json"],
+              after: [],
+              floor: null,
+            },
+          ],
+          { access: "workspaceWrite" },
+        ),
+      },
+      "protected-input-run",
+    );
+
+    expect(session.plan.tasks.every((task) => task.access === "workspaceWrite")).toBe(true);
   });
 
   it("derives host task complexity from the explicit floor without another model turn", async () => {
@@ -1437,6 +1607,18 @@ describe("PlannerService", () => {
         validatorStrength: "none",
       }),
     ]);
+    expect(transport.starts[0]?.effort).toBe("low");
+  });
+
+  it("keeps quality planning at medium effort for semantically coupled work", async () => {
+    const transport = new FakePlannerTransport(executionPlan());
+    await new PlannerService(transport).plan({
+      objective: "Analyze two coupled modules and synthesize the result",
+      cwd: "/workspace/project",
+      domain: "coding",
+      profile: "quality",
+    });
+
     expect(transport.starts[0]?.effort).toBe("medium");
   });
 
@@ -1567,7 +1749,7 @@ describe("PlannerService", () => {
     );
 
     await expect(
-      planner.plan({ objective: "Inspect alpha and beta", cwd: "/workspace" }),
+      planner.plan({ objective: "Inspect alpha and beta", cwd: "/workspace", profile: "quality" }),
     ).rejects.toThrow(
       duration === undefined
         ? "must be a positive finite number"
@@ -1621,6 +1803,33 @@ describe("PlannerService", () => {
           },
         },
       },
+    });
+  });
+
+  it.each([1, 2, 3, 5])("lets adaptive Sol choose %i execution leaves", async (count) => {
+    const tasks = Array.from({ length: count }, (_, index) =>
+      leaf(`adaptive-${String(index + 1)}`),
+    );
+    const transport = new FakePlannerTransport(executionPlan({ tasks }));
+    const planner = new PlannerService(transport);
+
+    const session = await planner.plan(
+      {
+        objective: "Choose the useful execution shape",
+        cwd: "/workspace",
+        profile: "quality",
+        limits: { maxLeaves: count, maxSolLeaves: Math.min(1, count) },
+      },
+      `adaptive-${String(count)}`,
+      undefined,
+      "adaptive",
+    );
+
+    expect(session.plan.tasks).toHaveLength(count);
+    expect(transport.starts).toHaveLength(1);
+    expect(transport.starts[0]?.prompt).toContain('"route":"adaptive"');
+    expect(transport.starts[0]?.responseFormat.schema).toMatchObject({
+      properties: { t: { minItems: 1, maxItems: count } },
     });
   });
 

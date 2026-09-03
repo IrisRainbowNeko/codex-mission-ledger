@@ -4,7 +4,7 @@ export const AGENT_TRIO_MONITOR_RESOURCE_URI = "ui://agent-trio/run-monitor-v1.h
 export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
 
 const EMBEDDED_STYLES = `
-body{background:var(--surface);min-width:280px}.topbar{position:relative;height:58px;grid-template-columns:auto minmax(0,1fr) auto;padding:0 16px}.brand{min-width:0}.brand div span{display:none}.run-heading strong{font-size:13px}.metrics{grid-template-columns:repeat(5,minmax(80px,1fr))}.metrics>div{padding:10px 14px}.metrics strong{font-size:14px}.workspace{height:560px;min-height:420px;grid-template-columns:260px minmax(0,1fr)}.pane-heading,.conversation-heading{min-height:48px}.agent-row{min-height:54px;padding:9px 13px}.timeline{padding:12px 18px 32px}.event{grid-template-columns:minmax(72px,88px) minmax(0,1fr);gap:12px;padding:12px 0}.event.reasoning details{margin:0}.event.reasoning summary{font-size:13px}.connection{white-space:nowrap}.waiting{display:grid;place-items:center;min-height:360px;padding:32px;color:var(--muted);text-align:center}
+body{background:var(--surface);min-width:280px}.topbar{position:relative;height:58px;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;padding:0 16px}.brand{min-width:0}.brand div span{display:none}.run-heading{grid-column:auto;grid-row:auto;min-width:0;overflow:hidden}.run-heading strong,.run-heading span{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.run-heading strong{font-size:13px}.metrics{grid-template-columns:repeat(5,minmax(80px,1fr))}.metrics>div{padding:10px 14px}.metrics strong{font-size:14px}.workspace{height:560px;min-height:420px;grid-template-columns:260px minmax(0,1fr)}.pane-heading,.conversation-heading{min-height:48px}.agent-row{min-height:54px;padding:9px 13px}.timeline{padding:12px 18px 32px}.event{grid-template-columns:minmax(72px,88px) minmax(0,1fr);gap:12px;padding:12px 0}.event.reasoning details{margin:0}.event.reasoning summary{font-size:13px}.connection{white-space:nowrap}.waiting{display:grid;place-items:center;min-height:360px;padding:32px;color:var(--muted);text-align:center}
 @media(max-width:640px){.topbar{grid-template-columns:auto minmax(0,1fr) auto;min-height:58px;padding:8px 10px}.run-heading{grid-column:auto;grid-row:auto}.brand div{display:none}.metrics{grid-template-columns:repeat(3,1fr)}.metrics>div:nth-child(n+4){display:none}.workspace{height:auto;min-height:540px;grid-template-columns:1fr}.agents-pane{display:flex;max-height:none;overflow-x:auto;border-bottom:1px solid var(--line)}.agents-pane #agent-list{display:flex;flex:none}.pane-heading{display:none}.agent-row{width:180px;min-width:180px;border-right:1px solid var(--line);border-bottom:0}.conversation-pane{min-height:460px}.event{grid-template-columns:1fr;gap:4px}.event-time{font-size:10px}.contract{padding:11px 14px}.conversation-heading{padding:0 12px}}
 `;
 
@@ -69,7 +69,7 @@ export const MCP_MONITOR_APP_JS = String.raw`
   function start(runId) {
     if (state.runId === runId) return;
     state.runId = runId; state.cursor = 0; state.revision = ""; state.events = []; state.streams = Object.create(null); state.snapshot = null; state.stopped = false;
-    $("run-title").textContent = runId;
+    $("run-title").textContent = shortId(runId); $("run-title").title = runId;
     $("waiting").classList.add("hidden");
     $("monitor-view").classList.remove("hidden");
     void poll(true);
@@ -78,6 +78,7 @@ export const MCP_MONITOR_APP_JS = String.raw`
   async function poll(immediate) {
     if (!state.runId || state.polling || state.stopped) return;
     state.polling = true;
+    let nextIsImmediate = false;
     try {
       const response = await bridgeRequest("tools/call", {
         name: "agent_trio",
@@ -94,7 +95,8 @@ export const MCP_MONITOR_APP_JS = String.raw`
       applyMonitor(output.monitor);
       setConnection("Live", "live");
       const status = state.snapshot && state.snapshot.result && state.snapshot.result.status;
-      if (terminalStates.has(status)) state.stopped = true;
+      nextIsImmediate = output.monitor.hasMore === true;
+      if (terminalStates.has(status) && !nextIsImmediate) state.stopped = true;
     } catch (error) {
       setConnection("Reconnecting", "offline");
       if (!state.snapshot) showWaiting(error instanceof Error ? error.message : String(error));
@@ -103,7 +105,7 @@ export const MCP_MONITOR_APP_JS = String.raw`
     }
     if (!state.stopped) {
       clearTimeout(state.retryTimer);
-      state.retryTimer = setTimeout(() => void poll(false), 350);
+      state.retryTimer = setTimeout(() => void poll(nextIsImmediate), nextIsImmediate ? 0 : 350);
     }
   }
 
@@ -116,7 +118,6 @@ export const MCP_MONITOR_APP_JS = String.raw`
     }
     appendEvents(Array.isArray(monitor.events) ? monitor.events : []);
     render();
-    if (monitor.hasMore && !state.polling) void poll(true);
   }
 
   function appendEvents(events) {
@@ -148,7 +149,8 @@ export const MCP_MONITOR_APP_JS = String.raw`
     const snapshot = state.snapshot || {};
     const result = snapshot.result || {};
     const metrics = result.metrics || {};
-    $("objective").textContent = (snapshot.request || {}).objective || state.objective || "";
+    const objective = (snapshot.request || {}).objective || state.objective || "";
+    $("objective").textContent = objective; $("objective").title = objective;
     $("status").textContent = result.status || "-";
     $("elapsed").textContent = formatDuration(metrics.elapsedMs, metrics.startedAt);
     $("cost").textContent = metrics.estimatedCostUsd == null ? "-" : "$" + Number(metrics.estimatedCostUsd).toFixed(4);
@@ -198,9 +200,18 @@ export const MCP_MONITOR_APP_JS = String.raw`
     let title = "Overview", meta = result.status || "", filtered = state.events;
     const fields = [];
     if (state.selected === "overview") {
+      const metrics = result.metrics || {};
       fields.push(["Objective", (snapshot.request || {}).objective || state.objective]);
-      fields.push(["Route", (result.metrics || {}).routeReason || (plan.origin ? plan.origin + " plan" : "Direct")]);
+      fields.push(["Profile", metrics.profile || (snapshot.request || {}).profile || "balanced"]);
+      fields.push(["Route", metrics.routeReason || (plan.origin ? plan.origin + " plan" : "Direct")]);
+      fields.push(["Route source", metrics.routeSource || ""]);
+      fields.push(["Domain", metrics.selectedDomain || plan.domain || ""]);
       fields.push(["Plan", plan.tasks ? String(plan.tasks.length) + " leaves" : "No fanout"]);
+      fields.push(["Planning", formatPlanning(metrics, plan)]);
+      fields.push(["Waves", metrics.selectedWaveCount == null ? "" : String(metrics.selectedWaveCount)]);
+      fields.push(["Tier mix", formatTierCounts(metrics.selectedTierCounts)]);
+      fields.push(["Planned time", formatPlannedTime(metrics)]);
+      fields.push(["Predicted ratios", formatRatios(metrics)]);
       fields.push(["Required output", ((plan.integration || {}).requiredOutputs || []).join("\n")]);
     } else if (state.selected.startsWith("task:")) {
       const taskId = state.selected.slice(5); const task = (plan.tasks || []).find((item) => item.id === taskId) || {};
@@ -222,6 +233,11 @@ export const MCP_MONITOR_APP_JS = String.raw`
     if (!filtered.length) { timeline.innerHTML = '<div class="empty">Waiting for agent activity.</div>'; return; }
     for (const event of filtered) timeline.appendChild(renderEvent(event));
   }
+
+  function formatTierCounts(counts) { if (!counts) return ""; return ["luna", "terra", "sol"].filter((tier) => counts[tier]).map((tier) => tier + ": " + counts[tier]).join(", "); }
+  function formatPlanning(metrics, plan) { if (metrics.routeSource === "host_sol") return plan.tasks ? "External host Sol (not runtime-metered)" : "External host Sol selected one agent"; if (metrics.routeSource === "internal_sol") return "Internal Sol"; return metrics.plannerSkipped ? "None" : ""; }
+  function formatPlannedTime(metrics) { const values = []; if (metrics.estimatedSerialSeconds != null) values.push("serial " + Number(metrics.estimatedSerialSeconds).toFixed(0) + "s"); if (metrics.estimatedCriticalPathSeconds != null) values.push("critical path " + Number(metrics.estimatedCriticalPathSeconds).toFixed(0) + "s"); return values.join(", "); }
+  function formatRatios(metrics) { const values = []; if (metrics.estimatedCostRatio != null) values.push("cost " + Number(metrics.estimatedCostRatio).toFixed(2) + "x"); if (metrics.estimatedLatencyRatio != null) values.push("time " + Number(metrics.estimatedLatencyRatio).toFixed(2) + "x"); return values.join(", "); }
 
   function renderEvent(event) {
     const row = document.createElement("article"); row.className = "event " + (event.displayKind || "activity");
@@ -270,14 +286,25 @@ export const MCP_MONITOR_APP_JS = String.raw`
     const delta = event.data && typeof event.data.delta === "string" ? event.data.delta : "";
     if (delta) logical.displayText = (logical.displayText || "") + delta;
     const item = descriptor.item;
-    if (descriptor.kind === "agent-message") { logical.displayLabel = roleLabel(event.role || "agent"); if (item && typeof item.text === "string") logical.displayText = unwrapAgentMessage(item.text); return; }
+    if (descriptor.kind === "agent-message") { logical.displayLabel = roleLabel(event.role || "agent"); if (item && typeof item.text === "string") logical.displayText = unwrapAgentMessage(item.text); else if (event.method === "item/completed" && logical.displayText) logical.displayText = unwrapAgentMessage(logical.displayText); return; }
     if (descriptor.kind === "reasoning") { logical.displayLabel = "Reasoning"; const text = extractText(item); if (text) logical.displayText = text; return; }
     if (descriptor.kind === "command") { logical.displayLabel = "Command"; if (item && typeof item.command === "string") logical.displayCommand = item.command; if (item && typeof item.aggregatedOutput === "string" && item.aggregatedOutput) logical.displayOutput = item.aggregatedOutput; else if (delta) { logical.displayOutput = (logical.displayOutput || "") + delta; logical.displayText = ""; } if (item && item.status) logical.displayStatus = String(item.status); return; }
     if (descriptor.kind === "file-change") { logical.displayLabel = "File change"; const text = extractText(item); if (text) logical.displayText = text; if (item && item.status) logical.displayStatus = String(item.status); return; }
     logical.displayLabel = descriptor.itemType || "Tool"; if (item) logical.displayRaw = item;
   }
 
-  function unwrapAgentMessage(text) { try { const value = JSON.parse(text); return value && typeof value.response === "string" ? value.response : text; } catch { return text; } }
+  function unwrapAgentMessage(text) {
+    try { const value = JSON.parse(text); return value && typeof value.response === "string" ? value.response : text; }
+    catch {
+      const match = /"response"\s*:\s*"/.exec(text);
+      if (!match) return text;
+      const source = text.slice(match.index + match[0].length); let escaped = false, end = source.length;
+      for (let index = 0; index < source.length; index += 1) { const char = source[index]; if (char === '"' && !escaped) { end = index; break; } if (char === "\\" && !escaped) escaped = true; else escaped = false; }
+      let encoded = source.slice(0, end); while (encoded.endsWith("\\")) encoded = encoded.slice(0, -1);
+      try { return JSON.parse('"' + encoded + '"'); }
+      catch { return encoded.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "\t").replace(/\\"/g, '"').replace(/\\\\/g, "\\"); }
+    }
+  }
 
   function appendRichText(container, text) {
     const lines = String(text).split(/\r?\n/), fence = String.fromCharCode(96).repeat(3); let index = 0;

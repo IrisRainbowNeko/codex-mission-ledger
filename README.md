@@ -1,9 +1,10 @@
-# Agent Trio V3
+# Agent Trio V3.4
 
-Agent Trio V3 is a cost-aware multi-agent runtime built on Codex App Server. It uses Sol for
-semantic planning, Luna for most parallel execution, Terra for genuinely coupled work, and a
-deterministic TypeScript scheduler for concurrency, dependencies, budgets, recovery, and patch
-integration.
+Agent Trio V3.4 is a cost-aware multi-agent runtime built on Codex App Server. Its default
+`balanced` profile lets the current Sol choose among root completion, one Luna/Terra execution
+agent, and a compact parallel DAG. The `quality` profile preserves V3.3's always-delegate,
+quality-first behavior. TypeScript handles concurrency, dependencies, budgets, recovery, and patch
+integration after Sol makes the semantic decision.
 
 The runtime is designed around three targets relative to direct `gpt-5.6-sol/ultra`:
 
@@ -16,26 +17,27 @@ user continuation gate.
 
 ## Results
 
-Percentages below are Agent Trio divided by direct Sol, so lower is better. Cost is calculated from
-real token usage and the configured model price table.
+The existing quality-reference measurements are below. Percentages are Agent Trio divided by direct
+Sol, so lower is better. Cost is calculated from real token usage and the configured model price
+table. V3.4 release benchmarking uses direct Sol, balanced, and quality as three arms.
 
-| Task type              | Execution path                       | Time vs Sol | Cost vs Sol | Quality V3/Sol |
-| ---------------------- | ------------------------------------ | ----------: | ----------: | -------------: |
-| Small direct coding    | One Luna-low turn                    |       49.4% |        3.5% |        100/100 |
-| Cross-module coding    | Sol-low plan + 3 Luna-medium leaves  |       63.5% |       13.7% |        100/100 |
-| Exact algorithms       | Sol plan + Luna-medium leaves        |       46.5% |       24.6% |        100/100 |
-| Frozen-source research | Sol plan + parallel Luna research    |       34.5% |        6.1% |         100/67 |
-| Paper revision         | Sol plan + parallel Luna editing     |       36.3% |       20.9% |         97/100 |
-| Spreadsheet work       | Sol-low plan + 3 Luna-low leaves     |       60.7% |       25.9% |        100/100 |
-| Auto research          | Sol plan + multi-wave Luna execution |       34.9% |        6.2% |        100/100 |
-| Six-domain macro       | Automatic direct/fanout routing      |       46.1% |       16.2% |         97-100 |
+| Task type              | Quality-reference path               | Time vs Sol | Cost vs Sol | Quality/Sol |
+| ---------------------- | ------------------------------------ | ----------: | ----------: | ----------: |
+| Small direct coding    | One Luna-low turn                    |       49.4% |        3.5% |     100/100 |
+| Cross-module coding    | Sol-low plan + 3 Luna-medium leaves  |       63.5% |       13.7% |     100/100 |
+| Exact algorithms       | Sol plan + Luna-medium leaves        |       46.5% |       24.6% |     100/100 |
+| Frozen-source research | Sol plan + parallel Luna research    |       34.5% |        6.1% |      100/67 |
+| Paper revision         | Sol plan + parallel Luna editing     |       36.3% |       20.9% |      97/100 |
+| Spreadsheet work       | Sol-low plan + 3 Luna-low leaves     |       60.7% |       25.9% |     100/100 |
+| Auto research          | Sol plan + multi-wave Luna execution |       34.9% |        6.2% |     100/100 |
+| Six-domain macro       | Automatic direct/fanout routing      |       46.1% |       16.2% |      97-100 |
 
 The three-sample direct fast path used zero planner turns and zero leaves. The three current coding
 fanout instances each used one compact Sol plan and three Luna workers, with no Terra promotion,
 replan, reviewer, protocol error, or user intervention.
 
-See [Benchmarking](docs/BENCHMARKING.md) for the corpus, paired runner, evidence format, and scoring
-rules.
+See [Benchmarking](docs/BENCHMARKING.md) for calibration, the three-arm runner, evidence format, and
+scoring rules.
 
 ## Install
 
@@ -55,14 +57,21 @@ npm run install:user
 npm run doctor:user
 ```
 
-`install:user` performs two user-level changes:
+`install:user` performs two kinds of user-level change:
 
 - registers one `[mcp_servers.agent_trio]` entry in `~/.codex/config.toml`;
-- installs `$agent-trio` at `~/.agents/skills/agent-trio` and `$agent-trio-session` at
-  `~/.agents/skills/agent-trio-session`.
+- installs `$agent-trio`, `$agent-trio-session`, `$agent-trio-quality`, and
+  `$agent-trio-quality-session` under `~/.agents/skills`.
+
+The MCP launcher reads assignment-style `*.env` files directly under the active Codex home before
+starting Agent Trio. This makes provider variables such as `PRO_API_KEY` available to Agent Trio and
+its child App Server processes in the desktop app, VS Code, and CLI without storing credentials in
+`config.toml`. Files are loaded in filename order; later assignments override earlier ones. The
+loader accepts `KEY=value`, `export KEY=value`, quoted values, and comments, but does not execute
+shell commands.
 
 It does not install hooks, native agent profiles, a global `AGENTS.md`, or change the selected root
-model. Both skills contain routing instructions only and reuse the same MCP runtime.
+model. All four skills contain routing instructions only and reuse the same MCP runtime.
 
 Restart the ChatGPT desktop app, reload the VS Code Codex extension, and start a new Codex CLI
 session after installation. The MCP registration is shared by all three local Codex clients.
@@ -77,6 +86,10 @@ $agent-trio implement this feature and run the relevant tests
 
 # Related follow-ups in this conversation continue through Agent Trio automatically.
 $agent-trio-session implement this feature and run the relevant tests
+
+# Quality-first variants always delegate and retain the wider V3.3 DAG policy.
+$agent-trio-quality analyze this repository and report correctness risks
+$agent-trio-quality-session build this feature and handle my related follow-ups
 ```
 
 For a non-interactive CLI run, keep the `$` inside single quotes:
@@ -85,22 +98,21 @@ For a non-interactive CLI run, keep the `$` inside single quotes:
 codex exec '$agent-trio research these alternatives and produce a comparison'
 ```
 
-ChatGPT Chat and Work use `@agent-trio` and `@agent-trio-session` instead of Codex `$` mentions.
-`agent-trio` is explicit-only. After `agent-trio-session` is explicitly selected once, related
-corrections, refinements, continuations, and questions in that conversation are implicitly routed
-through Agent Trio. Say to stop using Agent Trio, ask for normal Codex, switch to an unrelated task,
-or start a new conversation to leave session mode. Ordinary conversations never start session mode
-implicitly.
+ChatGPT Chat and Work use `@` instead of Codex `$` mentions. The non-session skills apply to one
+turn. After either session skill is explicitly selected once, related corrections, refinements,
+continuations, and questions retain that profile. Say to stop using Agent Trio, ask for normal
+Codex, switch to an unrelated task, or start a new conversation to leave session mode.
 
-For foreground invocations, the selected skill supplies a unique run ID and makes one blocking
-`run` call. ChatGPT and Codex clients with MCP Apps support render the live Monitor directly beside
-that tool call; no separate browser tab is required. Select any planner, leaf, direct agent,
-integrator, or final-review thread to inspect its completed messages, reasoning summaries, commands,
-file changes, token usage, cost, and validation state. The component reads cursor-based updates by
+For foreground invocations, the selected skill supplies a unique run ID, submits the run for
+immediate durable acceptance, and then waits once for its final result. ChatGPT and Codex clients
+with MCP Apps support therefore mount the live Monitor near the start of execution instead of after
+the run finishes; no separate browser tab is required. Select any planner, leaf, direct agent,
+integrator, or final-review thread to inspect its messages, reasoning summaries, commands, file
+changes, token usage, cost, and validation state. The component reads cursor-based updates by
 calling `status` through the MCP Apps bridge. Those calls stay inside the component and never invoke
 a model. Clients without MCP Apps support keep the local `monitorUrl` text fallback.
 
-Both skills also pass the current Codex task permission and approval modes to Agent Trio. A Full
+All four skills also pass the current Codex task permission and approval modes to Agent Trio. A Full
 access task gives direct agents and execution leaves Full access, including network access;
 Workspace access and Read-only tasks remain correspondingly restricted. Approve for me is inherited
 through App Server automatic review. Neither skill may request stronger access or approval than
@@ -121,13 +133,11 @@ npm run uninstall:user
 request
   |
   v
-zero-model cost/latency router
-  |-- small, coupled, or uneconomic --> direct Luna/Terra result
+host Sol balanced semantic route
+  |-- tiny/indivisible ----------> root completion (no MCP)
+  |-- one bounded work unit -----> one Luna/Terra execution agent
   |
-  `-- decomposable and profitable
-          |
-          v
-      Sol ExecutionPlan
+  `-- 2-3 useful work units -----> host semanticPlan
           |
           v
   deterministic DAG scheduler
@@ -138,44 +148,58 @@ zero-model cost/latency router
           v
   local reduction or Terra integration
           |
-          `-- optional risk-triggered Sol review
+          `-- anomaly-only lazy Sol PlanPatch
+
+quality skill
+  `-- always delegate: one agent or a 2-5-leaf DAG
+
+CLI / insufficient host context
+  |
+  `-- deterministic bounded direct, otherwise one adaptive Sol plan
+        |-- 1 leaf --> planned single agent
+        `-- 2-5 leaves --> DAG scheduler
 ```
 
-Sol decides semantic boundaries, dependencies, model floors, and integration requirements. Code
-handles launches, joins, concurrency, budgets, cancellation, recovery, and message delivery without
-rewriting Sol's task boundaries.
+The current root Sol decides root completion versus delegation, direct versus fanout, domain,
+semantic boundaries, dependencies, model floors, and integration requirements. Balanced fanout
+requires two independent leaves over 30 seconds and at least 90 seconds of serial work; it defaults
+to two leaves and uses three only for three substantial streams when that lowers the predicted
+critical path by at least 20% versus the best two-leaf grouping. Quality retains the 15-second and
+two-to-five-leaf V3.3 policy. Code handles permissions, launches, joins, concurrency, budgets,
+cancellation, recovery, and message delivery without rewriting those semantic choices.
 
-Automatic fanout requires at least two independent work packages, enough expected work to repay the
-planning turn, estimated cost no greater than 40% of direct Sol, and estimated latency no greater
-than 70%. The router selects a 2-5 leaf ceiling before planning so Sol cannot over-decompose a small
-task.
+The 40% cost and 70% latency targets remain planning guidance, metrics, and balanced release gates.
+Missing a predicted ratio does not override a valid host Sol plan. A CLI or non-Sol caller uses
+`auto`: the runtime takes a zero-model direct route only for a provably bounded single objective;
+otherwise one internal Sol turn chooses a single execution agent or a bounded DAG.
 
 ## Model Routing
 
 | Tier  | Primary responsibility                                                               |
 | ----- | ------------------------------------------------------------------------------------ |
 | Luna  | Search, extraction, data processing, focused implementation, tests, mechanical edits |
-| Terra | Coupled multi-file work, difficult debugging, semantic integration                   |
+| Terra | Recovery/stateful work, coupled debugging, review/synthesis, office artifacts        |
 | Sol   | Planning, difficult algorithms, architecture, security, hidden correctness risks     |
 
 Bounded work defaults to Luna. A leaf is promoted only when its own evidence shows that stronger
-reasoning is needed; successful sibling work is retained. Sol planning, optional replanning, and
-optional final review reuse the same planner identity.
+reasoning is needed; successful sibling work is retained. A normal host plan starts no internal Sol
+thread. A blocker, material conflict, contract change, non-mechanical validation failure, or low
+confidence can lazily start one internal Sol continuation for a minimal `PlanPatch`.
 
 ## Scheduler
 
-Foreground defaults:
+Profile defaults:
 
-| Limit                 | Value |
-| --------------------- | ----: |
-| Concurrent leaves     |     5 |
-| Total leaves          |     8 |
-| Dependency waves      |     3 |
-| Sol specialist leaves |     1 |
-| Sol replans           |     1 |
+| Limit                 | Balanced foreground | Balanced durable | Quality foreground | Quality durable |
+| --------------------- | ------------------: | ---------------: | -----------------: | --------------: |
+| Concurrent leaves     |                   3 |                3 |                  5 |               5 |
+| Total leaves          |                   3 |                5 |                  8 |              20 |
+| Dependency waves      |                   3 |                3 |                  3 |               3 |
+| Sol specialist leaves |                   1 |                1 |                  1 |               1 |
+| Sol replans           |                   1 |                1 |                  1 |               1 |
 
-Durable auto-research jobs can raise the total-leaf limit to 20 while retaining the same five-way
-concurrency and three-wave ceiling.
+Balanced is intentionally capped at three foreground leaves. Quality durable auto-research may use
+up to 20 total leaves while retaining the five-way concurrency and three-wave ceiling.
 
 Independent writers in a clean Git repository receive isolated temporary worktrees. Their patches
 are ownership-checked, combined, validated, and then applied to the original workspace. Read-only
@@ -205,6 +229,7 @@ Omitting these flags retains the original workspace-scoped, non-approving behavi
 
 ```bash
 agent-trio run "implement the requested feature" -C /workspace
+agent-trio run --profile quality "perform a deep repository analysis" -C /workspace
 agent-trio run "update the report" -C /workspace --skill documents
 agent-trio run "inspect the signed-in page" -C /workspace --plugin browser@openai-bundled
 
@@ -216,8 +241,10 @@ agent-trio cancel dossier-01
 agent-trio benchmark observations.json
 ```
 
-Use `--strategy auto|direct|fanout` to select routing behavior. `auto` is the default and applies
-the cost and latency gates before starting Sol Planner.
+Use `--profile balanced|quality` to select the default policy; balanced is the default. An explicit
+`--strategy auto|direct|fanout` takes precedence over profile routing. In `auto`, clearly bounded
+single-agent work stays on the deterministic direct path, while other work receives one adaptive
+internal Sol plan.
 
 The CLI prints the local Monitor URL before a foreground model run starts and includes it in
 submitted and status results. MCP Apps clients use the embedded view; clients that only support
@@ -236,16 +263,18 @@ The local Codex clients expose one MCP tool named `agent_trio` with five actions
 | `resume` | Continue the original App Server thread with supplied input      |
 | `cancel` | Interrupt an active run without replaying completed side effects |
 
-Both installed skills implement their foreground flow with one model-visible tool call:
+All installed skills implement this foreground flow when they call the runtime:
 
 ```text
-generate unique runId -> run(runId) with embedded live Monitor
+generate unique runId -> submit(runId, monitorFirst=true) -> status(runId, wait=true) once
 ```
 
-The component performs cursor-based `status` long polling over the MCP Apps bridge while the
-original `run` call is active. Component calls do not enter the model context and add no planner
-turn, leaf, reviewer, or model token. `monitorFirst` plus `status(wait=true)` remains accepted for
-older clients. Ordinary durable background submissions return after acceptance.
+The first call returns as soon as the foreground run has a durable snapshot, which gives the host a
+completed tool result to attach the component to. The second call waits on that same run locally;
+it does not start another planner, leaf, reviewer, or model turn. The component performs its own
+cursor-based `status` long polling over the MCP Apps bridge, and those component calls never enter
+the model context. Ordinary durable background submissions omit `monitorFirst` and return after
+acceptance without the one-time foreground wait.
 
 Child App Server threads have project instruction loading, native multi-agent orchestration, and
 recursive Agent Trio access disabled.
@@ -297,6 +326,14 @@ tool call, command, or file change, retain bounded UI state, and add no model ca
 loopback fallback still listens only on `127.0.0.1` and uses a private per-job-root token.
 
 ## Development
+
+`npm run check` keeps the authored Office corpus disabled because generating and qualifying that
+release benchmark is intentionally resource intensive. Run it explicitly on a machine with
+LibreOffice using:
+
+```bash
+AGENT_TRIO_RUN_AUTHORED_CORE_TESTS=1 npm test -- tests/authored-core-benchmark-corpus.test.ts
+```
 
 ```bash
 npm run format:check

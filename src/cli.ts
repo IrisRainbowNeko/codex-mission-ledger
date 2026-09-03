@@ -19,6 +19,7 @@ import type {
   ExecutionLimits,
   HostAccess,
   HostApproval,
+  OptimizationProfile,
   TaskDomain,
 } from "./core/contracts.js";
 import type { AgentTrioService } from "./core/service.js";
@@ -56,6 +57,7 @@ Run and submit options:
   --host-approval MODE  Caller approval: never or approve-for-me
   --domain DOMAIN       Task domain
   --strategy MODE       Route mode: auto, direct, or fanout
+  --profile PROFILE     balanced (default) or quality
   --direct-tier TIER    Luna or Terra for strategy=direct
   --constraint TEXT     Repeatable task constraint
   --skill NAME[=PATH]   Repeatable direct-path skill capability
@@ -303,6 +305,7 @@ function parseStartRequest(
   let hostApproval: HostApproval | undefined;
   let domain: TaskDomain | undefined;
   let strategy: "auto" | "direct" | "fanout" | undefined;
+  let profile: OptimizationProfile = "balanced";
   let directTier: "luna" | "terra" | undefined;
   let integrate: boolean | undefined;
   const constraints: string[] = [];
@@ -366,6 +369,15 @@ function parseStartRequest(
           throw new CliUsageError("strategy must be auto, direct, or fanout");
         }
         strategy = consumed.value;
+        index += consumed.extra;
+        break;
+      }
+      case "--profile": {
+        const consumed = optionValue(option, args, index);
+        if (consumed.value !== "balanced" && consumed.value !== "quality") {
+          throw new CliUsageError("profile must be balanced or quality");
+        }
+        profile = consumed.value;
         index += consumed.extra;
         break;
       }
@@ -467,6 +479,7 @@ function parseStartRequest(
     action,
     objective,
     cwd: requestCwd,
+    profile,
     ...(runId === undefined ? {} : { runId: requireNonEmpty(runId, "runId") }),
     ...(hostAccess === undefined ? {} : { hostAccess }),
     ...(hostApproval === undefined ? {} : { hostApproval }),

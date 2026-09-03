@@ -5,19 +5,31 @@ import type {
   LeafResult,
   LeafTask,
   ModelTier,
+  OptimizationProfile,
   ReasoningEffort,
   ReplanTrigger,
   ValidatorStrength,
 } from "./contracts.js";
 import type { PlannedExecutionRoute } from "./integration.js";
 
-export const DEFAULT_EXECUTION_LIMITS: Readonly<ExecutionLimits> = Object.freeze({
+export const QUALITY_EXECUTION_LIMITS: Readonly<ExecutionLimits> = Object.freeze({
   maxConcurrent: 5,
   maxLeaves: 8,
   maxWaves: 3,
   maxSolLeaves: 1,
   maxReplans: 1,
 });
+
+export const BALANCED_EXECUTION_LIMITS: Readonly<ExecutionLimits> = Object.freeze({
+  maxConcurrent: 3,
+  maxLeaves: 3,
+  maxWaves: 3,
+  maxSolLeaves: 1,
+  maxReplans: 1,
+});
+
+/** Backwards-compatible alias for callers that do not have a request profile. */
+export const DEFAULT_EXECUTION_LIMITS = QUALITY_EXECUTION_LIMITS;
 
 /** Hard safety bounds for a single planner session. */
 export const MAX_EXECUTION_LIMITS: Readonly<
@@ -38,12 +50,14 @@ export const ALLOWED_EFFORTS_BY_TIER: Readonly<Record<ModelTier, readonly Reason
 
 export const FANOUT_MIN_TASKS = 2;
 export const FANOUT_MAX_TASKS = 20;
-// A fixed 30 second leaf floor rejected measured three-way jobs that still cleared the complete
-// 40% cost and 70% latency gates. Keep only a startup-amortization floor here; the router's
-// workspace evidence and end-to-end economic model remain the actual fanout admission controls.
+// Keep only a startup-amortization floor. Sol owns semantic decomposition; runtime code rejects
+// leaves too short to repay launch overhead.
 export const FANOUT_MIN_TASK_SECONDS = 15;
+export const BALANCED_FANOUT_MIN_TASK_SECONDS = 30;
 export const FOREGROUND_MAX_LEAVES = 8;
 export const DURABLE_MAX_LEAVES = 20;
+export const BALANCED_FOREGROUND_MAX_LEAVES = 3;
+export const BALANCED_DURABLE_MAX_LEAVES = 5;
 export const REPLAN_LOW_CONFIDENCE_THRESHOLD = 0.7;
 export const REPLAN_DEVIATION_RATIO = 1.3;
 
@@ -75,8 +89,11 @@ export class PolicyError extends Error {
 
 export function normalizeExecutionLimits(
   overrides: Partial<ExecutionLimits> = {},
+  profile: OptimizationProfile = "quality",
 ): ExecutionLimits {
-  const normalized: ExecutionLimits = { ...DEFAULT_EXECUTION_LIMITS };
+  const normalized: ExecutionLimits = {
+    ...(profile === "balanced" ? BALANCED_EXECUTION_LIMITS : QUALITY_EXECUTION_LIMITS),
+  };
 
   for (const name of LIMIT_NAMES) {
     const value = overrides[name];
@@ -122,9 +139,20 @@ export function normalizeExecutionLimits(
 export function normalizeExecutionLimitsForMode(
   mode: JobMode,
   overrides: Partial<ExecutionLimits> = {},
+  profile: OptimizationProfile = "quality",
 ): ExecutionLimits {
-  const normalized = normalizeExecutionLimits(overrides);
-  const maximum = mode === "foreground" ? FOREGROUND_MAX_LEAVES : DURABLE_MAX_LEAVES;
+  const normalized = normalizeExecutionLimits(overrides, profile);
+  if (profile === "balanced" && mode === "durable" && overrides.maxLeaves === undefined) {
+    normalized.maxLeaves = BALANCED_DURABLE_MAX_LEAVES;
+  }
+  const maximum =
+    profile === "balanced"
+      ? mode === "foreground"
+        ? BALANCED_FOREGROUND_MAX_LEAVES
+        : BALANCED_DURABLE_MAX_LEAVES
+      : mode === "foreground"
+        ? FOREGROUND_MAX_LEAVES
+        : DURABLE_MAX_LEAVES;
   if (normalized.maxLeaves > maximum) {
     throw new PolicyError("limit_exceeded", `${mode} runs cannot exceed ${maximum} leaves.`, {
       name: "maxLeaves",
@@ -134,6 +162,10 @@ export function normalizeExecutionLimitsForMode(
     });
   }
   return normalized;
+}
+
+export function fanoutMinTaskSeconds(profile: OptimizationProfile = "quality"): number {
+  return profile === "balanced" ? BALANCED_FANOUT_MIN_TASK_SECONDS : FANOUT_MIN_TASK_SECONDS;
 }
 
 function assertFiniteNonNegative(value: number, name: string, allowZero: boolean): void {
@@ -233,7 +265,8 @@ export function recommendEffectiveTier(
     | "validation"
     | "validatorStrength"
     | "domain"
-  >,
+  > &
+    Partial<Pick<LeafTask, "objective" | "capabilities">>,
 ): ModelTier {
   const minTier = task.minTier ?? "luna";
   if (minTier === "sol") {
@@ -244,6 +277,21 @@ export function recommendEffectiveTier(
   }
   if (task.difficulty >= 0.85 || task.ambiguity >= 0.8) {
     return "sol";
+  }
+
+  const semanticTerraWork =
+    task.domain === "office" ||
+    (task.capabilities ?? []).some((capability) =>
+      /(?:document|spreadsheet|presentation|powerpoint|ppt)/i.test(capability.name),
+    ) ||
+    /\b(?:recover|recovery|resume|checkpoint|rollback|transaction|idempoten|state machine|corrupt|conflict resolution|code review|paper review|peer review|synthesi[sz]e)\b/i.test(
+      task.objective ?? "",
+    ) ||
+    /(?:恢复|续跑|断点|回滚|事务|幂等|状态机|损坏|冲突消解|代码审查|论文评审|审稿|综合分析)/u.test(
+      task.objective ?? "",
+    );
+  if (semanticTerraWork) {
+    return "terra";
   }
 
   const validatorStrength: ValidatorStrength =
@@ -333,6 +381,7 @@ export type FanoutRejectionReason =
   | "invalid_duration"
   | "invalid_dependency_graph"
   | "ownership_overlap"
+  | "insufficient_serial_work"
   | "no_time_saving";
 
 export interface FanoutAdmissionOptions {
@@ -342,13 +391,11 @@ export interface FanoutAdmissionOptions {
   launchSeconds?: number;
   integrationSeconds?: number;
   minTaskSeconds?: number;
+  minSerialSeconds?: number;
   maxTasks?: number;
   /** Maximum fanout/direct wall-time ratio accepted by the product. */
   maxLatencyRatio?: number;
-  /**
-   * Validate only the executable DAG shape. The caller must apply the cost, minimum-work, and
-   * latency gates later with calibrated runtime evidence.
-   */
+  /** Validate only the executable DAG shape; the route optimizer applies hard timing constraints. */
   deferEconomics?: boolean;
 }
 
@@ -403,6 +450,7 @@ export function evaluateFanoutAdmission(
   const limits = normalizeExecutionLimits(options.limits ?? {});
   const maxTasks = options.maxTasks ?? Math.min(FANOUT_MAX_TASKS, limits.maxLeaves);
   const minTaskSeconds = options.minTaskSeconds ?? FANOUT_MIN_TASK_SECONDS;
+  const minSerialSeconds = options.minSerialSeconds ?? 0;
   const planningSeconds = options.planningSeconds ?? 10;
   const launchSeconds = options.launchSeconds ?? 5;
   const integrationSeconds = options.integrationSeconds ?? 15;
@@ -412,6 +460,7 @@ export function evaluateFanoutAdmission(
   for (const [name, value] of [
     ["maxTasks", maxTasks],
     ["minTaskSeconds", minTaskSeconds],
+    ["minSerialSeconds", minSerialSeconds],
     ["planningSeconds", planningSeconds],
     ["launchSeconds", launchSeconds],
     ["integrationSeconds", integrationSeconds],
@@ -490,6 +539,9 @@ export function evaluateFanoutAdmission(
     (total, task) => total + (Number.isFinite(task.expectedSeconds) ? task.expectedSeconds : 0),
     0,
   );
+  if (serialSeconds < minSerialSeconds) {
+    reasons.add("insufficient_serial_work");
+  }
   const directSeconds = options.directSeconds ?? serialSeconds;
   assertFiniteNonNegative(directSeconds, "directSeconds", true);
   const concurrencyFloor =

@@ -4,6 +4,7 @@ export const CODEX_APP_SERVER_VERSION = "0.151.0" as const;
 export type ModelTier = "luna" | "terra" | "sol";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type ExecutionStrategy = "auto" | "direct" | "fanout";
+export type OptimizationProfile = "balanced" | "quality";
 export type AggregationMode = "auto" | "deterministic" | "terra";
 export type ValidatorStrength = "none" | "weak" | "strong";
 export type TaskAccess = "readOnly" | "workspaceWrite";
@@ -265,6 +266,8 @@ export interface ExecutionLimits {
 export interface RunRequest {
   objective: string;
   cwd: string;
+  /** Routing/cost policy. Missing values from older clients are normalized to balanced. */
+  profile?: OptimizationProfile;
   /** Permission mode of the calling Codex task. Children may inherit it but never exceed it. */
   hostAccess?: HostAccess;
   /** Approval mode of the calling Codex task. Children may inherit it but never strengthen it. */
@@ -291,6 +294,8 @@ export type AgentTrioRequest =
   | { action: "resume"; runId: string; input?: string };
 
 export interface BatchMetrics {
+  /** Always emitted by V3.4; optional only so pre-profile snapshots remain readable. */
+  profile?: OptimizationProfile;
   startedAt: string;
   completedAt: string;
   elapsedMs: number;
@@ -308,6 +313,19 @@ export interface BatchMetrics {
   integrationSkipped?: boolean;
   estimatedDirectCostUsd?: number | null;
   estimatedFanoutCostUsd?: number | null;
+  routeSource?: "host_sol" | "internal_sol" | "deterministic_direct";
+  selectedDomain?: TaskDomain;
+  selectedWaveCount?: number;
+  selectedTierCounts?: Partial<Record<ModelTier, number>>;
+  estimatedSerialSeconds?: number | null;
+  estimatedCriticalPathSeconds?: number | null;
+  estimatedDirectSeconds?: number | null;
+  estimatedFanoutSeconds?: number | null;
+  estimatedCostRatio?: number | null;
+  estimatedLatencyRatio?: number | null;
+  /** Actual/estimated selected-route ratios used to calibrate future cold projections. */
+  predictionCostErrorRatio?: number | null;
+  predictionLatencyErrorRatio?: number | null;
   /** Present on V3 results; optional so snapshots produced before stage accounting remain readable. */
   usageByStage?: BatchUsageBreakdown;
 }
@@ -332,6 +350,8 @@ export interface PlannerSessionState {
   /** Absent in snapshots written before run-scoped planner checkpointing. */
   runId?: string;
   threadId: string;
+  /** Real internal Sol thread created lazily for a host-planned session. */
+  continuationThreadId?: string | null;
   request: RunRequest;
   limits: ExecutionLimits;
   initialPlan: ExecutionPlan;

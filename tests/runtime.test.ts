@@ -131,7 +131,7 @@ describe("createDefaultRuntime", () => {
     const structuredTokens = Math.ceil(Buffer.byteLength(JSON.stringify(input), "utf8") / 4);
 
     expect(estimator.estimateUsd(input)).toBeCloseTo(
-      ((10_000 + structuredTokens) * 10 + 1_200 * 30) / 1_000_000,
+      ((14_500 + structuredTokens) * 10 + 250 * 30) / 1_000_000,
       10,
     );
     expect(createNonLeafCostEstimator({}, undefined).estimateUsd(input)).toBeNull();
@@ -444,9 +444,9 @@ describe("createDefaultRuntime", () => {
       },
     });
     const ownedPaths = ["alpha", "beta"].map((id) =>
-      Array.from({ length: 10 }, (_, index) => {
+      Array.from({ length: 20 }, (_, index) => {
         const path = `${id}-${String(index)}.txt`;
-        writeFileSync(join(root, path), "x".repeat(1_024));
+        writeFileSync(join(root, path), "x".repeat(4_096));
         return path;
       }),
     );
@@ -459,7 +459,7 @@ describe("createDefaultRuntime", () => {
         paths: ownedPaths[index]!,
         after: [],
         floor: null,
-        expectedSeconds: 90,
+        expectedSeconds: 46,
       })),
     };
 

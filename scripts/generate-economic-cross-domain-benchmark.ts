@@ -6,11 +6,14 @@ import { fileURLToPath } from "node:url";
 import {
   BENCHMARK_MANIFEST_VERSION,
   createFileBenchmarkArtifactReader,
+  economicEligibilityFromCalibration,
   hashBenchmarkBytes,
+  loadBenchmarkCalibrationTable,
   sealBenchmarkManifest,
   verifyBenchmarkCorpus,
   type BenchmarkArtifactRole,
   type BenchmarkCorpusManifest,
+  type LoadedBenchmarkCalibration,
   type BenchmarkManifestDraft,
 } from "../src/benchmark.js";
 import { parseSealedBenchmarkValidatorV1 } from "../src/benchmark-validator.js";
@@ -742,7 +745,9 @@ function rubricFor(criteria: readonly Criterion[]): string {
   )}\n`;
 }
 
-export function createEconomicCrossDomainCorpus(): EconomicCrossDomainCorpus {
+export function createEconomicCrossDomainCorpus(
+  calibration?: Readonly<LoadedBenchmarkCalibration>,
+): EconomicCrossDomainCorpus {
   const artifacts: Array<{ path: string; bytes: Uint8Array }> = [];
   const instances: BenchmarkManifestDraft["instances"] = [];
   for (const definition of DEFINITIONS) {
@@ -764,17 +769,18 @@ export function createEconomicCrossDomainCorpus(): EconomicCrossDomainCorpus {
     if (workspace === undefined) {
       throw new Error(`missing workspace for ${definition.instanceId}`);
     }
+    const eligibility = economicEligibilityFromCalibration(
+      calibration,
+      definition.familyId,
+      definition.units.length,
+    );
     instances.push({
       familyId: definition.familyId,
       instanceId: definition.instanceId,
       seed: definition.seed,
       sourceRevision: "generated economic cross-domain development v3",
       evaluationClass: "economic-decomposable",
-      eligibility: {
-        independentUnits: definition.units.length,
-        estimatedMinLeafSeconds: 45,
-        calibrationRevision: "economic-cross-domain-v3",
-      },
+      ...(eligibility === undefined ? {} : { eligibility }),
       initialStateSha256: workspace.sha256,
       artifacts: seals,
     });
@@ -797,9 +803,14 @@ export function createEconomicCrossDomainCorpus(): EconomicCrossDomainCorpus {
 
 export async function generateEconomicCrossDomainCorpus(
   rootDirectory = DEFAULT_ROOT,
+  calibrationPath?: string,
 ): Promise<string> {
   const root = resolve(rootDirectory);
-  const corpus = createEconomicCrossDomainCorpus();
+  const calibration =
+    calibrationPath === undefined
+      ? undefined
+      : await loadBenchmarkCalibrationTable(calibrationPath);
+  const corpus = createEconomicCrossDomainCorpus(calibration);
   for (const artifact of corpus.artifacts) {
     const target = resolve(root, artifact.path);
     await mkdir(dirname(target), { recursive: true });
@@ -816,6 +827,28 @@ if (
   process.argv[1] !== undefined &&
   resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
 ) {
-  const manifestPath = await generateEconomicCrossDomainCorpus(process.argv[2]);
+  const { rootDirectory, calibrationPath } = generatorArguments(process.argv.slice(2));
+  const manifestPath = await generateEconomicCrossDomainCorpus(rootDirectory, calibrationPath);
   process.stdout.write(`${manifestPath}\n`);
+}
+
+function generatorArguments(args: readonly string[]): {
+  rootDirectory: string | undefined;
+  calibrationPath: string | undefined;
+} {
+  const calibrationIndex = args.indexOf("--calibration");
+  const calibrationPath = calibrationIndex < 0 ? undefined : args[calibrationIndex + 1];
+  if (calibrationIndex >= 0 && calibrationPath === undefined) {
+    throw new Error("--calibration requires a JSON file path");
+  }
+  const positional =
+    calibrationIndex < 0
+      ? [...args]
+      : args.filter((_, index) => index !== calibrationIndex && index !== calibrationIndex + 1);
+  if (positional.length > 1) {
+    throw new Error(
+      "usage: generate-economic-cross-domain-benchmark [root] [--calibration file.json]",
+    );
+  }
+  return { rootDirectory: positional[0], calibrationPath };
 }

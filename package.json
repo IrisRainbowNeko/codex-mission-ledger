@@ -1,14 +1,14 @@
 {
   "name": "codex-agent-trio",
-  "version": "3.2.0",
+  "version": "3.4.0",
   "private": true,
-  "description": "A Sol-planned, cost-aware Codex App Server multi-agent runtime.",
+  "description": "A dual-profile, Sol-routed Codex App Server multi-agent runtime.",
   "type": "module",
   "bin": {
     "agent-trio": "./dist/cli.js",
     "agent-trio-doctor": "./dist/doctor.js",
     "agent-trio-install": "./dist/install-user.js",
-    "agent-trio-mcp": "./dist/mcp/server.js"
+    "agent-trio-mcp": "./dist/mcp/launcher.js"
   },
   "exports": {
     ".": {

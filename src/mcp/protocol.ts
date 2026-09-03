@@ -9,12 +9,15 @@ import type {
   BatchResult,
   CapabilityRef,
   ExecutionLimits,
+  HostSemanticPlan,
+  OptimizationProfile,
   TaskDomain,
 } from "../core/contracts.js";
 import type { AgentTrioService } from "../core/service.js";
 import type { MonitorDataQuery, MonitorDataUpdate } from "../monitor/data.js";
+import { PlanValidationError } from "../core/plan-validation.js";
 import { hostSemanticPlanJsonSchemaForRoute, parseHostSemanticPlan } from "../core/planner.js";
-import { FANOUT_MIN_TASK_SECONDS } from "../core/policy.js";
+import { fanoutMinTaskSeconds } from "../core/policy.js";
 import { AGENT_TRIO_MONITOR_RESOURCE_URI, MCP_APP_MIME_TYPE, MCP_MONITOR_HTML } from "./app.js";
 
 const MAX_RESULT_BYTES = 64 * 1024;
@@ -57,6 +60,7 @@ export const AGENT_TRIO_TOOL_SCHEMA = {
         "Current calling-task approval mode. Pass it exactly; never enable automatic approval unless the caller uses Approve for me.",
     },
     strategy: { type: "string", enum: ["auto", "direct", "fanout"] },
+    profile: { type: "string", enum: ["balanced", "quality"], default: "balanced" },
     directTier: { type: "string", enum: ["luna", "terra"] },
     domain: { type: "string", enum: DOMAIN_VALUES },
     constraints: {
@@ -139,7 +143,7 @@ export const AGENT_TRIO_TOOL_SCHEMA = {
   ],
 } as const;
 
-export const AGENT_TRIO_TOOL_DESCRIPTION = `Run, submit, inspect, resume, or cancel Agent Trio. The result is the complete user-visible delivery; after success, do not repeat finalResponse. For UI-capable foreground work, generate a unique runId and make one action=run call; the attached monitor uses that runId without model polling. Legacy Monitor-first clients may call submit with monitorFirst=true, then status with wait=true exactly once. For run or submit, pass hostAccess and hostApproval as the calling Codex task's current permission and approval modes; copy them exactly and never request stronger access or approval. Use hostApproval=approveForMe only when the caller uses Approve for me; otherwise use never. For nontrivial work use objective, cwd, and strategy=auto without semanticPlan: the runtime selects cheap direct execution or invokes its internal Sol planner before Luna-first fanout. The root handles one-turn work itself, using its normal workspace tools when needed. One local fix, a finite exact calculation over a handful of local inputs, a targeted rewrite, or another single-deliverable task is direct; a domain label such as algorithm or research is not by itself a reason to call this tool. Do not call merely because partitions exist: call when at least two useful independent leaves are expected to take over ${String(FANOUT_MIN_TASK_SECONDS)} seconds of actual Luna wall time and the predicted complete plan remains below 40% cost and 70% latency. The economic gate, not a fixed total-duration threshold, decides whether several smaller Luna leaves repay Sol planning. A current Sol root may instead supply strategy=fanout and a semanticPlan fast path. Plan from the objective and workspace file index; leave file inspection to the leaves. Use 2-5 independent leaves, preferring finer partitions only when they shorten the critical path. Host plans use exactly semanticPlan={"access":"readOnly","merge":"deterministic","risk":"low","tasks":[{"goal":"short bounded goal","paths":["relative/path"],"after":[],"floor":null,"expectedSeconds":90}]}. Tasks never contain id, task, tier, model, effort, checks, or the repeated full objective. Omit capabilities unless exact structured capability objects were supplied. monitorCursor, monitorRevision, and monitorWaitMs are reserved for the embedded UI. status/resume/cancel require runId.`;
+export const AGENT_TRIO_TOOL_DESCRIPTION = `Run or monitor Agent Trio. For foreground UI, submit once with monitorFirst=true, then status once with wait=true. Copy hostAccess and hostApproval exactly. profile defaults to balanced; quality preserves V3.3 routing. strategy=direct delegates one worker: Luna for bounded mechanical work; Terra for recovery/stateful work, coupled debugging, review/synthesis, or office artifacts. strategy=fanout requires semanticPlan with 2+ independent tasks; use Luna by default, disjoint writer paths, valid dependencies, and at most one Sol leaf. Balanced uses 2 tasks normally; use 3 only for three substantial streams, >30s each, >=90s serial work, and >=20% critical-path gain over the best 2-task grouping. Quality allows 2-5 tasks and >15s each. Use strategy=auto only when semantic boundaries are unavailable. Runtime enforces permissions, DAG, ownership, explicit budget, concurrency, and positive time saving; 40% cost and 70% latency are telemetry, not per-run vetoes. semanticPlan tasks contain only goal, paths, after indexes, floor, and expectedSeconds; merge is deterministic or terra, risk is low, medium, or high. status/resume/cancel require runId.`;
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -291,7 +295,7 @@ export class AgentTrioMcpProtocol {
               tools: { listChanged: false },
               resources: { subscribe: false, listChanged: false },
             },
-            serverInfo: { name: "agent-trio", version: "3.2.0" },
+            serverInfo: { name: "agent-trio", version: "3.4.0" },
           });
           return;
         }
@@ -587,6 +591,7 @@ export function parseAgentTrioRequest(value: unknown): ParsedAgentTrioRequest {
     "hostAccess",
     "hostApproval",
     "strategy",
+    "profile",
     "directTier",
     "domain",
     "constraints",
@@ -631,13 +636,40 @@ export function parseAgentTrioRequest(value: unknown): ParsedAgentTrioRequest {
   if (hostApproval !== undefined && hostApproval !== "never" && hostApproval !== "approveForMe") {
     throw new Error("hostApproval must be never or approveForMe");
   }
-  const semanticPlan =
-    input["semanticPlan"] === undefined
-      ? undefined
-      : parseHostSemanticPlan(input["semanticPlan"], "fanout", 20);
   const strategy = input["strategy"];
   if (strategy !== undefined && !["auto", "direct", "fanout"].includes(strategy as string)) {
     throw new Error("strategy must be auto, direct, or fanout");
+  }
+  const profileValue = input["profile"];
+  if (profileValue !== undefined && profileValue !== "balanced" && profileValue !== "quality") {
+    throw new Error("profile must be balanced or quality");
+  }
+  const profile: OptimizationProfile = profileValue ?? "balanced";
+  const hasSemanticPlan = input["semanticPlan"] !== undefined;
+  if (hasSemanticPlan && strategy !== "fanout") {
+    throw new Error("semanticPlan requires strategy=fanout");
+  }
+  let semanticPlan: HostSemanticPlan | undefined;
+  let hostPlanRepairConstraint: string | undefined;
+  if (hasSemanticPlan) {
+    try {
+      semanticPlan = parseHostSemanticPlan(
+        input["semanticPlan"],
+        "fanout",
+        20,
+        fanoutMinTaskSeconds(profile),
+      );
+    } catch (error) {
+      if (!(error instanceof PlanValidationError)) {
+        throw error;
+      }
+      const details = error.issues
+        .slice(0, 8)
+        .map((issue) => `${issue.path} ${issue.message}`)
+        .join(", ")
+        .slice(0, 1_000);
+      hostPlanRepairConstraint = `Host semanticPlan failed structural validation and must be regenerated once by internal Sol: ${details}`;
+    }
   }
   const directTier = input["directTier"];
   if (directTier !== undefined && directTier !== "luna" && directTier !== "terra") {
@@ -646,9 +678,11 @@ export function parseAgentTrioRequest(value: unknown): ParsedAgentTrioRequest {
   if (directTier !== undefined && strategy !== "direct") {
     throw new Error("directTier requires strategy=direct");
   }
-  if (semanticPlan !== undefined && strategy !== "fanout") {
-    throw new Error("semanticPlan requires strategy=fanout");
-  }
+  const parsedConstraints = constraints === undefined ? undefined : ([...constraints] as string[]);
+  const effectiveConstraints =
+    hostPlanRepairConstraint === undefined
+      ? parsedConstraints
+      : [...(parsedConstraints ?? []), hostPlanRepairConstraint];
   const limits = input["limits"] === undefined ? undefined : parseLimits(input["limits"]);
   if (input["integrate"] !== undefined && typeof input["integrate"] !== "boolean") {
     throw new Error("integrate must be boolean");
@@ -657,6 +691,7 @@ export function parseAgentTrioRequest(value: unknown): ParsedAgentTrioRequest {
     action,
     objective: requiredString(input["objective"], "objective", 200_000),
     cwd: requiredString(input["cwd"], "cwd", 4_096),
+    profile,
     ...(input["runId"] === undefined
       ? {}
       : { runId: requiredString(input["runId"], "runId", 128) }),
@@ -665,7 +700,7 @@ export function parseAgentTrioRequest(value: unknown): ParsedAgentTrioRequest {
     ...(hostApproval === undefined ? {} : { hostApproval }),
     ...(strategy === undefined ? {} : { strategy: strategy as "auto" | "direct" | "fanout" }),
     ...(directTier === undefined ? {} : { directTier: directTier as "luna" | "terra" }),
-    ...(constraints === undefined ? {} : { constraints: [...constraints] as string[] }),
+    ...(effectiveConstraints === undefined ? {} : { constraints: effectiveConstraints }),
     ...(capabilities === undefined ? {} : { capabilities }),
     ...(semanticPlan === undefined ? {} : { semanticPlan }),
     ...(limits === undefined ? {} : { limits }),
@@ -894,9 +929,16 @@ function monitorToolResult(
               : {
                   startedAt: result.metrics.startedAt,
                   elapsedMs: result.metrics.elapsedMs,
+                  profile: result.metrics.profile,
                   estimatedCostUsd: result.metrics.estimatedCostUsd,
                   peakConcurrency: result.metrics.peakConcurrency,
                   routeReason: boundedBytes(result.metrics.routeReason, 500) ?? "",
+                  routeSource: result.metrics.routeSource,
+                  selectedDomain: result.metrics.selectedDomain,
+                  selectedLeafCount: result.metrics.selectedLeafCount,
+                  selectedWaveCount: result.metrics.selectedWaveCount,
+                  estimatedSerialSeconds: result.metrics.estimatedSerialSeconds,
+                  estimatedCriticalPathSeconds: result.metrics.estimatedCriticalPathSeconds,
                 },
           needsAction: base.needsAction,
           error: base.error,
@@ -964,10 +1006,22 @@ function monitorResultProjection(result: BatchResult, compact = false): Record<s
       ? null
       : {
           startedAt: result.metrics.startedAt,
+          profile: result.metrics.profile,
           elapsedMs: result.metrics.elapsedMs,
           estimatedCostUsd: result.metrics.estimatedCostUsd,
           peakConcurrency: result.metrics.peakConcurrency,
           routeReason: boundedText(result.metrics.routeReason ?? "", 500),
+          routeSource: result.metrics.routeSource,
+          selectedDomain: result.metrics.selectedDomain,
+          selectedLeafCount: result.metrics.selectedLeafCount,
+          selectedWaveCount: result.metrics.selectedWaveCount,
+          selectedTierCounts: result.metrics.selectedTierCounts,
+          estimatedSerialSeconds: result.metrics.estimatedSerialSeconds,
+          estimatedCriticalPathSeconds: result.metrics.estimatedCriticalPathSeconds,
+          estimatedCostRatio: result.metrics.estimatedCostRatio,
+          estimatedLatencyRatio: result.metrics.estimatedLatencyRatio,
+          predictionCostErrorRatio: result.metrics.predictionCostErrorRatio,
+          predictionLatencyErrorRatio: result.metrics.predictionLatencyErrorRatio,
           totalTokens: result.metrics.usage.reduce(
             (sum, item) => sum + Number(item.totalTokens ?? 0),
             0,

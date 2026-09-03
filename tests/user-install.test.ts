@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   PROFILE_FILES,
   cleanupLegacyHooksJson,
+  containsLegacyRuntime,
   installUserScope,
   mergeUserConfig,
   resolveUserLayout,
@@ -51,6 +52,7 @@ enabled = true
       packageRoot: "/opt/agent-trio",
       nodePath: "/usr/bin/node",
       jobRoot: "/var/lib/agent-trio/jobs",
+      codexHome: "/home/me/.codex",
     };
 
     const merged = mergeUserConfig(source, options);
@@ -63,13 +65,28 @@ enabled = true
     expect(merged).not.toContain("[[skills.config]]");
     expect(merged.match(/\[mcp_servers\.agent_trio\]/gu)).toHaveLength(1);
     expect(merged).toContain('command = "/usr/bin/node"');
-    expect(merged).toContain('args = ["/opt/agent-trio/dist/mcp/server.js"]');
+    expect(merged).toContain(
+      'args = ["/opt/agent-trio/dist/mcp/launcher.js", "--env-dir", "/home/me/.codex"]',
+    );
     expect(merged).toContain('default_tools_approval_mode = "approve"');
     expect(merged).toContain('AGENT_TRIO_JOB_ROOT = "/var/lib/agent-trio/jobs"');
     expect(mergeUserConfig(merged, options)).toBe(merged);
   });
 
-  it("migrates V1/V2 to one-shot and session skills without profiles or AGENTS instructions", () => {
+  it("does not mistake the GitHub clone directory for a legacy runtime", () => {
+    const config = mergeUserConfig("", {
+      packageRoot: "/home/me/codex-mission-ledger",
+      nodePath: "/usr/bin/node",
+      codexHome: "/home/me/.codex",
+    });
+
+    expect(containsLegacyRuntime(config)).toBe(false);
+    expect(
+      containsLegacyRuntime('command = "/home/me/.codex/hooks/codex-mission-ledger/run_hook.mjs"'),
+    ).toBe(true);
+  });
+
+  it("migrates V1/V2 to balanced and quality skills without native profiles or AGENTS instructions", () => {
     const paths = temporaryPaths();
     const layout = resolveUserLayout(paths);
     mkdirSync(dirname(layout.configToml), { recursive: true });
@@ -101,7 +118,8 @@ enabled = true
       "utf8",
     );
     expect(installedSkill).toContain("`agent_trio` MCP runtime");
-    expect(installedSkill).toContain("exactly one `action=run` call");
+    expect(installedSkill).toContain("`monitorFirst=true`");
+    expect(installedSkill).toContain("exactly one `action=status` call");
     expect(installedSkill).toContain("MCP Apps monitor");
     expect(readFileSync(join(layout.skillDirectory, "agents", "openai.yaml"), "utf8")).toContain(
       "allow_implicit_invocation: false",
@@ -114,6 +132,11 @@ enabled = true
       readFileSync(join(layout.sessionSkillDirectory, "agents", "openai.yaml"), "utf8"),
     ).toContain("allow_implicit_invocation: true");
     expect(result.written).toContain(layout.sessionSkillDirectory);
+    expect(result.written).toContain(layout.qualitySkillDirectory);
+    expect(result.written).toContain(layout.qualitySessionSkillDirectory);
+    expect(readFileSync(join(layout.qualitySkillDirectory, "SKILL.md"), "utf8")).toContain(
+      "`profile=quality`",
+    );
     expect(PROFILE_FILES).toEqual([]);
     expect(existsSync(join(layout.profileDirectory, "luna-worker.toml"))).toBe(false);
   });
@@ -130,7 +153,7 @@ enabled = true
     expect(readFileSync(personal, "utf8")).toBe('name = "personal"\n');
   });
 
-  it("uninstalls only the V3 MCP table and both managed skills", () => {
+  it("uninstalls only the V3 MCP table and all four managed skills", () => {
     const paths = temporaryPaths();
     const layout = resolveUserLayout(paths);
     mkdirSync(dirname(layout.configToml), { recursive: true });
@@ -148,10 +171,12 @@ enabled = true
     expect(config).not.toContain("mcp_servers.agent_trio");
     expect(existsSync(layout.skillDirectory)).toBe(false);
     expect(existsSync(layout.sessionSkillDirectory)).toBe(false);
+    expect(existsSync(layout.qualitySkillDirectory)).toBe(false);
+    expect(existsSync(layout.qualitySessionSkillDirectory)).toBe(false);
     expect(existsSync(layout.manifestPath)).toBe(false);
   });
 
-  it("replaces both managed skills idempotently without reporting them as legacy", () => {
+  it("replaces all managed skills idempotently without reporting them as legacy", () => {
     const paths = temporaryPaths();
     const first = installUserScope(paths);
     const second = installUserScope(paths);
@@ -159,8 +184,12 @@ enabled = true
 
     expect(first.written).toContain(layout.skillDirectory);
     expect(first.written).toContain(layout.sessionSkillDirectory);
+    expect(first.written).toContain(layout.qualitySkillDirectory);
+    expect(first.written).toContain(layout.qualitySessionSkillDirectory);
     expect(second.removedLegacy).not.toContain(layout.skillDirectory);
     expect(second.removedLegacy).not.toContain(layout.sessionSkillDirectory);
+    expect(second.removedLegacy).not.toContain(layout.qualitySkillDirectory);
+    expect(second.removedLegacy).not.toContain(layout.qualitySessionSkillDirectory);
     expect(verifyUserInstall(paths).problems).toEqual([]);
     expect(readFileSync(join(layout.skillDirectory, "SKILL.md"), "utf8")).toContain(
       "name: agent-trio",

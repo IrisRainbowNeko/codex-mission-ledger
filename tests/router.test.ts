@@ -1,953 +1,378 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import type { ExecutionPlan, HostSemanticPlan, RunRequest } from "../src/core/contracts.js";
 import { LocalRouteOptimizer, recommendDirectTier } from "../src/core/router.js";
 
-const temporaryWorkspaces: string[] = [];
+const PRICE_TABLE = {
+  "gpt-5.6-sol": {
+    inputPerMillionUsd: 4,
+    cachedInputPerMillionUsd: 0.4,
+    outputPerMillionUsd: 20,
+  },
+  "gpt-5.6-terra": {
+    inputPerMillionUsd: 2,
+    cachedInputPerMillionUsd: 0.2,
+    outputPerMillionUsd: 12,
+  },
+  "gpt-5.6-luna": {
+    inputPerMillionUsd: 0.2,
+    cachedInputPerMillionUsd: 0.02,
+    outputPerMillionUsd: 1.2,
+  },
+} as const;
 
-afterEach(() => {
-  for (const workspace of temporaryWorkspaces.splice(0)) {
-    rmSync(workspace, { recursive: true, force: true });
-  }
-});
+const signal = new AbortController().signal;
 
-function readOnlyWorkspace(
-  filesPerRoot: number,
-  bytesPerFile = 128,
-): {
-  cwd: string;
-  roots: string[];
-} {
-  const cwd = mkdtempSync(join(tmpdir(), "agent-trio-router-"));
-  temporaryWorkspaces.push(cwd);
-  const roots = ["data/alpha", "data/beta", "data/gamma"];
-  for (const root of roots) {
-    mkdirSync(join(cwd, root), { recursive: true });
-    for (let index = 0; index < filesPerRoot; index += 1) {
-      writeFileSync(join(cwd, root, `input-${String(index)}.txt`), "x".repeat(bytesPerFile));
-    }
-  }
-  return { cwd, roots };
-}
-
-function researchHostPlan(roots: readonly string[]) {
+function hostPlan(count: number, overrides: Partial<HostSemanticPlan> = {}): HostSemanticPlan {
   return {
-    access: "readOnly" as const,
-    merge: "deterministic" as const,
-    risk: "low" as const,
-    tasks: roots.map((root) => ({
-      goal: `Prepare the complete evidence brief for ${root}`,
-      paths: [root],
+    access: "readOnly",
+    merge: "deterministic",
+    risk: "low",
+    tasks: Array.from({ length: count }, (_, index) => ({
+      goal: `Analyze workstream ${String(index + 1)}`,
+      paths: [],
       after: [],
       floor: null,
-      expectedSeconds: 60,
+      expectedSeconds: 90,
     })),
+    ...overrides,
   };
 }
 
-describe("local route optimizer", () => {
-  const optimizer = new LocalRouteOptimizer();
-  const pricedOptimizer = new LocalRouteOptimizer({
-    priceTable: {
-      "gpt-5.6-sol": {
-        inputPerMillionUsd: 4,
-        cachedInputPerMillionUsd: 0.4,
-        outputPerMillionUsd: 20,
-      },
-      "gpt-5.6-luna": {
-        inputPerMillionUsd: 0.2,
-        cachedInputPerMillionUsd: 0.02,
-        outputPerMillionUsd: 1.2,
-      },
-      "gpt-5.6-terra": {
-        inputPerMillionUsd: 2,
-        cachedInputPerMillionUsd: 0.2,
-        outputPerMillionUsd: 12,
-      },
-    },
-  });
-  const signal = new AbortController().signal;
-
-  it("selects direct without a model for short coupled work", () => {
-    expect(
-      optimizer.decide({
-        runId: "run",
-        request: { objective: "fix one typo", cwd: "/workspace" },
-        signal,
-      }),
-    ).toMatchObject({ route: "direct" });
-  });
-
-  it("keeps a small decomposable task direct when planning cannot repay its overhead", () => {
-    expect(
-      pricedOptimizer.decide({
-        runId: "run",
-        request: { objective: "inspect these independent modules in parallel", cwd: "/workspace" },
-        signal,
-      }),
-    ).toMatchObject({ route: "direct" });
-  });
-
-  it("stays direct for an automatic candidate when pricing is unavailable", () => {
-    expect(
-      optimizer.decide({
-        runId: "run",
-        request: { objective: "inspect these independent modules in parallel", cwd: "/workspace" },
-        signal,
-      }),
-    ).toMatchObject({ route: "direct" });
-  });
-
-  it("admits automatic fanout when a warm internal planner meets the cost gate", () => {
-    const decision = new LocalRouteOptimizer({
-      plannerTransport: "responses",
-      priceTable: {
-        "gpt-5.6-sol": {
-          inputPerMillionUsd: 4,
-          cachedInputPerMillionUsd: 0.4,
-          outputPerMillionUsd: 20,
-        },
-        "gpt-5.6-terra": {
-          inputPerMillionUsd: 2,
-          cachedInputPerMillionUsd: 0.2,
-          outputPerMillionUsd: 12,
-        },
-        "gpt-5.6-luna": {
-          inputPerMillionUsd: 0.2,
-          cachedInputPerMillionUsd: 0.02,
-          outputPerMillionUsd: 1.2,
-        },
-      },
-    }).decide({
-      runId: "run",
-      request: {
-        objective:
-          "Research multiple independent sources in parallel and produce a comprehensive evidence table with citations, contradictions, methods, limitations, and a detailed synthesis for every workstream.",
-        cwd: "/workspace",
-        domain: "autoResearch",
-      },
-      signal,
-    });
-    expect(decision).toMatchObject({ route: "fanout", suggestedMaxLeaves: 5 });
-    expect(decision).toEqual(
-      expect.objectContaining({
-        estimatedDirectCostUsd: expect.any(Number),
-        estimatedFanoutCostUsd: expect.any(Number),
-        estimatedDirectSeconds: expect.any(Number),
-        estimatedFanoutSeconds: expect.any(Number),
-      }),
-    );
-    expect(decision.estimatedFanoutCostUsd!).toBeLessThanOrEqual(
-      decision.estimatedDirectCostUsd! * 0.4,
-    );
-    expect(
-      recommendDirectTier({
-        objective:
-          "Solve the three independent exact portfolios in data/alpha/, data/beta/, and data/gamma/ separately and in parallel. Return all three complete labeled deliverables.",
-        cwd: "/workspace",
-        domain: "algorithm",
-        constraints: ["read-only benchmark: do not modify files"],
-      }),
-    ).toBe("luna");
-  });
-
-  it("keeps unprofiled independent algorithm partitions direct", () => {
-    const decision = new LocalRouteOptimizer({
-      plannerTransport: "responses",
-      priceTable: {
-        "gpt-5.6-sol": {
-          inputPerMillionUsd: 4,
-          cachedInputPerMillionUsd: 0.4,
-          outputPerMillionUsd: 20,
-        },
-        "gpt-5.6-terra": {
-          inputPerMillionUsd: 2,
-          cachedInputPerMillionUsd: 0.2,
-          outputPerMillionUsd: 12,
-        },
-        "gpt-5.6-luna": {
-          inputPerMillionUsd: 0.2,
-          cachedInputPerMillionUsd: 0.02,
-          outputPerMillionUsd: 1.2,
-        },
-      },
-    }).decide({
-      runId: "partitioned-algorithm",
-      request: {
-        objective:
-          "Solve the three independent exact portfolios in data/alpha/, data/beta/, and data/gamma/ separately and in parallel. Return all three complete labeled deliverables; no unit depends on another and no cross-unit synthesis is required.",
-        cwd: "/workspace",
-        domain: "algorithm",
-        constraints: ["read-only benchmark: do not modify files"],
-      },
-      signal,
-    });
-
-    expect(decision).toMatchObject({
-      route: "direct",
-      reason: "fanout candidate lacks strong evidence that every leaf exceeds 15 seconds",
-    });
-  });
-
-  it("does not admit an App Server fanout that misses the latency gate", () => {
-    const optimizer = new LocalRouteOptimizer({
-      maxCostRatio: 0.9,
-      priceTable: {
-        "gpt-5.6-sol": {
-          inputPerMillionUsd: 4,
-          cachedInputPerMillionUsd: 0.4,
-          outputPerMillionUsd: 20,
-        },
-        "gpt-5.6-terra": {
-          inputPerMillionUsd: 2,
-          cachedInputPerMillionUsd: 0.2,
-          outputPerMillionUsd: 12,
-        },
-        "gpt-5.6-luna": {
-          inputPerMillionUsd: 0.2,
-          cachedInputPerMillionUsd: 0.02,
-          outputPerMillionUsd: 1.2,
-        },
-      },
-    });
-    const decision = optimizer.decide({
-      runId: "run",
-      request: {
-        objective:
-          "Research multiple independent sources in parallel and produce a comprehensive evidence table with citations, contradictions, methods, limitations, and a detailed synthesis for every workstream.",
-        cwd: "/workspace",
-        domain: "autoResearch",
-      },
-      signal,
-    });
-
-    expect(decision).toMatchObject({ route: "direct" });
-    expect(decision.estimatedFanoutCostUsd!).toBeLessThan(decision.estimatedDirectCostUsd! * 0.9);
-    expect(decision.estimatedFanoutSeconds!).toBeGreaterThan(
-      decision.estimatedDirectSeconds! * 0.7,
-    );
-  });
-
-  it("uses matched durable direct Sol history instead of static domain constants", () => {
-    const request = {
-      objective:
-        "Research multiple independent sources in parallel and produce a comprehensive evidence table with citations, contradictions, methods, limitations, and a detailed synthesis for every workstream.",
-      cwd: "/workspace",
-      domain: "autoResearch" as const,
-    };
-    const historyStore = {
-      readSnapshots: () =>
-        [40_000, 45_000, 50_000].map((elapsedMs, index) => ({
-          request,
-          result: {
-            status: "completed",
-            plan: null,
-            metrics: {
-              elapsedMs,
-              usageByStage: {
-                direct: {
-                  usage: [{ tier: "sol" }],
-                  estimatedCostUsd: 0.01 + index * 0.001,
-                },
-              },
-            },
-          },
-        })),
-    };
-    const optimizer = new LocalRouteOptimizer({
-      maxCostRatio: 0.9,
-      historyStore,
-      priceTable: {
-        "gpt-5.6-sol": {
-          inputPerMillionUsd: 4,
-          cachedInputPerMillionUsd: 0.4,
-          outputPerMillionUsd: 20,
-        },
-        "gpt-5.6-terra": {
-          inputPerMillionUsd: 2,
-          cachedInputPerMillionUsd: 0.2,
-          outputPerMillionUsd: 12,
-        },
-        "gpt-5.6-luna": {
-          inputPerMillionUsd: 0.2,
-          cachedInputPerMillionUsd: 0.02,
-          outputPerMillionUsd: 1.2,
-        },
-      },
-    });
-
-    const decision = optimizer.decide({ runId: "historical", request, signal });
-
-    expect(decision).toMatchObject({
-      route: "direct",
-      estimatedDirectSeconds: 45,
-      estimatedDirectCostUsd: 0.011,
-    });
-  });
-
-  it("keeps a small cold research request direct without a domain-inflated baseline", () => {
-    const historyStore = { readSnapshots: () => [] };
-    const optimizer = new LocalRouteOptimizer({
-      historyStore,
-      priceTable: {
-        "gpt-5.6-sol": { inputPerMillionUsd: 4, outputPerMillionUsd: 20 },
-        "gpt-5.6-terra": { inputPerMillionUsd: 2, outputPerMillionUsd: 12 },
-        "gpt-5.6-luna": { inputPerMillionUsd: 0.2, outputPerMillionUsd: 1.2 },
-      },
-    });
-
-    const decision = optimizer.decide({
-      runId: "cold",
-      request: {
-        objective: "Research several independent sources in parallel and synthesize them.",
-        cwd: "/workspace",
-        domain: "research",
-      },
-      signal,
-    });
-
-    expect(decision).toMatchObject({
-      route: "direct",
-      estimatedDirectCostUsd: expect.any(Number),
-      estimatedFanoutCostUsd: expect.any(Number),
-    });
-    expect(decision.estimatedDirectSeconds!).toBeGreaterThanOrEqual(30);
-    expect(decision.estimatedDirectSeconds!).toBeLessThanOrEqual(45);
-    expect(decision.reason).not.toContain("lacks calibrated");
-  });
-
-  it("keeps three small profiled research roots direct despite inflated Sol durations", () => {
-    const workspace = readOnlyWorkspace(4);
-    const objective = [
-      "Prepare three independent frozen-source decision briefs.",
-      `The work roots are ${workspace.roots.join(", ")}.`,
-      "For each root, quantify the decision, cite its source IDs, recommend a next step, and return a complete self-contained brief.",
-      "Do not modify files.",
-    ].join(" ");
-    const decision = pricedOptimizer.decide({
-      runId: "small-profiled-research",
-      request: {
-        objective,
-        cwd: workspace.cwd,
-        domain: "research",
-        semanticPlan: researchHostPlan(workspace.roots),
-      },
-      signal,
-    });
-
-    expect(decision).toMatchObject({ route: "direct" });
-    expect(decision.reason).toContain("misses cost/time gate");
-    expect(decision.estimatedDirectSeconds!).toBeGreaterThanOrEqual(38);
-    expect(decision.estimatedDirectSeconds!).toBeLessThanOrEqual(55);
-  });
-
-  it("admits three large profiled read-only roots when cost and latency pass", () => {
-    const workspace = readOnlyWorkspace(16, 4_096);
-    const objective = [
-      "Prepare three independent frozen-source decision briefs.",
-      `The work roots are ${workspace.roots.join(", ")}.`,
-      "For each root, quantify the decision, cite its source IDs, recommend a next step, and return a complete self-contained brief.",
-      "Do not modify files.",
-    ].join(" ");
-    const decision = pricedOptimizer.decide({
-      runId: "large-profiled-research",
-      request: {
-        objective,
-        cwd: workspace.cwd,
-        domain: "research",
-        semanticPlan: researchHostPlan(workspace.roots),
-      },
-      signal,
-    });
-
-    expect(decision).toMatchObject({ route: "fanout", suggestedMaxLeaves: 3 });
-    expect(decision.estimatedFanoutSeconds!).toBeLessThanOrEqual(
-      decision.estimatedDirectSeconds! * 0.7,
-    );
-    expect(decision.estimatedFanoutCostUsd!).toBeLessThanOrEqual(
-      decision.estimatedDirectCostUsd! * 0.4,
-    );
-  });
-
-  it("preserves economic Responses fanout for three profiled coding roots", () => {
-    const workspace = readOnlyWorkspace(10, 4_096);
-    const objective = [
-      "Implement three independent data-processing primitives.",
-      `The independent package roots are ${workspace.roots.join(", ")}.`,
-      "Implement every contract, run each existing validation test, and preserve all public APIs.",
-    ].join(" ");
-    const decision = new LocalRouteOptimizer({
-      plannerTransport: "responses",
-      priceTable: {
-        "gpt-5.6-sol": {
-          inputPerMillionUsd: 4,
-          cachedInputPerMillionUsd: 0.4,
-          outputPerMillionUsd: 20,
-        },
-        "gpt-5.6-terra": {
-          inputPerMillionUsd: 2,
-          cachedInputPerMillionUsd: 0.2,
-          outputPerMillionUsd: 12,
-        },
-        "gpt-5.6-luna": {
-          inputPerMillionUsd: 0.2,
-          cachedInputPerMillionUsd: 0.02,
-          outputPerMillionUsd: 1.2,
-        },
-      },
-    }).decide({
-      runId: "large-profiled-coding",
-      request: {
-        objective,
-        cwd: workspace.cwd,
-        domain: "coding",
-        limits: { maxLeaves: 3 },
-      },
-      signal,
-    });
-
-    expect(decision).toMatchObject({ route: "fanout", suggestedMaxLeaves: 3 });
-    expect(decision.estimatedFanoutSeconds!).toBeLessThanOrEqual(
-      decision.estimatedDirectSeconds! * 0.7,
-    );
-    expect(decision.estimatedFanoutCostUsd!).toBeLessThanOrEqual(
-      decision.estimatedDirectCostUsd! * 0.4,
-    );
-  });
-
-  it("admits a many-case review when its measured work repays Responses planning", () => {
-    const workspace = readOnlyWorkspace(9, 64);
-    const objective = [
-      "Review three independent modules without modifying files.",
-      `The independent roots are ${workspace.roots.join(", ")}.`,
-      "For each of the nine cases, identify the exact defective expression, user-visible consequence, and minimal correction. Return every item marker.",
-      "[unit:alpha] Review all three case directories under data/alpha/. Each case is a separate required deliverable.",
-      "[unit:beta] Review all three case directories under data/beta/. Each case is a separate required deliverable.",
-      "[unit:gamma] Review all three case directories under data/gamma/. Each case is a separate required deliverable.",
-    ].join(" ");
-    const decision = new LocalRouteOptimizer({
-      plannerTransport: "responses",
-      priceTable: {
-        "gpt-5.6-sol": {
-          inputPerMillionUsd: 4,
-          cachedInputPerMillionUsd: 0.4,
-          outputPerMillionUsd: 20,
-        },
-        "gpt-5.6-terra": {
-          inputPerMillionUsd: 2,
-          cachedInputPerMillionUsd: 0.2,
-          outputPerMillionUsd: 12,
-        },
-        "gpt-5.6-luna": {
-          inputPerMillionUsd: 0.2,
-          cachedInputPerMillionUsd: 0.02,
-          outputPerMillionUsd: 1.2,
-        },
-      },
-    }).decide({
-      runId: "compact-review",
-      request: {
-        objective,
-        cwd: workspace.cwd,
-        domain: "coding",
-        constraints: ["read-only benchmark: do not modify files"],
-      },
-      signal,
-    });
-
-    expect(decision).toMatchObject({ route: "fanout", suggestedMaxLeaves: 5 });
-    expect(decision.estimatedFanoutCostUsd!).toBeLessThanOrEqual(
-      decision.estimatedDirectCostUsd! * 0.4,
-    );
-    expect(decision.estimatedFanoutSeconds!).toBeLessThanOrEqual(
-      decision.estimatedDirectSeconds! * 0.7,
-    );
-    expect(
-      recommendDirectTier({
-        objective,
-        cwd: workspace.cwd,
-        domain: "coding",
-        constraints: ["read-only benchmark: do not modify files"],
-      }),
-    ).toBe("luna");
-  });
-
-  it("profiles coarse roots once when prompts also name nested output paths", () => {
-    const workspace = readOnlyWorkspace(8, 2_048);
-    const objective = [
-      "Create three independent editable workbooks in parallel.",
-      `Roots: ${workspace.roots.map((root) => `${root}/`).join(", ")}.`,
-      ...workspace.roots.map(
-        (root, index) =>
-          `[unit:${String(index)}] Own only ${root}/ including ${root}/analysis.xlsx and ${root}/result.json.`,
-      ),
-      "For every root calculate and verify all rows before writing its workbook.",
-    ].join(" ");
-    const decision = new LocalRouteOptimizer({
-      plannerTransport: "responses",
-      priceTable: {
-        "gpt-5.6-sol": { inputPerMillionUsd: 4, outputPerMillionUsd: 20 },
-        "gpt-5.6-terra": { inputPerMillionUsd: 2, outputPerMillionUsd: 12 },
-        "gpt-5.6-luna": { inputPerMillionUsd: 0.2, outputPerMillionUsd: 1.2 },
-      },
-    }).decide({
-      runId: "nested-output-roots",
-      request: {
-        objective,
-        cwd: workspace.cwd,
-        domain: "office",
-        constraints: ["workspace-write benchmark: modify only requested deliverables"],
-      },
-      signal,
-    });
-
-    expect(decision).toMatchObject({ route: "fanout" });
-    expect(decision.estimatedFanoutCostUsd!).toBeLessThanOrEqual(
-      decision.estimatedDirectCostUsd! * 0.4,
-    );
-    expect(decision.estimatedFanoutSeconds!).toBeLessThanOrEqual(
-      decision.estimatedDirectSeconds! * 0.7,
-    );
-  });
-
-  it("keeps bounded 0/1 optimality checks on Luna", () => {
-    const workspace = readOnlyWorkspace(4, 512);
-    const decision = new LocalRouteOptimizer({
-      plannerTransport: "responses",
-      priceTable: {
-        "gpt-5.6-sol": { inputPerMillionUsd: 4, outputPerMillionUsd: 20 },
-        "gpt-5.6-terra": { inputPerMillionUsd: 200, outputPerMillionUsd: 1_200 },
-        "gpt-5.6-luna": { inputPerMillionUsd: 0.2, outputPerMillionUsd: 1.2 },
-      },
-    }).decide({
-      runId: "bounded-optimality-luna",
-      request: {
-        objective: [
-          "Solve twelve exact independent 0/1 cases in three parallel roots.",
-          `Roots: ${workspace.roots.map((root) => `${root}/`).join(", ")}.`,
-          "Use an exhaustive or dynamic-programming optimality check for all four bounded cases in each root.",
-        ].join(" "),
-        cwd: workspace.cwd,
-        domain: "algorithm",
-        constraints: ["read-only benchmark: do not modify files"],
-      },
-      signal,
-    });
-
-    // The deliberately prohibitive Terra price makes admission possible only with Luna leaves.
-    expect(decision).toMatchObject({ route: "fanout" });
-    expect(decision.estimatedFanoutCostUsd!).toBeLessThanOrEqual(
-      decision.estimatedDirectCostUsd! * 0.4,
-    );
-  });
-
-  it("does not reserve Terra integration for independent writer roots", () => {
-    const workspace = readOnlyWorkspace(6, 1_024);
-    const decision = new LocalRouteOptimizer({
-      plannerTransport: "responses",
-      priceTable: {
-        "gpt-5.6-sol": { inputPerMillionUsd: 4, outputPerMillionUsd: 20 },
-        "gpt-5.6-terra": { inputPerMillionUsd: 200, outputPerMillionUsd: 1_200 },
-        "gpt-5.6-luna": { inputPerMillionUsd: 0.2, outputPerMillionUsd: 1.2 },
-      },
-    }).decide({
-      runId: "independent-writers",
-      request: {
-        objective: [
-          "Implement and test three independent writer partitions in parallel.",
-          `The separate roots are ${workspace.roots.map((root) => `${root}/`).join(", ")}.`,
-          "Each root owns its files and produces its own deterministic output without cross-root synthesis.",
-        ].join(" "),
-        cwd: workspace.cwd,
-        domain: "coding",
-        constraints: ["workspace-write benchmark: modify only requested deliverables"],
-      },
-      signal,
-    });
-
-    // A Terra merge would fail the cost gate under this table; fanout proves deterministic merge.
-    expect(decision).toMatchObject({ route: "fanout" });
-    expect(decision.estimatedFanoutCostUsd!).toBeLessThanOrEqual(
-      decision.estimatedDirectCostUsd! * 0.4,
-    );
-  });
-
-  it("does not apply small-root direct history to a larger workload bucket", () => {
-    const small = readOnlyWorkspace(4);
-    const large = readOnlyWorkspace(10, 1_024);
-    const objectiveFor = (roots: readonly string[]) =>
-      [
-        "Prepare three independent frozen-source decision briefs.",
-        `The work roots are ${roots.join(", ")}.`,
-        "For each root, quantify the decision, cite source IDs, recommend next steps, and return complete self-contained briefs.",
-        "Do not modify files.",
-      ].join(" ");
-    const smallRequest = {
-      objective: objectiveFor(small.roots),
-      cwd: small.cwd,
-      domain: "research" as const,
-    };
-    const historyStore = {
-      readSnapshots: () =>
-        [40_000, 42_000, 44_000].map((elapsedMs) => ({
-          request: smallRequest,
-          result: {
-            status: "completed",
-            plan: null,
-            metrics: {
-              elapsedMs,
-              usageByStage: {
-                direct: { usage: [{ tier: "sol" }], estimatedCostUsd: 0.02 },
-              },
-            },
-          },
-        })),
-    };
-    const optimizer = new LocalRouteOptimizer({
-      historyStore,
-      priceTable: {
-        "gpt-5.6-sol": {
-          inputPerMillionUsd: 4,
-          cachedInputPerMillionUsd: 0.4,
-          outputPerMillionUsd: 20,
-        },
-        "gpt-5.6-terra": {
-          inputPerMillionUsd: 2,
-          cachedInputPerMillionUsd: 0.2,
-          outputPerMillionUsd: 12,
-        },
-        "gpt-5.6-luna": {
-          inputPerMillionUsd: 0.2,
-          cachedInputPerMillionUsd: 0.02,
-          outputPerMillionUsd: 1.2,
-        },
-      },
-    });
-    const decision = optimizer.decide({
-      runId: "large-history-bucket",
-      request: {
-        objective: objectiveFor(large.roots),
-        cwd: large.cwd,
-        domain: "research",
-        semanticPlan: researchHostPlan(large.roots),
-      },
-      signal,
-    });
-
-    expect(decision.estimatedDirectSeconds!).toBeGreaterThan(60);
-    expect(decision.estimatedDirectSeconds!).toBeLessThan(80);
-    expect(decision.estimatedDirectSeconds).not.toBe(42);
-  });
-
-  it("accounts for the configured planner transport before automatic admission", () => {
-    const request = {
-      objective:
-        "Research multiple independent sources in parallel and produce a comprehensive evidence table with citations, contradictions, methods, limitations, and a detailed synthesis for every workstream.",
-      cwd: "/workspace",
-      domain: "autoResearch" as const,
-    };
-    const appServer = pricedOptimizer.decide({ runId: "heavy", request, signal });
-    const responses = new LocalRouteOptimizer({
-      plannerTransport: "responses",
-      priceTable: {
-        "gpt-5.6-sol": {
-          inputPerMillionUsd: 4,
-          cachedInputPerMillionUsd: 0.4,
-          outputPerMillionUsd: 20,
-        },
-        "gpt-5.6-terra": {
-          inputPerMillionUsd: 2,
-          cachedInputPerMillionUsd: 0.2,
-          outputPerMillionUsd: 12,
-        },
-        "gpt-5.6-luna": {
-          inputPerMillionUsd: 0.2,
-          cachedInputPerMillionUsd: 0.02,
-          outputPerMillionUsd: 1.2,
-        },
-      },
-    }).decide({ runId: "light", request, signal });
-
-    expect(responses.estimatedFanoutCostUsd).not.toBeCloseTo(appServer.estimatedFanoutCostUsd!, 12);
-    expect(responses.estimatedFanoutSeconds!).toBeLessThan(appServer.estimatedFanoutSeconds!);
-    expect(responses.estimatedDirectCostUsd).toBeCloseTo(appServer.estimatedDirectCostUsd!, 12);
-  });
-
-  it("accounts for expected integration and replanning without changing the direct baseline", () => {
-    const request = {
-      objective:
-        "Research multiple independent sources in parallel and produce a comprehensive evidence table with citations, contradictions, methods, limitations, and a detailed synthesis for every workstream.",
-      cwd: "/workspace",
-      domain: "autoResearch" as const,
-    };
-    const conservative = pricedOptimizer.decide({ runId: "full", request, signal });
-    const reduced = pricedOptimizer.decide({
-      runId: "reduced",
-      request: { ...request, integrate: false, limits: { maxReplans: 0 } },
-      signal,
-    });
-
-    expect(conservative.estimatedDirectCostUsd).toBeCloseTo(reduced.estimatedDirectCostUsd!, 12);
-    expect(conservative.estimatedFanoutCostUsd!).toBeGreaterThan(reduced.estimatedFanoutCostUsd!);
-  });
-
-  it("rejects explicit fanout when economics cannot be established", () => {
-    expect(
-      optimizer.decide({
-        runId: "run",
-        request: { objective: "one task", cwd: "/workspace", strategy: "fanout" },
-        signal,
-      }),
-    ).toMatchObject({ route: "direct" });
-  });
-
-  it("retains a valid final plan for an explicitly forced diagnostic fanout", () => {
-    const plan = {
-      protocolVersion: 1 as const,
-      planId: "forced-plan",
-      objective: "inspect independent modules",
+function plan(count = 2, overrides: Partial<ExecutionPlan> = {}): ExecutionPlan {
+  return {
+    protocolVersion: 1,
+    planId: "plan-1",
+    objective: "Analyze independent workstreams",
+    domain: "coding",
+    assumptions: [],
+    tasks: Array.from({ length: count }, (_, index) => ({
+      id: `leaf-${String(index + 1)}`,
+      objective: `Analyze workstream ${String(index + 1)}`,
       domain: "coding" as const,
-      assumptions: [],
-      tasks: ["alpha", "beta"].map((id) => ({
-        id,
-        objective: `inspect ${id}`,
-        domain: "coding" as const,
-        access: "readOnly" as const,
-        ownedPaths: [`src/${id}.ts`],
-        dependsOn: [],
-        tier: "luna" as const,
-        effort: "low" as const,
-        difficulty: 0.2,
-        ambiguity: 0.1,
-        confidence: 0.9,
-        critical: false,
-        expectedSeconds: 45,
-        capabilities: [],
-        validation: [],
-        communicationWith: [],
-      })),
-      integration: {
-        objective: "combine results",
-        requiredOutputs: ["answer"],
-        validation: [],
-        finalReview: "never" as const,
-        aggregation: "deterministic" as const,
-      },
-      risk: "low" as const,
-    };
-
-    expect(
-      pricedOptimizer.assessPlan!({
-        runId: "forced",
-        request: {
-          objective: plan.objective,
-          cwd: "/workspace",
-          constraints: ["agent-trio-benchmark:force-fanout"],
-        },
-        plan,
-        source: "internal",
-        signal,
-      }),
-    ).toMatchObject({ route: "fanout", suggestedMaxLeaves: 2 });
-  });
-
-  it("rejects a short semantic plan supplied by the calling Sol", () => {
-    const semanticPlan = {
+      tier: "luna" as const,
+      effort: "low" as const,
       access: "readOnly" as const,
-      merge: "deterministic" as const,
-      risk: "low" as const,
-      tasks: ["alpha", "beta"].map((id) => ({
-        goal: `inspect ${id}`,
-        paths: [],
-        after: [],
-        floor: null,
-        expectedSeconds: 10,
-      })),
-    };
+      ownedPaths: [],
+      dependsOn: [],
+      capabilities: [],
+      validation: [],
+      communicationWith: [],
+      expectedSeconds: 90,
+      difficulty: 0.2,
+      ambiguity: 0.1,
+      confidence: 0.9,
+      critical: false,
+      validatorStrength: "none" as const,
+    })),
+    integration: {
+      objective: "Combine results",
+      requiredOutputs: ["complete answer"],
+      validation: [],
+      finalReview: "never",
+      aggregation: "deterministic",
+    },
+    risk: "low",
+    origin: "sol",
+    ...overrides,
+  };
+}
+
+function decide(optimizer: LocalRouteOptimizer, request: RunRequest) {
+  return optimizer.decide({ runId: "run", request, signal });
+}
+
+describe("LocalRouteOptimizer V3.4 profile routing", () => {
+  const optimizer = new LocalRouteOptimizer();
+  const priced = new LocalRouteOptimizer({ priceTable: PRICE_TABLE });
+
+  it("treats explicit direct as a host-Sol single-agent decision", () => {
     expect(
-      optimizer.decide({
-        runId: "run",
-        request: { objective: "inspect two modules", cwd: "/workspace", semanticPlan },
-        signal,
+      decide(optimizer, {
+        objective: "Apply the tightly coupled fix",
+        cwd: "/workspace",
+        strategy: "direct",
+        directTier: "terra",
       }),
     ).toMatchObject({
       route: "direct",
+      routeSource: "host_sol",
+      reason: "host Sol selected one execution agent",
+    });
+  });
+
+  it.each([
+    "fix one typo",
+    "install GitHub CLI and verify",
+    "安装 github-cli 并验证",
+    "rewrite this paragraph",
+  ])("uses the deterministic direct fast path only for clearly bounded work: %s", (objective) => {
+    expect(decide(optimizer, { objective, cwd: "/workspace" })).toMatchObject({
+      route: "direct",
+      routeSource: "deterministic_direct",
+    });
+  });
+
+  it("keeps a detailed but bounded rewrite out of the Sol planner", () => {
+    const objective =
+      "rewrite this paragraph while preserving every supplied number, confidence interval, " +
+      "study limitation, and the requested 100-word bound; return only the revised paragraph ".repeat(
+        2,
+      );
+    expect(objective.length).toBeGreaterThan(220);
+    expect(decide(optimizer, { objective, cwd: "/workspace", domain: "paper" })).toMatchObject({
+      route: "direct",
+      routeSource: "deterministic_direct",
+    });
+  });
+
+  it.each([
+    "分析 C# 课程设计项目的架构、构建方式、主要模块和潜在问题",
+    "Analyze the Beam repository, including architecture, runtime flow, tests, and defects",
+    "理解 AnimeDiffusion 项目并解释模型、数据流、训练入口和推理入口",
+    "调研 AUR 镜像并核查本机当前配置，然后给出修改方案",
+  ])("sends semantically uncertain work to one adaptive internal Sol turn: %s", (objective) => {
+    expect(decide(priced, { objective, cwd: "/workspace", profile: "quality" })).toMatchObject({
+      route: "adaptive",
+      routeSource: "internal_sol",
+      suggestedMaxLeaves: 5,
+    });
+  });
+
+  it("caps balanced foreground planning at three leaves", () => {
+    expect(
+      decide(priced, {
+        objective: "Analyze several independent modules",
+        cwd: "/workspace",
+        profile: "balanced",
+      }),
+    ).toMatchObject({ route: "adaptive", suggestedMaxLeaves: 3 });
+  });
+
+  it("does not use domain or prompt length as a fanout decision", () => {
+    expect(
+      decide(priced, {
+        objective: "研究这个问题",
+        cwd: "/workspace",
+        domain: "autoResearch",
+      }),
+    ).toMatchObject({ route: "adaptive", routeSource: "internal_sol" });
+    expect(
+      decide(priced, {
+        objective: "x".repeat(5_000),
+        cwd: "/workspace",
+        domain: "general",
+      }),
+    ).toMatchObject({ route: "adaptive", routeSource: "internal_sol" });
+  });
+
+  it.each([2, 3, 5])(
+    "preserves a %i-leaf host Sol plan without lexical workload evidence",
+    (count) => {
+      const decision = decide(priced, {
+        objective: "完成主模型已经划分的工作",
+        cwd: "/workspace/含 空格/#repo",
+        strategy: "fanout",
+        profile: "quality",
+        domain: "general",
+        semanticPlan: hostPlan(count),
+      });
+      expect(decision).toMatchObject({
+        route: "fanout",
+        routeSource: "host_sol",
+        suggestedMaxLeaves: count,
+      });
+      expect(decision.reason).not.toContain("strong evidence");
+    },
+  );
+
+  it("reports a missed 40%/70% release target without vetoing the host plan", () => {
+    const semanticPlan = hostPlan(2, {
+      merge: "terra",
+      tasks: hostPlan(2).tasks.map((task) => ({ ...task, floor: "terra" })),
+    });
+    const expensive = new LocalRouteOptimizer({
+      maxCostRatio: 0.01,
+      maxLatencyRatio: 0.01,
+      priceTable: PRICE_TABLE,
+    });
+
+    const decision = decide(expensive, {
+      objective: "Analyze two independent systems and synthesize them",
+      cwd: "/workspace",
+      strategy: "fanout",
+      semanticPlan,
+    });
+
+    expect(decision).toMatchObject({
+      route: "fanout",
+      routeSource: "host_sol",
+      estimatedDirectCostUsd: expect.any(Number),
+      estimatedFanoutCostUsd: expect.any(Number),
+      estimatedDirectSeconds: expect.any(Number),
+      estimatedFanoutSeconds: expect.any(Number),
+    });
+    expect(decision.reason).toContain("release target missed");
+  });
+
+  it("rejects a host plan whose leaves do not exceed the minimum useful duration", () => {
+    const semanticPlan = hostPlan(2, {
+      tasks: hostPlan(2).tasks.map((task) => ({ ...task, expectedSeconds: 15 })),
+    });
+    expect(
+      decide(priced, {
+        objective: "Inspect two small items",
+        cwd: "/workspace",
+        profile: "quality",
+        strategy: "fanout",
+        semanticPlan,
+      }),
+    ).toMatchObject({
+      route: "direct",
+      routeSource: "host_sol",
       reason: "fanout plan contains a leaf that does not exceed 15 seconds",
     });
   });
 
-  it("does not let an unprofiled host plan bypass workload admission", () => {
-    const semanticPlan = {
-      access: "readOnly" as const,
-      merge: "deterministic" as const,
-      risk: "low" as const,
-      tasks: Array.from({ length: 5 }, (_, index) => ({
-        goal: `inspect module ${String(index + 1)}`,
-        paths: [`src/module-${String(index + 1)}.ts`],
-        after: [],
-        floor: null,
-        expectedSeconds: 90,
-      })),
-    };
+  it("requires 90 seconds of serial work in balanced fanout", () => {
+    const semanticPlan = hostPlan(2, {
+      tasks: hostPlan(2).tasks.map((task) => ({ ...task, expectedSeconds: 40 })),
+    });
+    expect(
+      decide(priced, {
+        objective: "Inspect two medium items",
+        cwd: "/workspace",
+        profile: "balanced",
+        strategy: "fanout",
+        semanticPlan,
+      }),
+    ).toMatchObject({
+      route: "direct",
+      reason: "balanced fanout plan contains less than 90 seconds of serial work",
+    });
+  });
+
+  it("rejects a final plan that has no positive wall-time saving", () => {
+    const sequential = plan(2);
+    sequential.tasks[1]!.dependsOn = [sequential.tasks[0]!.id];
 
     expect(
-      pricedOptimizer.decide({
-        runId: "run",
+      priced.assessPlan!({
+        runId: "sequential",
         request: {
-          objective: `inspect five independent modules and produce a comprehensive implementation and validation report ${"detail ".repeat(300)}`,
+          objective: sequential.objective,
           cwd: "/workspace",
-          domain: "autoResearch",
           strategy: "fanout",
-          semanticPlan,
         },
+        plan: sequential,
+        source: "internal",
         signal,
       }),
     ).toMatchObject({
       route: "direct",
-      reason: "fanout candidate lacks strong evidence that every leaf exceeds 15 seconds",
+      routeSource: "internal_sol",
+      reason: expect.stringContaining("no positive predicted wall-time saving"),
     });
   });
 
-  it("prices a host plan from its task tier mix including the root Sol turn", () => {
-    const semanticPlan = {
-      access: "readOnly" as const,
-      merge: "deterministic" as const,
-      risk: "low" as const,
-      tasks: [
+  it("rejects an independent DAG when the calibrated direct baseline shows no time saving", () => {
+    const strictTargets = new LocalRouteOptimizer({
+      maxCostRatio: 0.01,
+      maxLatencyRatio: 0.01,
+      priceTable: PRICE_TABLE,
+    });
+    expect(
+      strictTargets.assessPlan!({
+        runId: "parallel",
+        request: { objective: "Analyze two workstreams", cwd: "/workspace", profile: "quality" },
+        plan: plan(2),
+        source: "internal",
+        signal,
+      }),
+    ).toMatchObject({
+      route: "direct",
+      routeSource: "internal_sol",
+      reason: expect.stringContaining("no positive predicted wall-time saving"),
+    });
+  });
+
+  it("enforces an explicit maxCostUsd and missing pre-call pricing", () => {
+    expect(
+      decide(
+        new LocalRouteOptimizer({
+          modelMap: { luna: "unpriced-luna" },
+          priceTable: PRICE_TABLE,
+        }),
         {
-          goal: "inspect alpha",
-          paths: [],
-          after: [],
-          floor: "terra" as const,
-          expectedSeconds: 90,
+          objective: "Analyze the repository",
+          cwd: "/workspace",
+          limits: { maxCostUsd: 1 },
         },
-        {
-          goal: "inspect beta",
-          paths: [],
-          after: [],
-          floor: null,
-          expectedSeconds: 90,
-        },
-      ],
-    };
-    const mixed = pricedOptimizer.decide({
-      runId: "mixed",
-      request: {
-        objective: `inspect independent alpha and beta ${"detail ".repeat(300)}`,
-        cwd: "/workspace",
-        domain: "autoResearch",
-        semanticPlan,
-      },
-      signal,
-    });
-    const allLuna = pricedOptimizer.decide({
-      runId: "luna",
-      request: {
-        objective: `inspect independent alpha and beta ${"detail ".repeat(300)}`,
-        cwd: "/workspace",
-        domain: "autoResearch",
-        semanticPlan: {
-          access: semanticPlan.access,
-          merge: semanticPlan.merge,
-          risk: semanticPlan.risk,
-          tasks: semanticPlan.tasks.map((task) => ({ ...task, floor: null })),
-        },
-      },
-      signal,
-    });
-    const terraMerge = pricedOptimizer.decide({
-      runId: "terra-merge",
-      request: {
-        objective: `inspect independent alpha and beta ${"detail ".repeat(300)}`,
-        cwd: "/workspace",
-        domain: "autoResearch",
-        semanticPlan: {
-          access: semanticPlan.access,
-          merge: "terra",
-          risk: semanticPlan.risk,
-          tasks: semanticPlan.tasks.map((task) => ({ ...task, floor: null })),
-        },
-      },
-      signal,
+      ),
+    ).toMatchObject({
+      route: "direct",
+      routeSource: "deterministic_direct",
+      reason: expect.stringContaining("pre-call USD estimates"),
     });
 
-    expect(mixed.estimatedFanoutCostUsd).toEqual(expect.any(Number));
-    expect(mixed.estimatedFanoutCostUsd!).toBeGreaterThan(allLuna.estimatedFanoutCostUsd!);
-    expect(terraMerge.estimatedFanoutCostUsd!).toBeGreaterThan(allLuna.estimatedFanoutCostUsd!);
-    expect(allLuna.estimatedFanoutCostUsd!).toBeLessThan(allLuna.estimatedDirectCostUsd!);
+    expect(
+      decide(priced, {
+        objective: "Analyze independent alpha and beta",
+        cwd: "/workspace",
+        strategy: "fanout",
+        semanticPlan: hostPlan(2),
+        limits: { maxCostUsd: 0.000001 },
+      }),
+    ).toMatchObject({
+      route: "direct",
+      routeSource: "host_sol",
+      reason: expect.stringContaining("exceeds maxCostUsd"),
+    });
   });
 
-  it("calibrates an implausibly high host duration without changing its DAG", () => {
-    const decision = pricedOptimizer.decide({
-      runId: "calibrated-host-duration",
-      request: {
-        objective: `Audit every small TypeScript module and report each independent defect with one failing example and a minimal correction. ${"module contract detail ".repeat(30)}`,
+  it("keeps the sealed benchmark fanout override isolated from normal routing", () => {
+    expect(
+      decide(optimizer, {
+        objective: "sealed task",
         cwd: "/workspace",
-        domain: "coding",
-        semanticPlan: {
-          access: "readOnly",
-          merge: "deterministic",
-          risk: "low",
-          tasks: ["first half", "second half"].map((goal) => ({
-            goal,
-            paths: [],
-            after: [],
-            floor: null,
-            expectedSeconds: 180,
-          })),
-        },
-      },
-      signal,
-    });
-
-    expect(decision).toMatchObject({ route: "direct" });
-    expect(decision.estimatedFanoutSeconds!).toBeGreaterThan(
-      decision.estimatedDirectSeconds! * 0.7,
-    );
-    expect(decision.reason).toContain("lacks strong evidence");
+        constraints: ["agent-trio-benchmark:force-fanout"],
+      }),
+    ).toMatchObject({ route: "fanout", routeSource: "internal_sol" });
   });
 
-  it("does not inflate the cold direct coding baseline to justify fanout", () => {
-    const decision = new LocalRouteOptimizer({
-      plannerTransport: "responses",
-      priceTable: {
-        "gpt-5.6-sol": {
-          inputPerMillionUsd: 4,
-          cachedInputPerMillionUsd: 0.4,
-          outputPerMillionUsd: 20,
-        },
-        "gpt-5.6-terra": {
-          inputPerMillionUsd: 2,
-          cachedInputPerMillionUsd: 0.2,
-          outputPerMillionUsd: 12,
-        },
-        "gpt-5.6-luna": {
-          inputPerMillionUsd: 0.2,
-          cachedInputPerMillionUsd: 0.02,
-          outputPerMillionUsd: 1.2,
-        },
-      },
-    }).decide({
-      runId: "coding-cold",
-      request: {
-        objective:
-          "Implement three independent data-processing primitives in separate package roots, run each existing test, and preserve all public contracts.",
-        cwd: "/workspace",
-        domain: "coding",
-      },
-      signal,
-    });
-
-    expect(decision.estimatedDirectCostUsd!).toBeGreaterThan(0.02);
-    expect(decision.estimatedDirectCostUsd!).toBeLessThan(0.05);
-    expect(decision).toMatchObject({ route: "direct" });
-    expect(decision.reason).toContain("lacks strong evidence");
+  it("throws immediately when routing is aborted", () => {
+    const controller = new AbortController();
+    controller.abort(new Error("stop"));
+    expect(() =>
+      optimizer.decide({
+        runId: "aborted",
+        request: { objective: "Analyze a repository", cwd: "/workspace" },
+        signal: controller.signal,
+      }),
+    ).toThrow("stop");
   });
+});
 
-  it("uses Luna for bounded direct work and Terra for high-risk work", () => {
-    const independentWorkspace = readOnlyWorkspace(1).cwd;
+describe("direct tier recommendation", () => {
+  it("honors the host Sol tier and defaults bounded work to Luna", () => {
+    expect(
+      recommendDirectTier({
+        objective: "Fix a tightly coupled bug",
+        cwd: "/workspace",
+        strategy: "direct",
+        directTier: "terra",
+      }),
+    ).toBe("terra");
     expect(recommendDirectTier({ objective: "fix one typo", cwd: "/workspace" })).toBe("luna");
+    expect(
+      recommendDirectTier({
+        objective: "Install GitHub CLI",
+        cwd: "/workspace",
+        domain: "coding",
+      }),
+    ).toBe("luna");
+  });
+
+  it("uses Terra for difficult coupled reasoning and Luna for a rejected cheap host plan", () => {
     expect(
       recommendDirectTier({
         objective: "redesign the authentication security architecture",
@@ -956,73 +381,23 @@ describe("local route optimizer", () => {
       }),
     ).toBe("terra");
     expect(
-      recommendDirectTier({ objective: "prove the bound", cwd: "/workspace", domain: "algorithm" }),
-    ).toBe("terra");
-    expect(
       recommendDirectTier({
-        objective: "Reconcile five bounded exact-subset fixtures.",
+        objective: "Audit two independent modules",
         cwd: "/workspace",
-        domain: "algorithm",
-        constraints: ["read-only benchmark: do not modify files"],
+        semanticPlan: hostPlan(2),
       }),
     ).toBe("luna");
-    expect(
-      recommendDirectTier({
-        objective: "Audit many modules after fanout admission was rejected.",
-        cwd: "/workspace",
-        domain: "coding",
-        semanticPlan: {
-          access: "readOnly",
-          merge: "deterministic",
-          risk: "low",
-          tasks: ["alpha", "beta"].map((goal) => ({
-            goal,
-            paths: [],
-            after: [],
-            floor: null,
-            expectedSeconds: 90,
-          })),
-        },
-      }),
-    ).toBe("luna");
-    expect(
-      recommendDirectTier({
-        objective:
-          "Reconcile the supplied frozen vendor records, calculate exact totals, and write a concise risk dossier.",
-        cwd: "/workspace",
-        domain: "autoResearch",
-        constraints: ["read-only benchmark: do not modify files"],
-      }),
-    ).toBe("luna");
-    expect(
-      recommendDirectTier({
-        objective:
-          "Run three independent local data pipelines under data/alpha/, data/beta/, and data/gamma/; each root owns its JSON and Markdown outputs.",
-        cwd: independentWorkspace,
-        domain: "autoResearch",
-      }),
-    ).toBe("luna");
-    expect(
-      recommendDirectTier({
-        objective: "Browse live sources and perform a statistical meta-analysis.",
-        cwd: "/workspace",
-        domain: "research",
-        constraints: ["read-only workspace"],
-      }),
-    ).toBe("terra");
-    expect(
-      recommendDirectTier({
-        objective: "Rewrite one paragraph, preserve every number, and do not add claims.",
-        cwd: "/workspace",
-        domain: "paper",
-      }),
-    ).toBe("luna");
-    expect(
-      recommendDirectTier({
-        objective: "Review the full paper and verify every citation and statistical claim.",
-        cwd: "/workspace",
-        domain: "paper",
-      }),
-    ).toBe("terra");
   });
+
+  it.each([
+    ["Resume an idempotent recovery checkpoint", "autoResearch"],
+    ["Perform a code review and synthesize the findings", "coding"],
+    ["Create one editable presentation", "office"],
+    ["恢复事务状态并验证断点续跑", "general"],
+  ] as const)(
+    "uses Terra for stateful, review, and office direct work: %s",
+    (objective, domain) => {
+      expect(recommendDirectTier({ objective, cwd: "/workspace", domain })).toBe("terra");
+    },
+  );
 });
