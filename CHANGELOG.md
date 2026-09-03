@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [3.4.3] - 2026-09-03
+
+### Fixed
+
+- Normalize the malformed but unambiguous MCP argument shapes observed in real Codex sessions:
+  split `request` envelopes, top-level direct `floor`, `selectedCapabilities`, flat limits,
+  permission-label aliases, descriptive domains, a compatible `mode` hint, and misplaced fanout
+  plan fields.
+- Keep the published MCP schema canonical and reject contradictory aliases instead of silently
+  choosing one value, so compatibility cannot change permission, tier, budget, or plan semantics.
+- Tighten all four installed skills around exact domain, permission, capability, limit, direct-tier,
+  and status-call shapes to prevent the malformed calls at their source.
+
 ## [3.4.2] - 2026-09-03
 
 ### Fixed

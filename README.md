@@ -113,6 +113,14 @@ changes, token usage, cost, and validation state. The component reads cursor-bas
 calling `status` through the MCP Apps bridge. Those calls stay inside the component and never invoke
 a model. Clients without MCP Apps support keep the local `monitorUrl` text fallback.
 
+The public MCP contract uses canonical field names and values. In particular, direct calls use
+`directTier`, capabilities are `{kind,name,path?}` objects, limits are nested under `limits`, and
+fanout-only `risk`, `merge`, `access`, and `tasks` live under `semanticPlan`. The runtime also
+normalizes a bounded set of unambiguous call shapes emitted by older installed skills or Codex
+clients, including permission-label aliases and a split `request` envelope. If canonical and legacy
+fields disagree, the call is rejected rather than silently changing its meaning. Reinstalling after
+an upgrade refreshes the skills so new calls use only the canonical contract.
+
 All four skills also pass the current Codex task permission and approval modes to Agent Trio. A Full
 access task gives direct agents and execution leaves Full access, including network access;
 Workspace access and Read-only tasks remain correspondingly restricted. Approve for me is inherited

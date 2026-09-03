@@ -451,7 +451,13 @@ function hasSafeMcpInvocationContract(skillText: string): boolean {
     skillText.includes("do not call status") &&
     /valid only\s+inside `semanticPlan`/mu.test(skillText) &&
     /never send either as a top-level\s+tool argument/mu.test(skillText) &&
-    /With `strategy=direct`, omit\s+`semanticPlan`/mu.test(skillText)
+    /With `strategy=direct`, omit\s+`semanticPlan`/mu.test(skillText) &&
+    skillText.includes("`directTier`") &&
+    /exactly\s+`luna` or `terra`/mu.test(skillText) &&
+    skillText.includes("danger-full-access") &&
+    skillText.includes("`fullAccess`") &&
+    skillText.includes("Do not send `mode` or `selectedCapabilities`") &&
+    skillText.includes("call containing only that action")
   );
 }
 

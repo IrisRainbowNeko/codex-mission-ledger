@@ -4,6 +4,7 @@ import type { Readable, Writable } from "node:stream";
 import { isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
+import { isDeepStrictEqual } from "node:util";
 import type {
   AgentTrioRequest,
   BatchResult,
@@ -32,6 +33,15 @@ const DOMAIN_VALUES: readonly TaskDomain[] = [
   "autoResearch",
   "general",
 ];
+const FLAT_LIMIT_KEYS = [
+  "maxConcurrent",
+  "maxLeaves",
+  "maxWaves",
+  "maxSolLeaves",
+  "maxReplans",
+  "deadlineMs",
+  "maxCostUsd",
+] as const;
 
 export const AGENT_TRIO_TOOL_SCHEMA = {
   type: "object",
@@ -51,18 +61,28 @@ export const AGENT_TRIO_TOOL_SCHEMA = {
       type: "string",
       enum: ["readOnly", "workspaceWrite", "fullAccess"],
       description:
-        "Current calling-task permission mode. Pass it exactly; never request more access than the caller has.",
+        "Canonical calling-task permission. Map read-only to readOnly, workspace-write to workspaceWrite, and danger-full-access, unrestricted, or disabled sandboxing to fullAccess. Never request more access than the caller has.",
     },
     hostApproval: {
       type: "string",
       enum: ["never", "approveForMe"],
       description:
-        "Current calling-task approval mode. Pass it exactly; never enable automatic approval unless the caller uses Approve for me.",
+        "Canonical calling-task approval. Use never for Never and approveForMe for Approve for me or on-request. Never strengthen the caller's approval mode.",
     },
     strategy: { type: "string", enum: ["auto", "direct", "fanout"] },
     profile: { type: "string", enum: ["balanced", "quality"], default: "balanced" },
-    directTier: { type: "string", enum: ["luna", "terra"] },
-    domain: { type: "string", enum: DOMAIN_VALUES },
+    directTier: {
+      type: "string",
+      enum: ["luna", "terra"],
+      description:
+        "Required semantic tier choice for strategy=direct. Use this field, never a top-level floor or tier.",
+    },
+    domain: {
+      type: "string",
+      enum: DOMAIN_VALUES,
+      description:
+        "Use exactly coding, algorithm, research, paper, office, autoResearch, or general; omit when uncertain.",
+    },
     constraints: {
       type: "array",
       maxItems: 128,
@@ -71,6 +91,8 @@ export const AGENT_TRIO_TOOL_SCHEMA = {
     capabilities: {
       type: "array",
       maxItems: 16,
+      description:
+        "Explicitly selected capabilities as {kind,name,path?} objects. Do not use selectedCapabilities or capability names as bare strings.",
       items: {
         type: "object",
         additionalProperties: false,
@@ -86,6 +108,7 @@ export const AGENT_TRIO_TOOL_SCHEMA = {
     limits: {
       type: "object",
       additionalProperties: false,
+      description: "Put all execution limit fields inside this object, never at tool top level.",
       properties: {
         maxConcurrent: { type: "integer", minimum: 1, maximum: 5 },
         maxLeaves: { type: "integer", minimum: 1, maximum: 20 },
@@ -143,7 +166,7 @@ export const AGENT_TRIO_TOOL_SCHEMA = {
   ],
 } as const;
 
-export const AGENT_TRIO_TOOL_DESCRIPTION = `Run or monitor Agent Trio. Pass arguments as flat top-level fields; never wrap the argument object in request, input, or arguments. For foreground UI, submit once with monitorFirst=true, then call status once with wait=true only if submit succeeds and returns the same runId. Copy hostAccess and hostApproval exactly. profile defaults to balanced; quality preserves V3.3 routing. strategy=direct delegates one worker: Luna for bounded mechanical work; Terra for recovery/stateful work, coupled debugging, review/synthesis, or office artifacts. For direct, omit semanticPlan and every plan-only field. strategy=fanout requires semanticPlan with 2+ independent tasks; use Luna by default, disjoint writer paths, valid dependencies, and at most one Sol leaf. Put merge and risk only inside semanticPlan, never at tool top level. Balanced uses 2 tasks normally; use 3 only for three substantial streams, >30s each, >=90s serial work, and >=20% critical-path gain over the best 2-task grouping. Quality allows 2-5 tasks and >15s each. Use strategy=auto only when semantic boundaries are unavailable. Runtime enforces permissions, DAG, ownership, explicit budget, concurrency, and positive time saving; 40% cost and 70% latency are telemetry, not per-run vetoes. Inside semanticPlan, tasks contain only goal, paths, after indexes, floor, and expectedSeconds; merge is deterministic or terra, and risk is low, medium, or high. status/resume/cancel require runId.`;
+export const AGENT_TRIO_TOOL_DESCRIPTION = `Run or monitor Agent Trio. Pass flat top-level fields; never wrap them in request, input, or arguments. Foreground UI calls submit once with monitorFirst=true, then status once with only action, runId, and wait=true, and only after submit succeeds with the same runId. profile defaults to balanced; quality preserves V3.3 routing. strategy=direct delegates one worker and must set directTier to exactly luna or terra, never top-level floor. Luna handles bounded mechanical work; Terra handles recovery/stateful work, coupled debugging, review/synthesis, or office artifacts. Direct omits semanticPlan and all plan-only fields. strategy=fanout requires semanticPlan with 2+ independent tasks; use Luna by default, disjoint writer paths, valid dependencies, and at most one Sol leaf. Put merge and risk only inside semanticPlan. Balanced normally uses 2 tasks; use 3 only for three substantial streams, >30s each, >=90s serial work, and >=20% critical-path gain over the best 2-task grouping. Quality allows 2-5 tasks and >15s each. domain is exactly one of coding, algorithm, research, paper, office, autoResearch, or general. Canonicalize hostAccess and hostApproval using their schema descriptions. capabilities is an object array, not selectedCapabilities. Do not send mode; action and monitorFirst define foreground or durable behavior. Put maxConcurrent, maxLeaves, maxWaves, maxSolLeaves, maxReplans, deadlineMs, and maxCostUsd inside limits. Use strategy=auto only when semantic boundaries are unavailable. Runtime enforces permissions, DAG, ownership, explicit budget, concurrency, and positive time saving; 40% cost and 70% latency are telemetry, not per-run vetoes. Inside semanticPlan, tasks contain only goal, paths, after indexes, floor, and expectedSeconds; merge is deterministic or terra, and risk is low, medium, or high. status/resume/cancel require runId.`;
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -295,7 +318,7 @@ export class AgentTrioMcpProtocol {
               tools: { listChanged: false },
               resources: { subscribe: false, listChanged: false },
             },
-            serverInfo: { name: "agent-trio", version: "3.4.2" },
+            serverInfo: { name: "agent-trio", version: "3.4.3" },
           });
           return;
         }
@@ -713,50 +736,263 @@ export function parseAgentTrioRequest(value: unknown): ParsedAgentTrioRequest {
 
 function normalizeAgentTrioArguments(value: unknown): Record<string, unknown> {
   const envelope = requireRecord(value, "agent_trio arguments");
-  let input = envelope;
-  if ("request" in envelope) {
-    if (Object.keys(envelope).length !== 1) {
-      throw new Error("request wrapper cannot be combined with top-level agent_trio arguments");
-    }
-    input = requireRecord(envelope["request"], "agent_trio request wrapper");
-    if ("request" in input) {
-      throw new Error("nested agent_trio request wrappers are not supported");
-    }
-  }
+  const input = mergeRequestEnvelope(envelope);
   if (input["action"] !== "run" && input["action"] !== "submit") {
     return input;
   }
+  const normalized = { ...input };
+  normalizeModeAlias(normalized);
+  normalizeDirectTierAlias(normalized);
+  normalizeCapabilityAlias(normalized);
+  normalizeFlatLimits(normalized);
+  normalizeDomainAlias(normalized);
+  normalizePermissionAliases(normalized);
+  normalizePlanAliases(normalized);
+  return normalized;
+}
+
+function mergeRequestEnvelope(envelope: Record<string, unknown>): Record<string, unknown> {
+  if (!("request" in envelope)) {
+    return envelope;
+  }
+  const wrapped = requireRecord(envelope["request"], "agent_trio request wrapper");
+  if ("request" in wrapped) {
+    throw new Error("nested agent_trio request wrappers are not supported");
+  }
+  const merged = { ...wrapped };
+  for (const [key, outerValue] of Object.entries(envelope)) {
+    if (key === "request") {
+      continue;
+    }
+    if (key in merged && !isDeepStrictEqual(merged[key], outerValue)) {
+      throw new Error(`request wrapper conflicts with top-level agent_trio argument: ${key}`);
+    }
+    merged[key] = outerValue;
+  }
+  return merged;
+}
+
+function normalizeModeAlias(input: Record<string, unknown>): void {
+  if (!("mode" in input)) {
+    return;
+  }
+  const mode = input["mode"];
+  if (mode !== "foreground" && mode !== "durable") {
+    throw new Error("mode compatibility hint must be foreground or durable");
+  }
+  const expected =
+    input["action"] === "run" || input["monitorFirst"] === true ? "foreground" : "durable";
+  if (mode !== expected) {
+    throw new Error(`mode=${mode} conflicts with action and monitorFirst (${expected})`);
+  }
+  delete input["mode"];
+}
+
+function normalizeDirectTierAlias(input: Record<string, unknown>): void {
+  if (!("floor" in input)) {
+    return;
+  }
+  const floor = input["floor"];
+  if (input["strategy"] !== "direct" || (floor !== "luna" && floor !== "terra")) {
+    throw new Error("top-level floor is compatible only with strategy=direct and luna or terra");
+  }
+  if (input["directTier"] !== undefined && input["directTier"] !== floor) {
+    throw new Error("top-level floor conflicts with directTier");
+  }
+  input["directTier"] = floor;
+  delete input["floor"];
+}
+
+function normalizeCapabilityAlias(input: Record<string, unknown>): void {
+  if (!("selectedCapabilities" in input)) {
+    return;
+  }
+  const selected = input["selectedCapabilities"];
+  if (!Array.isArray(selected) || selected.length > 16) {
+    throw new Error("selectedCapabilities must be an array with at most 16 entries");
+  }
+  const normalized = parseCapabilities(
+    selected.map((entry) => (typeof entry === "string" ? { kind: "skill", name: entry } : entry)),
+  );
+  if (input["capabilities"] !== undefined) {
+    const canonical = parseCapabilities(input["capabilities"]);
+    if (!isDeepStrictEqual(canonical, normalized)) {
+      throw new Error("selectedCapabilities conflicts with capabilities");
+    }
+  } else {
+    input["capabilities"] = normalized;
+  }
+  delete input["selectedCapabilities"];
+}
+
+function normalizeFlatLimits(input: Record<string, unknown>): void {
+  const present = FLAT_LIMIT_KEYS.filter((key) => key in input);
+  if (present.length === 0) {
+    return;
+  }
+  const limits =
+    input["limits"] === undefined ? {} : { ...requireRecord(input["limits"], "limits") };
+  for (const key of present) {
+    if (key in limits && !isDeepStrictEqual(limits[key], input[key])) {
+      throw new Error(`top-level ${key} conflicts with limits.${key}`);
+    }
+    limits[key] = input[key];
+    delete input[key];
+  }
+  input["limits"] = limits;
+}
+
+function normalizeDomainAlias(input: Record<string, unknown>): void {
+  if (input["domain"] === undefined) {
+    return;
+  }
+  if (typeof input["domain"] !== "string" || input["domain"].trim().length === 0) {
+    throw new Error("invalid domain");
+  }
+  input["domain"] = canonicalDomain(input["domain"]);
+}
+
+function canonicalDomain(value: string): TaskDomain {
+  if (DOMAIN_VALUES.includes(value as TaskDomain)) {
+    return value as TaskDomain;
+  }
+  const lower = value.trim().toLowerCase();
+  const compact = lower.replace(/[\s_-]+/gu, "");
+  if (
+    compact.includes("autoresearch") ||
+    compact.includes("automatedresearch") ||
+    /自动调研/u.test(compact)
+  ) {
+    return "autoResearch";
+  }
+  if (/\b(?:paper|manuscript|thesis)\b/u.test(lower) || /论文|稿件|学术写作/u.test(compact)) {
+    return "paper";
+  }
+  if (
+    /\b(?:algorithm|algorithms|math|mathematics)\b/u.test(lower) ||
+    /算法|数学|计算题/u.test(compact)
+  ) {
+    return "algorithm";
+  }
+  if (
+    /(?:spreadsheet|presentation|powerpoint|excel|office)/u.test(lower) ||
+    /办公|表格|幻灯片|演示文稿/u.test(compact)
+  ) {
+    return "office";
+  }
+  if (
+    /(?:research|investigat|survey|review|synthesis)/u.test(lower) ||
+    /调研|研究|检索|综述|综合/u.test(compact)
+  ) {
+    return "research";
+  }
+  if (
+    /(?:code|software|repository|program|frontend|backend)/u.test(lower) ||
+    /代码|软件|仓库|前端|后端/u.test(compact)
+  ) {
+    return "coding";
+  }
+  return "general";
+}
+
+function normalizePermissionAliases(input: Record<string, unknown>): void {
+  if (input["hostAccess"] !== undefined) {
+    input["hostAccess"] = canonicalHostAccess(input["hostAccess"]);
+  }
+  if (input["hostApproval"] !== undefined) {
+    input["hostApproval"] = canonicalHostApproval(input["hostApproval"]);
+  }
+}
+
+function canonicalHostAccess(value: unknown): "readOnly" | "workspaceWrite" | "fullAccess" {
+  if (typeof value !== "string") {
+    throw new Error("hostAccess must be readOnly, workspaceWrite, or fullAccess");
+  }
+  const compact = value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/gu, "");
+  if (compact === "readonly") {
+    return "readOnly";
+  }
+  if (compact === "workspacewrite" || compact === "workspace") {
+    return "workspaceWrite";
+  }
+  if (
+    compact === "fullaccess" ||
+    compact === "dangerfullaccess" ||
+    compact === "unrestricted" ||
+    compact === "disabled"
+  ) {
+    return "fullAccess";
+  }
+  throw new Error("hostAccess must be readOnly, workspaceWrite, or fullAccess");
+}
+
+function canonicalHostApproval(value: unknown): "never" | "approveForMe" {
+  if (typeof value !== "string") {
+    throw new Error("hostApproval must be never or approveForMe");
+  }
+  const compact = value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/gu, "");
+  if (compact === "never") {
+    return "never";
+  }
+  if (compact === "approveforme" || compact === "onrequest" || compact === "approve") {
+    return "approveForMe";
+  }
+  throw new Error("hostApproval must be never or approveForMe");
+}
+
+function normalizePlanAliases(input: Record<string, unknown>): void {
   const risk = input["risk"];
   const merge = input["merge"];
-  if (risk === undefined && merge === undefined) {
-    return input;
-  }
   if (risk !== undefined && risk !== "low" && risk !== "medium" && risk !== "high") {
     throw new Error("misplaced risk must be low, medium, or high");
   }
   if (merge !== undefined && merge !== "deterministic" && merge !== "terra") {
     throw new Error("misplaced merge must be deterministic or terra");
   }
-  const normalized = { ...input };
-  delete normalized["risk"];
-  delete normalized["merge"];
-  if (input["strategy"] === "fanout" && isRecord(input["semanticPlan"])) {
-    const semanticPlan = { ...input["semanticPlan"] };
-    for (const [key, misplaced] of [
-      ["risk", risk],
-      ["merge", merge],
-    ] as const) {
-      if (misplaced === undefined) {
-        continue;
+  if (input["strategy"] !== "fanout") {
+    delete input["risk"];
+    delete input["merge"];
+    if ("access" in input) {
+      const access = canonicalHostAccess(input["access"]);
+      if (input["hostAccess"] !== undefined && input["hostAccess"] !== access) {
+        throw new Error("top-level access conflicts with hostAccess");
       }
-      if (semanticPlan[key] !== undefined && semanticPlan[key] !== misplaced) {
-        throw new Error(`top-level ${key} conflicts with semanticPlan.${key}`);
-      }
-      semanticPlan[key] = misplaced;
+      input["hostAccess"] = access;
+      delete input["access"];
     }
-    normalized["semanticPlan"] = semanticPlan;
+    return;
   }
-  return normalized;
+  const planKeys = ["access", "merge", "risk", "tasks"] as const;
+  if (!planKeys.some((key) => key in input)) {
+    return;
+  }
+  const semanticPlan =
+    input["semanticPlan"] === undefined
+      ? {}
+      : { ...requireRecord(input["semanticPlan"], "semanticPlan") };
+  for (const key of planKeys) {
+    if (!(key in input)) {
+      continue;
+    }
+    const value = key === "access" ? canonicalPlanAccess(input[key]) : input[key];
+    if (key in semanticPlan && !isDeepStrictEqual(semanticPlan[key], value)) {
+      throw new Error(`top-level ${key} conflicts with semanticPlan.${key}`);
+    }
+    semanticPlan[key] = value;
+    delete input[key];
+  }
+  input["semanticPlan"] = semanticPlan;
+}
+
+function canonicalPlanAccess(value: unknown): "readOnly" | "workspaceWrite" {
+  const access = canonicalHostAccess(value);
+  return access === "readOnly" ? "readOnly" : "workspaceWrite";
 }
 
 function parseResumeInput(value: unknown): string {

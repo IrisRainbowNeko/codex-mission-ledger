@@ -1,6 +1,6 @@
 {
   "name": "codex-agent-trio",
-  "version": "3.4.2",
+  "version": "3.4.3",
   "private": true,
   "description": "A dual-profile, Sol-routed Codex App Server multi-agent runtime.",
   "type": "module",

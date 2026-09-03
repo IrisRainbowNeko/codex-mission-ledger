@@ -16,10 +16,11 @@ build-manifest read:
   independent workflows, and the root can finish it in one focused edit/analysis/verification
   sequence, or when Sol-level reasoning is necessary but cannot usefully split. Detailed output
   requirements do not by themselves justify another worker. No Monitor is expected on this path.
-- Delegate one worker with `profile=balanced`, `strategy=direct`: Luna for bounded mechanical work,
-  extraction, data processing, exact calculation, or a clear local implementation; Terra for
-  state recovery, resume/idempotency logic, coupled multi-file work, ordinary debugging,
-  review/synthesis, or one office artifact. This route must not request an internal plan.
+- Delegate one worker with `profile=balanced`, `strategy=direct`, and `directTier` set to exactly
+  `luna` or `terra`: Luna for bounded mechanical work, extraction, data processing, exact
+  calculation, or a clear local implementation; Terra for state recovery, resume/idempotency
+  logic, coupled multi-file work, ordinary debugging, review/synthesis, or one office artifact.
+  This route must not request an internal plan.
 - Use `profile=balanced`, `strategy=fanout` only for at least two independent packages, each over
   30 seconds and at least 90 seconds total serial work. Default to two Luna leaves. Use three only
   for three substantial independent streams when three lowers the predicted critical path by at
@@ -32,9 +33,17 @@ build-manifest read:
 Pass the `agent_trio` tool arguments as flat top-level fields. Never wrap the whole argument object
 in `request`, `input`, or `arguments`.
 
+For `run` or `submit`, use only schema fields. `domain` is exactly `coding`, `algorithm`, `research`,
+`paper`, `office`, `autoResearch`, or `general`; omit it when uncertain. Map current Codex labels:
+read-only to `readOnly`, workspace-write to `workspaceWrite`, and danger-full-access,
+unrestricted, or disabled sandboxing to `fullAccess`; map Never to `never` and Approve for me or
+on-request to `approveForMe`. Never strengthen access or approval. Use `directTier`, never a
+top-level `floor`. Do not send `mode` or `selectedCapabilities`. `capabilities` contains
+`{kind,name,path?}` objects, and execution limit fields belong inside `limits`.
+
 For a foreground MCP run, generate a unique UUID-style `runId` and call `action=submit` with
 `monitorFirst=true`. Only if submit succeeds and returns that same `runId`, make exactly one `action=status`
-call with the same ID and `wait=true`. If submit returns an MCP/tool error, stop
+call containing only that action, the same ID, and `wait=true`. If submit returns an MCP/tool error, stop
 immediately and do not call status. The MCP Apps monitor mounts from the submit response. Do not
 poll or open another monitor page.
 

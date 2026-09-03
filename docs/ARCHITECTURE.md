@@ -212,6 +212,16 @@ and mode before any worker starts. A deadline or USD budget can further constrai
 validation checks predicted bounds, and the scheduler checks observed usage before starting more
 work.
 
+### MCP Request Boundary
+
+The single public `agent_trio` tool advertises only canonical request fields. Direct execution uses
+`directTier`; capabilities use structured references; limits are nested; and fanout plan fields live
+inside `semanticPlan`. Before strict parsing, the server normalizes only a bounded set of known,
+semantically unambiguous legacy shapes seen in real clients. This compatibility pass is local code:
+it starts no model turn and adds no token, latency, or storage overhead beyond parsing one small
+request object. Duplicate representations must agree after normalization. Conflicting permissions,
+tiers, limits, capabilities, envelope fields, or plan fields fail before a run is created.
+
 A leaf that fails specifically because its reasoning was insufficient can be promoted once:
 `Luna -> Terra -> Sol`. A mechanical validator repair promotes Luna only to Terra-medium. In both
 cases only the failed leaf reruns; completed siblings and their evidence remain available. The

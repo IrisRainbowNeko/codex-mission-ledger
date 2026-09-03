@@ -26,12 +26,12 @@ function result(): BatchResult {
 describe("AgentTrioMcpProtocol", () => {
   it("makes the current Sol root the semantic router", () => {
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("flat top-level fields");
-    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("only if submit succeeds");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("only after submit succeeds");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("profile defaults to balanced");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("strategy=direct delegates one worker");
-    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Balanced uses 2 tasks normally");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Balanced normally uses 2 tasks");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain(">=20% critical-path gain");
-    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Terra for recovery/stateful work");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Terra handles recovery/stateful work");
     expect(AGENT_TRIO_TOOL_SCHEMA.properties.profile).toMatchObject({ default: "balanced" });
     expect("request" in AGENT_TRIO_TOOL_SCHEMA.properties).toBe(false);
   });
@@ -51,13 +51,20 @@ describe("AgentTrioMcpProtocol", () => {
     expect(parseAgentTrioRequest({ request: status })).toEqual(parseAgentTrioRequest(status));
   });
 
-  it("rejects ambiguous or recursive request wrappers", () => {
+  it("merges split request wrappers and rejects conflicts or recursion", () => {
+    expect(
+      parseAgentTrioRequest({
+        action: "status",
+        wait: true,
+        request: { action: "status", runId: "run-1" },
+      }),
+    ).toEqual({ action: "status", runId: "run-1", wait: true });
     expect(() =>
       parseAgentTrioRequest({
-        request: { action: "status", runId: "run-1" },
+        request: { action: "run", runId: "run-1" },
         action: "status",
       }),
-    ).toThrow("request wrapper cannot be combined with top-level agent_trio arguments");
+    ).toThrow("request wrapper conflicts with top-level agent_trio argument: action");
     expect(() =>
       parseAgentTrioRequest({
         request: { request: { action: "status", runId: "run-1" } },
@@ -88,9 +95,176 @@ describe("AgentTrioMcpProtocol", () => {
     );
     expect("risk" in AGENT_TRIO_TOOL_SCHEMA.properties).toBe(false);
     expect("merge" in AGENT_TRIO_TOOL_SCHEMA.properties).toBe(false);
+    expect("floor" in AGENT_TRIO_TOOL_SCHEMA.properties).toBe(false);
+    expect("selectedCapabilities" in AGENT_TRIO_TOOL_SCHEMA.properties).toBe(false);
+    expect("mode" in AGENT_TRIO_TOOL_SCHEMA.properties).toBe(false);
+    expect("maxLeaves" in AGENT_TRIO_TOOL_SCHEMA.properties).toBe(false);
     expect(() => parseAgentTrioRequest({ ...direct, risk: "critical" })).toThrow(
       "misplaced risk must be low, medium, or high",
     );
+  });
+
+  it("normalizes the bounded aliases observed in real direct calls", () => {
+    const parsed = parseAgentTrioRequest({
+      action: "submit",
+      runId: "run-1",
+      monitorFirst: true,
+      profile: "balanced",
+      strategy: "direct",
+      floor: "terra",
+      risk: "low",
+      selectedCapabilities: ["lark"],
+      maxLeaves: 2,
+      request: {
+        objective: "inspect the available documents",
+        cwd: "/workspace",
+        domain: "lark-document-review-and-synthesis",
+        hostAccess: "unrestricted",
+        hostApproval: "on-request",
+        mode: "foreground",
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      action: "submit",
+      runId: "run-1",
+      monitorFirst: true,
+      profile: "balanced",
+      strategy: "direct",
+      directTier: "terra",
+      domain: "research",
+      hostAccess: "fullAccess",
+      hostApproval: "approveForMe",
+      capabilities: [{ kind: "skill", name: "lark" }],
+      limits: { maxLeaves: 2 },
+    });
+    for (const alias of ["request", "floor", "risk", "selectedCapabilities", "mode", "maxLeaves"]) {
+      expect(parsed).not.toHaveProperty(alias);
+    }
+  });
+
+  it("canonicalizes custom domains and native permission labels", () => {
+    for (const [domain, expected] of [
+      ["codebase analysis", "coding"],
+      ["software-analysis", "coding"],
+      ["numerical-math", "algorithm"],
+      ["presentation-work", "office"],
+      ["unclassified-specialty", "general"],
+    ] as const) {
+      expect(
+        parseAgentTrioRequest({
+          action: "submit",
+          objective: "bounded task",
+          cwd: "/workspace",
+          strategy: "direct",
+          directTier: "luna",
+          domain,
+          hostAccess: "danger-full-access",
+          hostApproval: "never",
+        }),
+      ).toMatchObject({ domain: expected, hostAccess: "fullAccess" });
+    }
+    expect(
+      parseAgentTrioRequest({
+        action: "run",
+        objective: "bounded task",
+        cwd: "/workspace",
+        strategy: "direct",
+        directTier: "luna",
+        hostAccess: "workspace-write",
+        hostApproval: "approve-for-me",
+      }),
+    ).toMatchObject({ hostAccess: "workspaceWrite", hostApproval: "approveForMe" });
+  });
+
+  it("accepts all sanitized direct request shapes observed in local sessions", () => {
+    const base = {
+      action: "submit" as const,
+      runId: "observed-run",
+      monitorFirst: true,
+      profile: "balanced" as const,
+      strategy: "direct" as const,
+    };
+    const observed = [
+      {
+        ...base,
+        selectedCapabilities: ["lark"],
+        request: {
+          objective: "review accessible documents",
+          cwd: "/workspace",
+          domain: "research",
+          hostAccess: "fullAccess",
+          hostApproval: "never",
+          mode: "foreground",
+        },
+      },
+      {
+        ...base,
+        objective: "review accessible documents",
+        cwd: "/workspace",
+        domain: "lark-document-review-and-synthesis",
+        hostAccess: "unrestricted",
+        hostApproval: "never",
+        floor: "terra",
+        risk: "low",
+      },
+      {
+        ...base,
+        objective: "analyze a project",
+        cwd: "/workspace",
+        domain: "codebase analysis",
+        hostAccess: "danger-full-access",
+        hostApproval: "never",
+      },
+      {
+        ...base,
+        request: {
+          objective: "analyze a project",
+          cwd: "/workspace",
+          hostAccess: "fullAccess",
+          hostApproval: "never",
+        },
+      },
+      {
+        ...base,
+        objective: "analyze a project",
+        cwd: "/workspace",
+        domain: "software-analysis",
+        hostAccess: "danger-full-access",
+        hostApproval: "never",
+        risk: "low",
+      },
+    ];
+
+    for (const request of observed) {
+      expect(() => parseAgentTrioRequest(request)).not.toThrow();
+    }
+  });
+
+  it("rejects semantic conflicts while normalizing start aliases", () => {
+    const direct = {
+      action: "submit" as const,
+      objective: "bounded task",
+      cwd: "/workspace",
+      strategy: "direct" as const,
+      monitorFirst: true,
+    };
+    expect(() => parseAgentTrioRequest({ ...direct, mode: "durable" })).toThrow(
+      "mode=durable conflicts",
+    );
+    expect(() => parseAgentTrioRequest({ ...direct, floor: "terra", directTier: "luna" })).toThrow(
+      "top-level floor conflicts with directTier",
+    );
+    expect(() =>
+      parseAgentTrioRequest({
+        ...direct,
+        selectedCapabilities: ["lark"],
+        capabilities: [{ kind: "skill", name: "browser" }],
+      }),
+    ).toThrow("selectedCapabilities conflicts with capabilities");
+    expect(() =>
+      parseAgentTrioRequest({ ...direct, maxLeaves: 2, limits: { maxLeaves: 3 } }),
+    ).toThrow("top-level maxLeaves conflicts with limits.maxLeaves");
   });
 
   it("moves compatible fanout hints into semanticPlan and rejects conflicts", () => {
@@ -116,6 +290,25 @@ describe("AgentTrioMcpProtocol", () => {
       }),
     ).toMatchObject({
       semanticPlan: { ...semanticPlan, risk: "low", merge: "deterministic" },
+    });
+    expect(
+      parseAgentTrioRequest({
+        action: "submit",
+        objective: "inspect two modules",
+        cwd: "/workspace",
+        strategy: "fanout",
+        access: "read-only",
+        risk: "low",
+        merge: "deterministic",
+        tasks: semanticPlan.tasks,
+      }),
+    ).toMatchObject({
+      semanticPlan: {
+        access: "readOnly",
+        risk: "low",
+        merge: "deterministic",
+        tasks: semanticPlan.tasks,
+      },
     });
     expect(() =>
       parseAgentTrioRequest({
@@ -646,9 +839,7 @@ describe("AgentTrioMcpProtocol", () => {
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Quality allows 2-5 tasks and >15s each");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("positive time saving");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Inside semanticPlan, tasks contain only goal");
-    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain(
-      "Put merge and risk only inside semanticPlan, never at tool top level",
-    );
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Put merge and risk only inside semanticPlan");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("strategy=direct delegates");
   });
 
