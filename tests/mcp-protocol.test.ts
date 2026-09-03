@@ -25,12 +25,44 @@ function result(): BatchResult {
 
 describe("AgentTrioMcpProtocol", () => {
   it("makes the current Sol root the semantic router", () => {
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("flat top-level fields");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("only if submit succeeds");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("profile defaults to balanced");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("strategy=direct delegates one worker");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Balanced uses 2 tasks normally");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain(">=20% critical-path gain");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Terra for recovery/stateful work");
     expect(AGENT_TRIO_TOOL_SCHEMA.properties.profile).toMatchObject({ default: "balanced" });
+    expect("request" in AGENT_TRIO_TOOL_SCHEMA.properties).toBe(false);
+  });
+
+  it("normalizes one compatibility request wrapper without advertising it", () => {
+    const submit = {
+      action: "submit" as const,
+      runId: "run-1",
+      objective: "inspect a project",
+      cwd: "/workspace",
+      strategy: "auto" as const,
+      monitorFirst: true,
+    };
+    const status = { action: "status" as const, runId: "run-1", wait: true };
+
+    expect(parseAgentTrioRequest({ request: submit })).toEqual(parseAgentTrioRequest(submit));
+    expect(parseAgentTrioRequest({ request: status })).toEqual(parseAgentTrioRequest(status));
+  });
+
+  it("rejects ambiguous or recursive request wrappers", () => {
+    expect(() =>
+      parseAgentTrioRequest({
+        request: { action: "status", runId: "run-1" },
+        action: "status",
+      }),
+    ).toThrow("request wrapper cannot be combined with top-level agent_trio arguments");
+    expect(() =>
+      parseAgentTrioRequest({
+        request: { request: { action: "status", runId: "run-1" } },
+      }),
+    ).toThrow("nested agent_trio request wrappers are not supported");
   });
 
   it("parses bounded resume input and rejects input for every other action", () => {

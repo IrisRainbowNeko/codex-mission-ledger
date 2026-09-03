@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [3.4.1] - 2026-09-03
+
+### Fixed
+
+- Accept one unambiguous `request` wrapper around MCP tool arguments for compatibility while
+  retaining flat arguments as the sole public schema.
+- Require all installed skills to call `status` only after `submit` succeeds with the same run ID,
+  preventing a secondary `unknown runId` error after failed submission.
+
 ## [3.4.0] - 2026-09-03
 
 ### Added

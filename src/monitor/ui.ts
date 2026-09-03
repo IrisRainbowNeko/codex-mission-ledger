@@ -4,7 +4,7 @@ export const MONITOR_HTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Agent Trio Monitor</title>
-  <link rel="stylesheet" href="/assets/monitor.css?v=3.4.0-profile-1">
+  <link rel="stylesheet" href="/assets/monitor.css?v=3.4.1-profile-1">
 </head>
 <body>
   <header class="topbar">
@@ -42,7 +42,7 @@ export const MONITOR_HTML = `<!doctype html>
       </section>
     </section>
   </main>
-  <script src="/assets/monitor.js?v=3.4.0-profile-1"></script>
+  <script src="/assets/monitor.js?v=3.4.1-profile-1"></script>
 </body>
 </html>`;
 

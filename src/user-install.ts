@@ -337,7 +337,8 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
     !/^name:\s*agent-trio\s*$/mu.test(skillText) ||
     !skillText.includes("`agent_trio` MCP") ||
     !skillText.includes("`monitorFirst=true`") ||
-    !skillText.includes("exactly one `action=status` call") ||
+    !/exactly one\s+`action=status`\s+call/mu.test(skillText) ||
+    !hasSafeMcpInvocationContract(skillText) ||
     !/MCP\s+Apps monitor/mu.test(skillText)
   ) {
     problems.push("installed agent-trio skill does not implement embedded Monitor delegation");
@@ -354,7 +355,8 @@ export function verifyUserInstall(paths: UserInstallPaths): UserVerifyReport {
     !/^name:\s*agent-trio-session\s*$/mu.test(sessionSkillText) ||
     !sessionSkillText.includes("`agent_trio` MCP") ||
     !sessionSkillText.includes("`monitorFirst=true`") ||
-    !sessionSkillText.includes("exactly one `action=status` call") ||
+    !/exactly one\s+`action=status`\s+call/mu.test(sessionSkillText) ||
+    !hasSafeMcpInvocationContract(sessionSkillText) ||
     !/MCP\s+Apps monitor/mu.test(sessionSkillText) ||
     !sessionSkillText.includes("previously invoked $agent-trio-session")
   ) {
@@ -423,6 +425,7 @@ function verifyProfileSkill(
     !new RegExp(`^name:\\s*${name}\\s*$`, "mu").test(skillText) ||
     !skillText.includes("`profile=quality`") ||
     !skillText.includes("`monitorFirst=true`") ||
+    !hasSafeMcpInvocationContract(skillText) ||
     !/MCP\s+Apps monitor/mu.test(skillText)
   ) {
     problems.push(`installed ${name} skill does not implement quality-profile delegation`);
@@ -437,6 +440,16 @@ function verifyProfileSkill(
   if (!/^\s*value:\s*"agent_trio"\s*$/mu.test(metadataText)) {
     problems.push(`installed ${name} skill must declare the agent_trio MCP dependency`);
   }
+}
+
+function hasSafeMcpInvocationContract(skillText: string): boolean {
+  return (
+    skillText.includes("flat top-level fields") &&
+    skillText.includes("Never wrap the whole argument object") &&
+    skillText.includes("Only if submit succeeds") &&
+    skillText.includes("If submit returns an MCP/tool error") &&
+    skillText.includes("do not call status")
+  );
 }
 
 export function mergeUserConfig(source: string, options: UserInstallOptions = {}): string {

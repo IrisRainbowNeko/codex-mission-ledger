@@ -417,9 +417,10 @@ workflow state machine.
 Explicit foreground skill invocations generate a unique run ID and issue
 `submit(monitorFirst=true)`. The detached foreground supervisor returns after its first durable
 snapshot, allowing the attached MCP Apps resource to mount near the start of execution. The skill
-then issues exactly one `status(wait=true)` call for the same run; that call waits on persisted state
-and starts no model work. The component's cursor-based `status` long polls are component traffic,
-not model turns.
+then issues exactly one `status(wait=true)` call only when submit succeeds and returns the same run
+ID; an MCP/tool error stops the sequence without querying a nonexistent run. That status call waits
+on persisted state and starts no model work. The component's cursor-based `status` long polls are
+component traffic, not model turns.
 
 Snapshots record App Server thread and turn IDs at `thread_started`, `running`, and confirmed
 `terminal` states. Recovery attempts to resolve those IDs through App Server. Read-only turns can
@@ -468,6 +469,11 @@ call the same `AgentTrioService`; neither reimplements scheduling policy.
 The public tool accepts action-scoped foreground presentation flags: `monitorFirst` only on
 `submit`, and `wait` only on `status`. The embedded component uses cursor, revision, and long-poll
 fields on `status`; they do not expose another tool or alter execution semantics.
+
+Canonical tool arguments are flat top-level fields. The parser normalizes one compatibility
+envelope shaped as `{ request: { ...flat fields... } }`, because some hosts may synthesize that
+wrapper despite the schema. The wrapper is not advertised, cannot be combined with top-level
+fields, and cannot be nested recursively.
 
 The user installer registers that MCP server and installs two user skills. `$agent-trio` delegates
 one explicitly selected turn. `$agent-trio-session` permits implicit selection only for related

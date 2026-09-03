@@ -17,9 +17,14 @@ extensions, continuations, and questions. Do not activate from a prior $agent-tr
 call. Stop when the user opts out or switches to a clearly unrelated task.
 Invoke implicitly only when this conversation previously invoked $agent-trio-session.
 
-For each new foreground MCP run, generate a unique UUID-style `runId`, call `action=submit` with
-`monitorFirst=true`, then make exactly one `action=status` call with that ID and `wait=true`. The MCP Apps monitor mounts while work runs; never poll. If a prior run is `waiting_input` and the user
-supplies the requested input, resume that run instead.
+Pass the `agent_trio` tool arguments as flat top-level fields. Never wrap the whole argument object
+in `request`, `input`, or `arguments`.
+
+For each new foreground MCP run, generate a unique UUID-style `runId` and call `action=submit` with
+`monitorFirst=true`. Only if submit succeeds and returns that same `runId`, make exactly one `action=status`
+call with that ID and `wait=true`. If submit returns an MCP/tool error, stop
+immediately and do not call status. The MCP Apps monitor mounts while work runs; never poll. If a
+prior run is `waiting_input` and the user supplies the requested input, resume that run instead.
 
 Make each follow-up objective self-contained using only needed prior goals, facts, decisions, and
 artifact paths. Pass absolute `cwd`, inferred `domain`, exact current `hostAccess` and

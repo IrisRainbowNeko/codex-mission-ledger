@@ -103,8 +103,9 @@ turn. After either session skill is explicitly selected once, related correction
 continuations, and questions retain that profile. Say to stop using Agent Trio, ask for normal
 Codex, switch to an unrelated task, or start a new conversation to leave session mode.
 
-For foreground invocations, the selected skill supplies a unique run ID, submits the run for
-immediate durable acceptance, and then waits once for its final result. ChatGPT and Codex clients
+For foreground invocations, the selected skill passes flat top-level MCP arguments, supplies a
+unique run ID, submits the run for immediate durable acceptance, and then waits once for its final
+result only after submit succeeds with that same ID. ChatGPT and Codex clients
 with MCP Apps support therefore mount the live Monitor near the start of execution instead of after
 the run finishes; no separate browser tab is required. Select any planner, leaf, direct agent,
 integrator, or final-review thread to inspect its messages, reasoning summaries, commands, file
@@ -266,8 +267,15 @@ The local Codex clients expose one MCP tool named `agent_trio` with five actions
 All installed skills implement this foreground flow when they call the runtime:
 
 ```text
-generate unique runId -> submit(runId, monitorFirst=true) -> status(runId, wait=true) once
+generate unique runId -> submit(runId, monitorFirst=true)
+  -> on successful response with the same runId: status(runId, wait=true) once
+  -> on MCP/tool error: stop without status
 ```
+
+Tool arguments are flat fields such as `action`, `runId`, `objective`, and `cwd`; callers must not
+nest the whole argument object beneath `request`, `input`, or `arguments`. The runtime accepts one
+legacy `request` wrapper for compatibility, but the public schema and documented format remain
+flat.
 
 The first call returns as soon as the foreground run has a durable snapshot, which gives the host a
 completed tool result to attach the component to. The second call waits on that same run locally;

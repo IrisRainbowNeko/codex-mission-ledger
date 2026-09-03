@@ -143,7 +143,7 @@ export const AGENT_TRIO_TOOL_SCHEMA = {
   ],
 } as const;
 
-export const AGENT_TRIO_TOOL_DESCRIPTION = `Run or monitor Agent Trio. For foreground UI, submit once with monitorFirst=true, then status once with wait=true. Copy hostAccess and hostApproval exactly. profile defaults to balanced; quality preserves V3.3 routing. strategy=direct delegates one worker: Luna for bounded mechanical work; Terra for recovery/stateful work, coupled debugging, review/synthesis, or office artifacts. strategy=fanout requires semanticPlan with 2+ independent tasks; use Luna by default, disjoint writer paths, valid dependencies, and at most one Sol leaf. Balanced uses 2 tasks normally; use 3 only for three substantial streams, >30s each, >=90s serial work, and >=20% critical-path gain over the best 2-task grouping. Quality allows 2-5 tasks and >15s each. Use strategy=auto only when semantic boundaries are unavailable. Runtime enforces permissions, DAG, ownership, explicit budget, concurrency, and positive time saving; 40% cost and 70% latency are telemetry, not per-run vetoes. semanticPlan tasks contain only goal, paths, after indexes, floor, and expectedSeconds; merge is deterministic or terra, risk is low, medium, or high. status/resume/cancel require runId.`;
+export const AGENT_TRIO_TOOL_DESCRIPTION = `Run or monitor Agent Trio. Pass arguments as flat top-level fields; never wrap the argument object in request, input, or arguments. For foreground UI, submit once with monitorFirst=true, then call status once with wait=true only if submit succeeds and returns the same runId. Copy hostAccess and hostApproval exactly. profile defaults to balanced; quality preserves V3.3 routing. strategy=direct delegates one worker: Luna for bounded mechanical work; Terra for recovery/stateful work, coupled debugging, review/synthesis, or office artifacts. strategy=fanout requires semanticPlan with 2+ independent tasks; use Luna by default, disjoint writer paths, valid dependencies, and at most one Sol leaf. Balanced uses 2 tasks normally; use 3 only for three substantial streams, >30s each, >=90s serial work, and >=20% critical-path gain over the best 2-task grouping. Quality allows 2-5 tasks and >15s each. Use strategy=auto only when semantic boundaries are unavailable. Runtime enforces permissions, DAG, ownership, explicit budget, concurrency, and positive time saving; 40% cost and 70% latency are telemetry, not per-run vetoes. semanticPlan tasks contain only goal, paths, after indexes, floor, and expectedSeconds; merge is deterministic or terra, risk is low, medium, or high. status/resume/cancel require runId.`;
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -295,7 +295,7 @@ export class AgentTrioMcpProtocol {
               tools: { listChanged: false },
               resources: { subscribe: false, listChanged: false },
             },
-            serverInfo: { name: "agent-trio", version: "3.4.0" },
+            serverInfo: { name: "agent-trio", version: "3.4.1" },
           });
           return;
         }
@@ -524,7 +524,7 @@ export type ParsedAgentTrioRequest = AgentTrioRequest & {
 };
 
 export function parseAgentTrioRequest(value: unknown): ParsedAgentTrioRequest {
-  const input = requireRecord(value, "agent_trio arguments");
+  const input = normalizeAgentTrioArguments(value);
   const action = input["action"];
   if (
     action !== "run" &&
@@ -709,6 +709,21 @@ export function parseAgentTrioRequest(value: unknown): ParsedAgentTrioRequest {
       ? {}
       : { monitorFirst: input["monitorFirst"] as boolean }),
   };
+}
+
+function normalizeAgentTrioArguments(value: unknown): Record<string, unknown> {
+  const input = requireRecord(value, "agent_trio arguments");
+  if (!("request" in input)) {
+    return input;
+  }
+  if (Object.keys(input).length !== 1) {
+    throw new Error("request wrapper cannot be combined with top-level agent_trio arguments");
+  }
+  const wrapped = requireRecord(input["request"], "agent_trio request wrapper");
+  if ("request" in wrapped) {
+    throw new Error("nested agent_trio request wrappers are not supported");
+  }
+  return wrapped;
 }
 
 function parseResumeInput(value: unknown): string {

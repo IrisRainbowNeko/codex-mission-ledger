@@ -14,9 +14,13 @@ Each leaf must exceed 15 seconds and shorten the critical path. Use at most one 
 `strategy=auto` only when reliable semantic boundaries are unavailable. An explicit quality call
 never completes the objective in root Sol.
 
-For foreground work, generate a UUID-style `runId`, call `action=submit` with
-`monitorFirst=true`, then immediately make exactly one `action=status` call with the same ID and
-`wait=true`. The MCP Apps monitor mounts while work runs; do not poll.
+Pass the `agent_trio` tool arguments as flat top-level fields. Never wrap the whole argument object
+in `request`, `input`, or `arguments`.
+
+For foreground work, generate a UUID-style `runId` and call `action=submit` with
+`monitorFirst=true`. Only if submit succeeds and returns that same `runId`, make exactly one `action=status`
+call with the same ID and `wait=true`. If submit returns an MCP/tool error, stop
+immediately and do not call status. The MCP Apps monitor mounts while work runs; do not poll.
 
 Pass the complete objective, absolute `cwd`, exact current `hostAccess` and `hostApproval`, inferred
 domain, constraints, and only explicitly selected capabilities. Writer paths are pairwise

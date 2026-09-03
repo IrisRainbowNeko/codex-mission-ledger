@@ -119,7 +119,9 @@ enabled = true
     );
     expect(installedSkill).toContain("`agent_trio` MCP runtime");
     expect(installedSkill).toContain("`monitorFirst=true`");
-    expect(installedSkill).toContain("exactly one `action=status` call");
+    expect(installedSkill).toMatch(/exactly one\s+`action=status`\s+call/mu);
+    expect(installedSkill).toContain("flat top-level fields");
+    expect(installedSkill).toContain("If submit returns an MCP/tool error");
     expect(installedSkill).toContain("MCP Apps monitor");
     expect(readFileSync(join(layout.skillDirectory, "agents", "openai.yaml"), "utf8")).toContain(
       "allow_implicit_invocation: false",
@@ -128,15 +130,27 @@ enabled = true
     expect(installedSessionSkill).toContain("previously invoked $agent-trio-session");
     expect(installedSessionSkill).toContain("Do not activate from a prior $agent-trio single-turn");
     expect(installedSessionSkill).toContain("switches to a clearly unrelated task");
+    expect(installedSessionSkill).toContain("flat top-level fields");
+    expect(installedSessionSkill).toContain("If submit returns an MCP/tool error");
     expect(
       readFileSync(join(layout.sessionSkillDirectory, "agents", "openai.yaml"), "utf8"),
     ).toContain("allow_implicit_invocation: true");
     expect(result.written).toContain(layout.sessionSkillDirectory);
     expect(result.written).toContain(layout.qualitySkillDirectory);
     expect(result.written).toContain(layout.qualitySessionSkillDirectory);
-    expect(readFileSync(join(layout.qualitySkillDirectory, "SKILL.md"), "utf8")).toContain(
-      "`profile=quality`",
+    const installedQualitySkill = readFileSync(
+      join(layout.qualitySkillDirectory, "SKILL.md"),
+      "utf8",
     );
+    const installedQualitySessionSkill = readFileSync(
+      join(layout.qualitySessionSkillDirectory, "SKILL.md"),
+      "utf8",
+    );
+    expect(installedQualitySkill).toContain("`profile=quality`");
+    expect(installedQualitySkill).toContain("flat top-level fields");
+    expect(installedQualitySkill).toContain("If submit returns an MCP/tool error");
+    expect(installedQualitySessionSkill).toContain("flat top-level fields");
+    expect(installedQualitySessionSkill).toContain("If submit returns an MCP/tool error");
     expect(PROFILE_FILES).toEqual([]);
     expect(existsSync(join(layout.profileDirectory, "luna-worker.toml"))).toBe(false);
   });

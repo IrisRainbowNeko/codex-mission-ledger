@@ -29,10 +29,14 @@ build-manifest read:
 - Use `profile=balanced`, `strategy=auto` only when this root is not Sol or reliable boundaries are
   unavailable.
 
-For a foreground MCP run, generate a unique UUID-style `runId`, call `action=submit` with
-`monitorFirst=true`, then immediately make exactly one `action=status` call with the same `runId`
-and `wait=true`. The MCP Apps monitor mounts from the submit response. Do not poll or open another
-monitor page.
+Pass the `agent_trio` tool arguments as flat top-level fields. Never wrap the whole argument object
+in `request`, `input`, or `arguments`.
+
+For a foreground MCP run, generate a unique UUID-style `runId` and call `action=submit` with
+`monitorFirst=true`. Only if submit succeeds and returns that same `runId`, make exactly one `action=status`
+call with the same ID and `wait=true`. If submit returns an MCP/tool error, stop
+immediately and do not call status. The MCP Apps monitor mounts from the submit response. Do not
+poll or open another monitor page.
 
 Pass the complete objective without the skill marker, absolute `cwd`, inferred `domain`, and the
 current `hostAccess` and `hostApproval` exactly. Preserve constraints. Add only exact capabilities
