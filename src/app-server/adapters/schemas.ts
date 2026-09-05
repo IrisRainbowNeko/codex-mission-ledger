@@ -66,8 +66,9 @@ const integrationPlanIssueSchema = {
       items: { type: "string", minLength: 1, maxLength: 128 },
     },
     summary: { type: "string", minLength: 1, maxLength: 8_000 },
+    requiresPlanPatch: { type: "boolean" },
   },
-  required: ["type", "taskIds", "summary"],
+  required: ["type", "taskIds", "summary", "requiresPlanPatch"],
 } as const;
 
 /** The model supplies content only; transport-owned ids, timestamps and usage are injected later. */
@@ -269,7 +270,10 @@ export function parseIntegratorOutcomeBody(
   const { planIssues: rawIssues, ...base } = record;
   const outcome = parseAgentOutcomeBody({ validation: [], ...base });
   const planIssues = objectArray(rawIssues, "planIssues", 32, (issue, label) => {
-    const parsed = strictRecord(issue, ["type", "taskIds", "summary"], label);
+    const parsed = strictRecord(issue, ["type", "taskIds", "summary", "requiresPlanPatch"], label);
+    if (typeof parsed["requiresPlanPatch"] !== "boolean") {
+      throw new Error(`${label}.requiresPlanPatch must be a boolean`);
+    }
     return {
       type: stringEnum(
         parsed["type"],
@@ -278,6 +282,7 @@ export function parseIntegratorOutcomeBody(
       ),
       taskIds: stringArray(parsed["taskIds"], `${label}.taskIds`, 32, 128),
       summary: boundedString(parsed["summary"], `${label}.summary`, 1, 8_000),
+      requiresPlanPatch: parsed["requiresPlanPatch"],
     };
   });
   return { ...outcome, planIssues };

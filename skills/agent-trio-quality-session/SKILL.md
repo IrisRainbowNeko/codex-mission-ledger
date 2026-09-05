@@ -34,6 +34,7 @@ an existing `waiting_input` run when the user supplies its requested input.
 Make follow-up objectives self-contained with only relevant prior facts and artifact paths. Pass
 absolute `cwd`, exact current permissions and approval mode, inferred domain, constraints, and only
 selected capabilities. `risk` and `merge` are valid only inside `semanticPlan` for
-`strategy=fanout`; never send either as a top-level tool argument. With `strategy=direct`, omit
-`semanticPlan` and all plan-only fields. Durable runs submit without `monitorFirst`. Treat
-successful `finalResponse` as complete; report MCP failure without silent fallback.
+`strategy=fanout`; never send either as a top-level tool argument. Always set semantic-plan
+`access=readOnly` for analysis or `access=workspaceWrite` for edits. With `strategy=direct`, omit
+`semanticPlan` and all plan-only fields. Durable runs submit without `monitorFirst`. Treat successful
+`finalResponse` as complete; report MCP failure without silent fallback.

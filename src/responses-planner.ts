@@ -9,7 +9,7 @@ import type { PlannerTransport, PlannerTurnRequest, PlannerTurnResponse } from "
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 2_000;
-const EXECUTION_PLAN_MAX_OUTPUT_TOKENS = 512;
+const EXECUTION_PLAN_MAX_OUTPUT_TOKENS = 350;
 const PLAN_PATCH_MAX_OUTPUT_TOKENS = 1_000;
 const PLANNER_INSTRUCTIONS = [
   "Act only as the Sol semantic planner for Agent Trio V3.",

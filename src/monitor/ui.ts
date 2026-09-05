@@ -1,10 +1,12 @@
+import { MONITOR_CONVERSATION_CLIENT_JS } from "./client.js";
+
 export const MONITOR_HTML = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Agent Trio Monitor</title>
-  <link rel="stylesheet" href="/assets/monitor.css?v=3.4.3-protocol-1">
+  <link rel="stylesheet" href="/assets/monitor.css?v=3.4.3-protocol-2">
 </head>
 <body>
   <header class="topbar">
@@ -42,7 +44,7 @@ export const MONITOR_HTML = `<!doctype html>
       </section>
     </section>
   </main>
-  <script src="/assets/monitor.js?v=3.4.3-protocol-1"></script>
+  <script src="/assets/monitor.js?v=3.4.3-protocol-2"></script>
 </body>
 </html>`;
 
@@ -57,7 +59,7 @@ export const MONITOR_APP_JS = `
   const token = new URLSearchParams(location.search).get("token") || "";
   const match = /^\\/runs\\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/.exec(location.pathname);
   const runId = match ? match[1] : null;
-  const state = { snapshot: null, events: [], streams: Object.create(null), cursor: 0, selected: "overview", source: null, refreshing: false, refreshPending: false };
+  const state = { snapshot: null, events: [], items: Object.create(null), cursor: 0, selected: "overview", source: null, refreshing: false, refreshPending: false };
   const $ = (id) => document.getElementById(id);
   const api = (path) => path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token);
   const escapeUrlPart = (value) => encodeURIComponent(value);
@@ -121,25 +123,7 @@ export const MONITOR_APP_JS = `
     }
   }
 
-  function appendEvents(events) {
-    for (const event of events) {
-      const key = deltaStreamKey(event);
-      const existing = key ? state.streams[key] : null;
-      if (existing) {
-        existing.data.delta += event.data.delta;
-        existing.at = event.at || existing.at;
-        continue;
-      }
-      state.events.push(event);
-      if (key) state.streams[key] = event;
-    }
-  }
-
-  function deltaStreamKey(event) {
-    const data = event && event.data;
-    if (!event || typeof event.method !== "string" || !event.method.toLowerCase().endsWith("delta") || !data || typeof data.itemId !== "string" || typeof data.delta !== "string") return "";
-    return [event.method, event.threadId || "", event.turnId || "", data.itemId].join("|");
-  }
+${MONITOR_CONVERSATION_CLIENT_JS}
 
   function connect() {
     if (state.source) state.source.close();
@@ -215,8 +199,10 @@ export const MONITOR_APP_JS = `
       fields.push(["Profile", metrics.profile || (snapshot.request || {}).profile || "balanced"]);
       fields.push(["Route", metrics.routeReason || (plan.origin ? plan.origin + " plan" : "Direct")]);
       fields.push(["Route source", metrics.routeSource || ""]);
+      fields.push(["Economic evidence", metrics.routeEvidence || ""]);
+      fields.push(["Route adjustment", formatRouteAdjustment(metrics.routeAdjustment)]);
       fields.push(["Domain", metrics.selectedDomain || plan.domain || ""]);
-      fields.push(["Plan", plan.tasks ? String(plan.tasks.length) + " leaves" : "No fanout"]);
+      fields.push(["Plan", formatPlanShape(snapshot, plan, metrics)]);
       fields.push(["Planning", formatPlanning(metrics, plan)]);
       fields.push(["Waves", metrics.selectedWaveCount == null ? "" : String(metrics.selectedWaveCount)]);
       fields.push(["Tier mix", formatTierCounts(metrics.selectedTierCounts)]);
@@ -246,6 +232,8 @@ export const MONITOR_APP_JS = `
   }
 
   function formatTierCounts(counts) { if (!counts) return ""; return ["luna", "terra", "sol"].filter((tier) => counts[tier]).map((tier) => tier + ": " + counts[tier]).join(", "); }
+  function formatRouteAdjustment(value) { if (value === "reduced_to_two") return "Reduced to two leaves"; if (value === "downgraded_to_single") return "Downgraded to one agent"; return value === "none" ? "None" : ""; }
+  function formatPlanShape(snapshot, plan, metrics) { const proposed = ((((snapshot || {}).request || {}).semanticPlan || {}).tasks || []).length; const selected = metrics.selectedLeafCount == null ? ((plan.tasks || []).length) : Number(metrics.selectedLeafCount); if (proposed && proposed !== selected) return String(proposed) + " proposed → " + String(selected) + " selected"; return selected > 0 ? String(selected) + " leaves" : "No fanout"; }
   function formatPlanning(metrics, plan) { if (metrics.routeSource === "host_sol") return plan.tasks ? "External host Sol (not runtime-metered)" : "External host Sol selected one agent"; if (metrics.routeSource === "internal_sol") return "Internal Sol"; return metrics.plannerSkipped ? "None" : ""; }
   function formatPlannedTime(metrics) { const values = []; if (metrics.estimatedSerialSeconds != null) values.push("serial " + Number(metrics.estimatedSerialSeconds).toFixed(0) + "s"); if (metrics.estimatedCriticalPathSeconds != null) values.push("critical path " + Number(metrics.estimatedCriticalPathSeconds).toFixed(0) + "s"); return values.join(", "); }
   function formatRatios(metrics) { const values = []; if (metrics.estimatedCostRatio != null) values.push("cost " + Number(metrics.estimatedCostRatio).toFixed(2) + "x"); if (metrics.estimatedLatencyRatio != null) values.push("time " + Number(metrics.estimatedLatencyRatio).toFixed(2) + "x"); return values.join(", "); }
@@ -258,6 +246,7 @@ export const MONITOR_APP_JS = `
     const strong = document.createElement("strong"); strong.textContent = eventLabel(event);
     heading.appendChild(strong);
     if (event.displayStatus) { const badge = document.createElement("span"); badge.textContent = event.displayStatus; heading.appendChild(badge); }
+    if (event.displayTruncated) { const badge = document.createElement("span"); badge.textContent = "truncated"; heading.appendChild(badge); }
     body.appendChild(heading);
     if (event.displayCommand) { const command = document.createElement("code"); command.className = "command-line"; command.textContent = event.displayCommand; body.appendChild(command); }
     if (event.displayText) { const content = document.createElement("div"); content.className = "event-text"; appendRichText(content, event.displayText); body.appendChild(content); }
@@ -277,95 +266,6 @@ export const MONITOR_APP_JS = `
     if (method.startsWith("turn/")) return "Turn " + method.slice(5);
     if (method.includes("tokenUsage")) return "Token usage";
     return method;
-  }
-
-  function buildConversationEvents(events) {
-    const result = [];
-    const items = new Map();
-    for (const event of events) {
-      const descriptor = itemDescriptor(event);
-      if (descriptor) {
-        if (descriptor.kind === "user") continue;
-        let logical = items.get(descriptor.key);
-        if (!logical) {
-          logical = { at: event.at, role: event.role, taskId: event.taskId, displayKind: descriptor.kind };
-          items.set(descriptor.key, logical); result.push(logical);
-        }
-        applyItemEvent(logical, event, descriptor);
-      }
-    }
-    return result.filter((event) => event.displayKind !== "reasoning" || event.displayText);
-  }
-
-  function itemDescriptor(event) {
-    if (!event || event.type !== "app_server") return null;
-    const data = event.data || {};
-    const item = data.item && typeof data.item === "object" ? data.item : null;
-    const itemId = (item && item.id) || data.itemId;
-    if (typeof itemId !== "string" || !itemId) return null;
-    const itemType = (item && item.type) || itemTypeFromMethod(event.method || "");
-    const kind = ({ userMessage:"user", agentMessage:"agent-message", reasoning:"reasoning", commandExecution:"command", fileChange:"file-change" })[itemType] || "tool";
-    return { key: [event.threadId || "", event.turnId || "", itemId].join("|"), kind, itemType, item };
-  }
-
-  function itemTypeFromMethod(method) {
-    for (const type of ["agentMessage", "reasoning", "commandExecution", "fileChange"]) if (method.includes(type)) return type;
-    return "tool";
-  }
-
-  function applyItemEvent(logical, event, descriptor) {
-    logical.at = event.at || logical.at;
-    logical.role = event.role || logical.role;
-    logical.taskId = event.taskId || logical.taskId;
-    const delta = event.data && typeof event.data.delta === "string" ? event.data.delta : "";
-    if (delta) logical.displayText = (logical.displayText || "") + delta;
-    const item = descriptor.item;
-    if (descriptor.kind === "agent-message") {
-      logical.displayLabel = roleLabel(event.role || "agent");
-      if (item && typeof item.text === "string") logical.displayText = unwrapAgentMessage(item.text);
-      else if (event.method === "item/completed" && logical.displayText) {
-        logical.displayText = unwrapAgentMessage(logical.displayText);
-      }
-      return;
-    }
-    if (descriptor.kind === "reasoning") {
-      logical.displayLabel = "Reasoning";
-      const text = extractText(item);
-      if (text) logical.displayText = text;
-      return;
-    }
-    if (descriptor.kind === "command") {
-      logical.displayLabel = "Command";
-      if (item && typeof item.command === "string") logical.displayCommand = item.command;
-      if (item && typeof item.aggregatedOutput === "string" && item.aggregatedOutput) logical.displayOutput = item.aggregatedOutput;
-      else if (delta) { logical.displayOutput = (logical.displayOutput || "") + delta; logical.displayText = ""; }
-      if (item && item.status) logical.displayStatus = String(item.status);
-      return;
-    }
-    if (descriptor.kind === "file-change") {
-      logical.displayLabel = "File change";
-      const text = extractText(item);
-      if (text) logical.displayText = text;
-      if (item && item.status) logical.displayStatus = String(item.status);
-      return;
-    }
-    logical.displayLabel = descriptor.itemType || "Tool";
-    if (item) logical.displayRaw = item;
-  }
-
-  function unwrapAgentMessage(text) {
-    try {
-      const value = JSON.parse(text);
-      return value && typeof value.response === "string" ? value.response : text;
-    } catch {
-      const match = /"response"\\s*:\\s*"/.exec(text);
-      if (!match) return text;
-      const source = text.slice(match.index + match[0].length); let escaped = false, end = source.length;
-      for (let index = 0; index < source.length; index += 1) { const char = source[index]; if (char === '"' && !escaped) { end = index; break; } if (char === "\\\\" && !escaped) escaped = true; else escaped = false; }
-      let encoded = source.slice(0, end); while (encoded.endsWith("\\\\")) encoded = encoded.slice(0, -1);
-      try { return JSON.parse('"' + encoded + '"'); }
-      catch { return encoded.replace(/\\\\n/g, "\\n").replace(/\\\\r/g, "\\r").replace(/\\\\t/g, "\\t").replace(/\\\\"/g, '"').replace(/\\\\\\\\/g, "\\\\"); }
-    }
   }
 
   function appendRichText(container, text) {
@@ -401,13 +301,6 @@ export const MONITOR_APP_JS = `
     }
   }
 
-  function extractText(value) {
-    if (Array.isArray(value)) return value.map(extractText).filter(Boolean).join("\\n");
-    if (!value || typeof value !== "object") return typeof value === "string" ? value : "";
-    for (const key of ["delta", "text", "message", "summary", "output", "aggregatedOutput"]) if (typeof value[key] === "string" && value[key]) return value[key];
-    for (const key of ["item", "content", "turn"]) { const nested = extractText(value[key]); if (nested) return nested; }
-    return "";
-  }
   function normalizeStatus(status) { if (status === "terminal") return "completed"; if (status === "thread_started") return "pending"; return status || "pending"; }
   function roleLabel(role) { return ({ admission:"Admission", planner:"Sol planner", direct:"Direct agent", leaf:"Leaf", integrator:"Terra integrator", finalReview:"Sol final review" })[role] || role; }
   function tierLabel(tier, effort) { return [tier ? String(tier).toUpperCase() : "Agent", effort || ""].filter(Boolean).join(" / "); }

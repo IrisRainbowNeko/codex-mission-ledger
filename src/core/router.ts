@@ -1,7 +1,14 @@
 import { lstatSync, readdirSync, type Dirent } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { AdmissionDecision } from "./integration.js";
-import type { ExecutionPlan, ModelTier, RunRequest, TaskDomain } from "./contracts.js";
+import type {
+  ExecutionPlan,
+  ModelTier,
+  RouteAdjustment,
+  RouteEvidence,
+  RunRequest,
+  TaskDomain,
+} from "./contracts.js";
 import { fanoutMinTaskSeconds } from "./policy.js";
 
 export interface RouteModelPrice {
@@ -221,6 +228,8 @@ const COLD_DIRECT_ROUTE_PROFILE = Object.freeze({
 });
 
 const MCP_ROOT_DISPATCH_PROFILE = Object.freeze({ costUsd: 0.001, seconds: 13 });
+const BALANCED_COLD_MAX_COST_RATIO = 0.3;
+const BALANCED_COLD_MAX_LATENCY_RATIO = 0.55;
 
 /**
  * Zero-model route selection. It intentionally errs toward direct for ambiguous short work;
@@ -363,23 +372,36 @@ export class LocalRouteOptimizer implements RouteOptimizer {
     admittedReason: string,
     plan?: ExecutionPlan,
   ): AdmissionDecision {
+    const profile = request.profile ?? "balanced";
+    const taskCount = plan?.tasks.length ?? request.semanticPlan?.tasks.length ?? 0;
+    if (profile === "balanced" && balancedTerraNodeCount(request, plan) > 1) {
+      return {
+        route: "direct",
+        reason: "balanced plan requires more than one Terra execution node",
+        routeSource: source === "host" ? "host_sol" : "internal_sol",
+        routeEvidence: "unavailable",
+        routeAdjustment: "downgraded_to_single",
+      };
+    }
     if (
       source === "host" &&
       request.semanticPlan?.tasks.some(
         (task) =>
           !Number.isFinite(task.expectedSeconds) ||
-          task.expectedSeconds <= fanoutMinTaskSeconds(request.profile ?? "balanced"),
+          task.expectedSeconds <= fanoutMinTaskSeconds(profile),
       )
     ) {
-      const minimumSeconds = fanoutMinTaskSeconds(request.profile ?? "balanced");
+      const minimumSeconds = fanoutMinTaskSeconds(profile);
       return {
         route: "direct",
         reason: `fanout plan contains a leaf that does not exceed ${String(minimumSeconds)} seconds`,
         routeSource: source === "host" ? "host_sol" : "internal_sol",
+        routeEvidence: "unavailable",
+        routeAdjustment: "downgraded_to_single",
       };
     }
     if (
-      request.profile !== "quality" &&
+      profile === "balanced" &&
       source === "host" &&
       (request.semanticPlan?.tasks.reduce((sum, task) => sum + task.expectedSeconds, 0) ?? 0) < 90
     ) {
@@ -387,11 +409,27 @@ export class LocalRouteOptimizer implements RouteOptimizer {
         route: "direct",
         reason: "balanced fanout plan contains less than 90 seconds of serial work",
         routeSource: "host_sol",
+        routeEvidence: "unavailable",
+        routeAdjustment: "downgraded_to_single",
       };
     }
+    if (profile === "balanced" && taskCount === 3) {
+      const serialSeconds = declaredSerialSeconds(request, plan);
+      if (serialSeconds < 120 || !threeLeafPlanHasTwentyPercentGain(request, plan)) {
+        return {
+          route: "direct",
+          reason:
+            "balanced three-leaf plan lacks 120 seconds of serial work or a 20% critical-path gain over two leaves",
+          routeSource: source === "host" ? "host_sol" : "internal_sol",
+          routeEvidence: "unavailable",
+          routeAdjustment: "downgraded_to_single",
+        };
+      }
+    }
+    const strongColdEvidence = hasStrongStructuralEvidence(request, plan);
     const estimate = this.#estimate(request, source, plan);
     if (estimate === null) {
-      if (request.limits?.maxCostUsd === undefined) {
+      if (profile === "quality" && request.limits?.maxCostUsd === undefined) {
         return {
           route: "fanout",
           reason: `${admittedReason}: runtime economics unavailable; preserving Sol semantic plan`,
@@ -403,19 +441,26 @@ export class LocalRouteOptimizer implements RouteOptimizer {
                 : {}
             : { suggestedMaxLeaves: plannerLeafLimit(request) }),
           routeSource: source === "host" ? "host_sol" : "internal_sol",
+          routeEvidence: "unavailable",
+          routeAdjustment: balancedLeafAdjustment(request, taskCount),
         };
       }
       return {
         route: "direct",
-        reason: "fanout cannot be proven within explicit maxCostUsd because pricing is unavailable",
+        reason:
+          "balanced fanout cannot prove its cost and latency advantage because pricing is unavailable",
         routeSource: source === "host" ? "host_sol" : "internal_sol",
+        routeEvidence: "unavailable",
+        routeAdjustment: "downgraded_to_single",
       };
     }
+    const routeEvidence: RouteEvidence = estimate.routeEvidence;
     const evidence = {
       estimatedDirectCostUsd: estimate.directCostUsd,
       estimatedFanoutCostUsd: estimate.fanoutCostUsd,
       estimatedDirectSeconds: estimate.directSeconds,
       estimatedFanoutSeconds: estimate.fanoutSeconds,
+      routeEvidence,
     };
     if (
       request.limits?.maxCostUsd !== undefined &&
@@ -426,22 +471,59 @@ export class LocalRouteOptimizer implements RouteOptimizer {
         reason: `fanout estimate $${estimate.fanoutCostUsd.toFixed(4)} exceeds maxCostUsd`,
         ...evidence,
         routeSource: source === "host" ? "host_sol" : "internal_sol",
+        routeAdjustment: "downgraded_to_single" as const,
       };
     }
-    if (plan !== undefined && estimate.fanoutSeconds >= estimate.directSeconds) {
+    if (plan !== undefined && !hasStructurallyConcurrentTasks(plan.tasks)) {
       return {
         route: "direct",
-        reason: `planned DAG has no positive predicted wall-time saving (${Math.round(estimate.fanoutSeconds)}s / ${Math.round(estimate.directSeconds)}s)`,
+        reason: "planned DAG has fewer than two concurrently runnable leaves",
         ...evidence,
         routeSource: source === "host" ? "host_sol" : "internal_sol",
+        routeAdjustment: "downgraded_to_single" as const,
       };
     }
+    if (profile === "balanced" && routeEvidence !== "history" && !strongColdEvidence) {
+      return {
+        route: "direct",
+        reason:
+          "balanced cold-start fanout lacks distinct paths, sources, or explicitly named work units",
+        ...evidence,
+        routeEvidence: "unavailable",
+        routeSource: source === "host" ? "host_sol" : "internal_sol",
+        routeAdjustment: "downgraded_to_single",
+      };
+    }
+    const costRatio = estimate.fanoutCostUsd / estimate.directCostUsd;
+    const latencyRatio = estimate.fanoutSeconds / estimate.directSeconds;
+    const allowedCostRatio =
+      routeEvidence === "history"
+        ? this.#maxCostRatio
+        : Math.min(this.#maxCostRatio, BALANCED_COLD_MAX_COST_RATIO);
+    const allowedLatencyRatio =
+      routeEvidence === "history"
+        ? this.#maxLatencyRatio
+        : Math.min(this.#maxLatencyRatio, BALANCED_COLD_MAX_LATENCY_RATIO);
+    if (
+      profile === "balanced" &&
+      (costRatio > allowedCostRatio || latencyRatio > allowedLatencyRatio)
+    ) {
+      return {
+        route: "direct",
+        reason: `balanced fanout rejected: ${costRatio.toFixed(2)}x cost and ${latencyRatio.toFixed(2)}x time exceed ${allowedCostRatio.toFixed(2)}x/${allowedLatencyRatio.toFixed(2)}x ${routeEvidence === "history" ? "history" : "cold-start"} limits`,
+        ...evidence,
+        routeSource: source === "host" ? "host_sol" : "internal_sol",
+        routeAdjustment: "downgraded_to_single",
+      };
+    }
+    const adjustment = balancedLeafAdjustment(request, estimate.leafCount);
     return {
       route: "fanout",
-      reason: `${admittedReason}: ${(estimate.fanoutCostUsd / estimate.directCostUsd).toFixed(2)}x cost, ${(estimate.fanoutSeconds / estimate.directSeconds).toFixed(2)}x time; release target ${estimate.fanoutCostUsd <= estimate.directCostUsd * this.#maxCostRatio && estimate.fanoutSeconds <= estimate.directSeconds * this.#maxLatencyRatio ? "met" : "missed"}`,
+      reason: `${admittedReason}: ${costRatio.toFixed(2)}x cost, ${latencyRatio.toFixed(2)}x time; release target ${estimate.fanoutCostUsd <= estimate.directCostUsd * this.#maxCostRatio && estimate.fanoutSeconds <= estimate.directSeconds * this.#maxLatencyRatio ? "met" : "missed"}`,
       ...evidence,
-      suggestedMaxLeaves: source === "host" ? estimate.leafCount : plannerLeafLimit(request),
+      suggestedMaxLeaves: estimate.leafCount,
       routeSource: source === "host" ? "host_sol" : "internal_sol",
+      routeAdjustment: adjustment,
     };
   }
 
@@ -462,11 +544,12 @@ export class LocalRouteOptimizer implements RouteOptimizer {
     const domain = request.domain ?? "general";
     const workload = projectColdWorkload(request, source, plan);
     const historical = this.#historicalDirect(request, directTier, workload.signature);
+    const hasEconomicHistory = historical !== null && historical.costP50Usd !== null;
     const baseDirectSeconds = workload.directSeconds;
     // Host expectedSeconds is only a DAG critical-path hint. Using its sum as the direct Sol
     // baseline lets a planner make its own plan look fast, so direct comes only from calibrated
     // history or the independent cold-start projection.
-    const directSeconds = historical?.latencyP50Seconds ?? baseDirectSeconds;
+    const directSeconds = hasEconomicHistory ? historical.latencyP50Seconds : baseDirectSeconds;
     const leafCount =
       plan?.tasks.length ??
       (source === "host"
@@ -495,7 +578,7 @@ export class LocalRouteOptimizer implements RouteOptimizer {
     }
     const directOutputTokens = directOutputEstimate(domain, directSeconds, objectiveTokens);
     const directCost =
-      historical?.costP50Usd ??
+      (hasEconomicHistory ? historical.costP50Usd : null) ??
       mixedInputCost(
         directPrice,
         COLD_DIRECT_ROUTE_PROFILE.inputTokens + objectiveTokens,
@@ -551,24 +634,13 @@ export class LocalRouteOptimizer implements RouteOptimizer {
     const maxLeafTierFactor = Math.max(...taskTiers.map(tierLatencyFactor));
     const projectedLeafSeconds =
       workload.leafSeconds * (maxLeafTierFactor / tierLatencyFactor("luna"));
-    const declaredPlanSeconds =
-      plan === undefined ? null : executionPlanCriticalPathSeconds(plan.tasks);
-    const declaredHostSeconds =
-      source === "host" && plan === undefined
-        ? hostPlanCriticalPathSeconds(request.semanticPlan?.tasks ?? [])
-        : null;
-    if (plan !== undefined && declaredPlanSeconds === null) {
+    const topologyFactor = normalizedCriticalPathFactor(request, plan);
+    if (topologyFactor === null) {
       return null;
     }
-    if (source === "host" && plan === undefined && declaredHostSeconds === null) {
-      return null;
-    }
-    const leafSeconds =
-      plan !== undefined
-        ? declaredPlanSeconds!
-        : source === "host"
-          ? declaredHostSeconds!
-          : projectedLeafSeconds;
+    // Planner durations describe relative DAG shape only. Absolute fanout time comes from the
+    // independent workload projection so a host plan cannot make itself look economic.
+    const leafSeconds = projectedLeafSeconds * topologyFactor;
     const retrySeconds =
       leafSeconds * Math.max(...taskTiers.map((tier) => retryProbability(tier, request)));
     const integrationSeconds = integrationProbability * 30;
@@ -589,6 +661,7 @@ export class LocalRouteOptimizer implements RouteOptimizer {
       directSeconds,
       fanoutSeconds,
       leafCount,
+      routeEvidence: hasEconomicHistory ? "history" : "structural_cold_start",
     };
   }
 
@@ -625,6 +698,7 @@ interface RouteEstimate {
   directSeconds: number;
   fanoutSeconds: number;
   leafCount: number;
+  routeEvidence: Exclude<RouteEvidence, "unavailable">;
 }
 
 interface DirectRouteHistory {
@@ -755,60 +829,6 @@ function retryProbability(tier: ModelTier, request: RunRequest): number {
   return Math.min(0.2, base[tier] + domainAdjustment);
 }
 
-function hostPlanCriticalPathSeconds(
-  tasks: readonly { expectedSeconds: number; after: readonly number[] }[],
-): number | null {
-  if (
-    tasks.length === 0 ||
-    tasks.some(
-      (task) =>
-        !Number.isFinite(task.expectedSeconds) ||
-        task.expectedSeconds <= 0 ||
-        task.after.some((dependency) => dependency < 0 || dependency >= tasks.length),
-    )
-  ) {
-    return null;
-  }
-  const memo = new Map<number, number>();
-  const visiting = new Set<number>();
-  const durationThrough = (index: number): number | null => {
-    const cached = memo.get(index);
-    if (cached !== undefined) {
-      return cached;
-    }
-    if (visiting.has(index)) {
-      return null;
-    }
-    const task = tasks[index];
-    if (task === undefined) {
-      return null;
-    }
-    visiting.add(index);
-    let dependencySeconds = 0;
-    for (const dependency of task.after) {
-      const duration = durationThrough(dependency);
-      if (duration === null) {
-        visiting.delete(index);
-        return null;
-      }
-      dependencySeconds = Math.max(dependencySeconds, duration);
-    }
-    visiting.delete(index);
-    const total = dependencySeconds + task.expectedSeconds;
-    memo.set(index, total);
-    return total;
-  };
-  let criticalPath = 0;
-  for (const index of tasks.keys()) {
-    const duration = durationThrough(index);
-    if (duration === null) {
-      return null;
-    }
-    criticalPath = Math.max(criticalPath, duration);
-  }
-  return criticalPath;
-}
-
 function executionPlanCriticalPathSeconds(
   tasks: readonly { id: string; expectedSeconds: number; dependsOn: readonly string[] }[],
 ): number | null {
@@ -863,6 +883,203 @@ function executionPlanCriticalPathSeconds(
     criticalPath = Math.max(criticalPath, duration);
   }
   return criticalPath;
+}
+
+function hasStructurallyConcurrentTasks(
+  tasks: readonly { id: string; expectedSeconds: number; dependsOn: readonly string[] }[],
+): boolean {
+  const criticalPath = executionPlanCriticalPathSeconds(tasks);
+  if (criticalPath === null) {
+    return false;
+  }
+  const serialSeconds = tasks.reduce((sum, task) => sum + task.expectedSeconds, 0);
+  return criticalPath < serialSeconds;
+}
+
+interface DeclaredDagTask {
+  seconds: number;
+  after: number[];
+}
+
+function declaredDagTasks(request: RunRequest, plan?: ExecutionPlan): DeclaredDagTask[] | null {
+  if (plan !== undefined) {
+    const indexes = new Map(plan.tasks.map((task, index) => [task.id, index]));
+    const tasks = plan.tasks.map((task) => ({
+      seconds: task.expectedSeconds,
+      after: task.dependsOn.map((dependency) => indexes.get(dependency) ?? -1),
+    }));
+    return tasks.some((task) => task.after.includes(-1)) ? null : tasks;
+  }
+  if (request.semanticPlan !== undefined) {
+    return request.semanticPlan.tasks.map((task) => ({
+      seconds: task.expectedSeconds,
+      after: [...task.after],
+    }));
+  }
+  return [];
+}
+
+function declaredSerialSeconds(request: RunRequest, plan?: ExecutionPlan): number {
+  return (
+    declaredDagTasks(request, plan)?.reduce(
+      (sum, task) => sum + (Number.isFinite(task.seconds) ? task.seconds : 0),
+      0,
+    ) ?? 0
+  );
+}
+
+function threeLeafPlanHasTwentyPercentGain(request: RunRequest, plan?: ExecutionPlan): boolean {
+  const tasks = declaredDagTasks(request, plan);
+  if (
+    tasks === null ||
+    tasks.length !== 3 ||
+    tasks.some((task) => !Number.isFinite(task.seconds) || task.seconds <= 0)
+  ) {
+    return false;
+  }
+  const declaredCriticalPath = declaredCriticalPathSeconds(tasks);
+  if (declaredCriticalPath === null) {
+    return false;
+  }
+  const roots = tasks
+    .map((task, index) => ({ task, index }))
+    .filter(({ task }) => task.after.length === 0);
+  let bestTwoLeafPath: number;
+  if (roots.length === 3) {
+    const durations = tasks.map((task) => task.seconds);
+    bestTwoLeafPath = Math.min(
+      Math.max(durations[0]! + durations[1]!, durations[2]!),
+      Math.max(durations[0]! + durations[2]!, durations[1]!),
+      Math.max(durations[1]! + durations[2]!, durations[0]!),
+    );
+  } else if (roots.length === 2) {
+    const sink = tasks.find((task) => task.after.length === 2);
+    const rootIndexes = roots.map(({ index }) => index).sort((left, right) => left - right);
+    const dependencies = [...(sink?.after ?? [])].sort((left, right) => left - right);
+    if (sink === undefined || JSON.stringify(rootIndexes) !== JSON.stringify(dependencies)) {
+      return false;
+    }
+    bestTwoLeafPath = roots[0]!.task.seconds + roots[1]!.task.seconds + sink.seconds;
+  } else {
+    return false;
+  }
+  return (bestTwoLeafPath - declaredCriticalPath) / bestTwoLeafPath >= 0.2;
+}
+
+function declaredCriticalPathSeconds(tasks: readonly DeclaredDagTask[]): number | null {
+  const memo = new Map<number, number>();
+  const visiting = new Set<number>();
+  const duration = (index: number): number | null => {
+    const cached = memo.get(index);
+    if (cached !== undefined) return cached;
+    if (visiting.has(index)) return null;
+    const task = tasks[index];
+    if (
+      task === undefined ||
+      !Number.isFinite(task.seconds) ||
+      task.seconds <= 0 ||
+      task.after.some((dependency) => dependency < 0 || dependency >= tasks.length)
+    ) {
+      return null;
+    }
+    visiting.add(index);
+    let prior = 0;
+    for (const dependency of task.after) {
+      const dependencyDuration = duration(dependency);
+      if (dependencyDuration === null) return null;
+      prior = Math.max(prior, dependencyDuration);
+    }
+    visiting.delete(index);
+    const total = prior + task.seconds;
+    memo.set(index, total);
+    return total;
+  };
+  let result = 0;
+  for (const index of tasks.keys()) {
+    const value = duration(index);
+    if (value === null) return null;
+    result = Math.max(result, value);
+  }
+  return result;
+}
+
+function normalizedCriticalPathFactor(request: RunRequest, plan?: ExecutionPlan): number | null {
+  const tasks = declaredDagTasks(request, plan);
+  if (tasks === null || tasks.length === 0) return 1;
+  const criticalPath = declaredCriticalPathSeconds(tasks);
+  const maximumTask = Math.max(...tasks.map((task) => task.seconds));
+  if (criticalPath === null || !Number.isFinite(maximumTask) || maximumTask <= 0) return null;
+  return criticalPath / maximumTask;
+}
+
+function hasStrongStructuralEvidence(request: RunRequest, plan?: ExecutionPlan): boolean {
+  const hostTasks = request.semanticPlan?.tasks;
+  const taskCount = plan?.tasks.length ?? hostTasks?.length ?? plannerLeafLimit(request);
+  if (taskCount < 2) return false;
+  const groups =
+    plan?.tasks.map((task) => task.ownedPaths) ?? hostTasks?.map((task) => task.paths) ?? [];
+  if (
+    groups.length === taskCount &&
+    groups.every((group) => group.length > 0) &&
+    groups.every((left, leftIndex) =>
+      groups.every(
+        (right, rightIndex) =>
+          leftIndex === rightIndex ||
+          left.every((leftPath) =>
+            right.every((rightPath) => !workspaceScopesOverlap(leftPath, rightPath)),
+          ),
+      ),
+    )
+  ) {
+    return true;
+  }
+  const goals =
+    plan?.tasks.map((task) => task.objective) ??
+    hostTasks?.flatMap((task) => (task.goal === null ? [] : [task.goal])) ??
+    [];
+  const unitMarkers = new Set(
+    [request.objective, ...goals].flatMap((text) =>
+      [...text.matchAll(/\[unit:([^\]]+)\]/gi)].map((match) => match[1]?.toLowerCase()),
+    ),
+  );
+  if (unitMarkers.size >= taskCount || explicitWorkUnitCount(request.objective) >= taskCount) {
+    return true;
+  }
+  const urls = new Set(request.objective.match(/https?:\/\/[^\s)\]}>,]+/gi) ?? []);
+  return urls.size >= taskCount || hasExplicitIndependentPartitions(request);
+}
+
+function workspaceScopesOverlap(left: string, right: string): boolean {
+  const normalize = (value: string) =>
+    value.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, "");
+  const normalizedLeft = normalize(left);
+  const normalizedRight = normalize(right);
+  return (
+    normalizedLeft === normalizedRight ||
+    normalizedLeft.startsWith(`${normalizedRight}/`) ||
+    normalizedRight.startsWith(`${normalizedLeft}/`)
+  );
+}
+
+function balancedLeafAdjustment(request: RunRequest, selectedLeafCount: number): RouteAdjustment {
+  if ((request.profile ?? "balanced") !== "balanced") return "none";
+  const proposedLeafCount = request.semanticPlan?.tasks.length;
+  return selectedLeafCount === 2 && proposedLeafCount !== undefined && proposedLeafCount > 2
+    ? "reduced_to_two"
+    : "none";
+}
+
+function balancedTerraNodeCount(request: RunRequest, plan?: ExecutionPlan): number {
+  if (plan !== undefined) {
+    return (
+      plan.tasks.filter((task) => task.tier === "terra" || task.minTier === "terra").length +
+      (plan.integration.aggregation === "terra" ? 1 : 0)
+    );
+  }
+  return (
+    (request.semanticPlan?.tasks.filter((task) => task.floor === "terra").length ?? 0) +
+    (request.semanticPlan?.merge === "terra" ? 1 : 0)
+  );
 }
 
 const WORKLOAD_MAX_ROOTS = 8;
@@ -1049,10 +1266,7 @@ function explicitWorkUnitCount(objective: string): number {
     };
     return Math.min(5, values[chinese] ?? 0);
   }
-  return /\b(?:multiple|several)\s+(?:independent|separate|distinct)\b/i.test(objective) ||
-    /(?:多个|若干)(?:独立|分别)/u.test(objective)
-    ? 3
-    : 0;
+  return 0;
 }
 
 function requestIsReadOnly(request: RunRequest, plan?: ExecutionPlan): boolean {
@@ -1347,8 +1561,13 @@ function recommendLeafCount(request: RunRequest, workload: ColdWorkloadProjectio
 }
 
 function plannerLeafLimit(request: RunRequest): number {
-  const profileMaximum = request.profile === "quality" ? 5 : request.mode === "durable" ? 5 : 3;
-  return Math.max(2, Math.min(profileMaximum, request.limits?.maxLeaves ?? profileMaximum));
+  if (request.profile === "quality") {
+    return Math.max(2, Math.min(5, request.limits?.maxLeaves ?? 5));
+  }
+  const profileMaximum = 3;
+  const requestedMaximum = Math.min(profileMaximum, request.limits?.maxLeaves ?? profileMaximum);
+  const usefulUnits = explicitWorkUnitCount(request.objective);
+  return Math.max(2, Math.min(requestedMaximum, usefulUnits >= 3 ? 3 : 2));
 }
 
 function directOutputEstimate(

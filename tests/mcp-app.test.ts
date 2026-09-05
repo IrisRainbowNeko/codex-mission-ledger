@@ -19,13 +19,19 @@ describe("Agent Trio MCP App", () => {
   it("bounds retained events and renders completed items as conversations", () => {
     expect(MCP_MONITOR_APP_JS).toContain("state.events.length > 1500");
     expect(MCP_MONITOR_APP_JS).toContain("buildConversationEvents");
-    expect(MCP_MONITOR_APP_JS).toContain("item.type) || itemTypeFromMethod");
+    expect(MCP_MONITOR_APP_JS).toContain('update.type !== "display"');
+    expect(MCP_MONITOR_APP_JS).toContain("mergeDisplayEvent");
+    expect(MCP_MONITOR_APP_JS).toContain("displayKey");
     expect(MCP_MONITOR_APP_JS).toContain('/"response"\\s*:\\s*"/');
   });
 
   it("renders profile, semantic route, leaf shape, and prediction ratios", () => {
     expect(MCP_MONITOR_APP_JS).toContain('["Profile"');
     expect(MCP_MONITOR_APP_JS).toContain('["Route source"');
+    expect(MCP_MONITOR_APP_JS).toContain('["Economic evidence"');
+    expect(MCP_MONITOR_APP_JS).toContain('["Route adjustment"');
+    expect(MCP_MONITOR_APP_JS).toContain("proposed");
+    expect(MCP_MONITOR_APP_JS).toContain("selected");
     expect(MCP_MONITOR_APP_JS).toContain('["Tier mix"');
     expect(MCP_MONITOR_APP_JS).toContain("metrics.estimatedCostRatio");
     expect(MCP_MONITOR_APP_JS).toContain("metrics.estimatedLatencyRatio");

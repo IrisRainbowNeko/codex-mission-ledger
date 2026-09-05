@@ -1,8 +1,8 @@
-# Agent Trio V3.4
+# Agent Trio V3.5
 
-Agent Trio V3.4 is a cost-aware multi-agent runtime built on Codex App Server. Its default
+Agent Trio V3.5 is a cost-aware multi-agent runtime built on Codex App Server. Its default
 `balanced` profile lets the current Sol choose among root completion, one Luna/Terra execution
-agent, and a compact parallel DAG. The `quality` profile preserves V3.3's always-delegate,
+agent, and an economically admitted compact DAG. The `quality` profile preserves V3.3's always-delegate,
 quality-first behavior. TypeScript handles concurrency, dependencies, budgets, recovery, and patch
 integration after Sol makes the semantic decision.
 
@@ -17,24 +17,31 @@ user continuation gate.
 
 ## Results
 
-The existing quality-reference measurements are below. Percentages are Agent Trio divided by direct
-Sol, so lower is better. Cost is calculated from real token usage and the configured model price
-table. V3.4 release benchmarking uses direct Sol, balanced, and quality as three arms.
+The V3.5 three-arm run covers 54 sealed tasks across 18 families: 54 direct
+`gpt-5.6-sol/ultra`, 54 Balanced, and 54 Quality executions. Percentages are relative to direct Sol;
+cost uses recorded App Server tokens and the configured price table.
 
-| Task type              | Quality-reference path               | Time vs Sol | Cost vs Sol | Quality/Sol |
-| ---------------------- | ------------------------------------ | ----------: | ----------: | ----------: |
-| Small direct coding    | One Luna-low turn                    |       49.4% |        3.5% |     100/100 |
-| Cross-module coding    | Sol-low plan + 3 Luna-medium leaves  |       63.5% |       13.7% |     100/100 |
-| Exact algorithms       | Sol plan + Luna-medium leaves        |       46.5% |       24.6% |     100/100 |
-| Frozen-source research | Sol plan + parallel Luna research    |       34.5% |        6.1% |      100/67 |
-| Paper revision         | Sol plan + parallel Luna editing     |       36.3% |       20.9% |      97/100 |
-| Spreadsheet work       | Sol-low plan + 3 Luna-low leaves     |       60.7% |       25.9% |     100/100 |
-| Auto research          | Sol plan + multi-wave Luna execution |       34.9% |        6.2% |     100/100 |
-| Six-domain macro       | Automatic direct/fanout routing      |       46.1% |       16.2% |      97-100 |
+| All 54 tasks | Total time | Time vs Sol | Total cost | Cost vs Sol | Mean quality | Minimum |
+| ------------ | ---------: | ----------: | ---------: | ----------: | -----------: | ------: |
+| Direct Sol   |   3,593.7s |      100.0% |    $3.1811 |      100.0% |       100.00 |     100 |
+| Balanced     |   2,193.0s |       61.0% |    $1.4419 |       45.3% |        98.98 |      67 |
+| Quality      |   2,716.9s |       75.6% |    $1.7083 |       53.7% |        98.22 |      67 |
 
-The three-sample direct fast path used zero planner turns and zero leaves. The three current coding
-fanout instances each used one compact Sol plan and three Luna workers, with no Terra promotion,
-replan, reviewer, protocol error, or user intervention.
+On the 12 tasks whose calibration qualified them as economically decomposable, Balanced measured
+60.5% of direct Sol time and 47.0% of its cost. Its quality was 98.98% of direct with a 1.02-point
+gap. Quality measured 53.9% time and 80.1% cost, with 98.22% relative quality and a 1.78-point gap.
+
+Both profiles pass the overall, per-domain, and absolute quality gates. Balanced passes the 70%
+aggregate time gate but misses the 40% aggregate cost gate, per-family economic gates, 25% planning
+cost gate, 15% direct overhead gate, and compact-fanout routing gates. The run recorded zero
+protocol errors, user interventions, and critical failures. V3.5 therefore establishes the quality
+result and a substantial speed/cost reduction, while its Balanced routing still requires further
+cost and topology optimization.
+
+The final scores were recalculated from the saved outputs after correcting false-negative wording
+and formatting rules. The offline pass made zero model calls, changed only 20 quality scores, and
+preserved all 162 timing and cost records. The full JSON report is attached to the
+[v3.5.0 release](https://github.com/IrisRainbowNeko/codex-mission-ledger/releases/tag/v3.5.0).
 
 See [Benchmarking](docs/BENCHMARKING.md) for calibration, the three-arm runner, evidence format, and
 scoring rules.
@@ -144,7 +151,7 @@ request
   v
 host Sol balanced semantic route
   |-- tiny/indivisible ----------> root completion (no MCP)
-  |-- one bounded work unit -----> one Luna/Terra execution agent
+  |-- one proven work unit ------> one Luna/Terra execution agent
   |
   `-- 2-3 useful work units -----> host semanticPlan
           |
@@ -177,23 +184,32 @@ critical path by at least 20% versus the best two-leaf grouping. Quality retains
 two-to-five-leaf V3.3 policy. Code handles permissions, launches, joins, concurrency, budgets,
 cancellation, recovery, and message delivery without rewriting those semantic choices.
 
-The 40% cost and 70% latency targets remain planning guidance, metrics, and balanced release gates.
-Missing a predicted ratio does not override a valid host Sol plan. A CLI or non-Sol caller uses
-`auto`: the runtime takes a zero-model direct route only for a provably bounded single objective;
-otherwise one internal Sol turn chooses a single execution agent or a bounded DAG.
+Balanced delegates one worker only when at least three matching historical samples predict at most
+40% of direct Sol cost and 100% of its latency; otherwise the host Sol keeps the work. For fanout,
+matching history applies hard 40% cost and 70% latency admission. A cold start also needs distinct
+structural work units and must pass conservative 30% cost and 55% latency limits. Missing prices,
+history, or structural evidence cannot prove fanout value, so an already submitted runtime request
+falls back to one cheapest sufficient worker. Quality is exempt from these economic vetoes unless
+the caller sets `maxCostUsd`.
+
+A CLI or non-Sol caller uses `auto`: the runtime takes a zero-model direct route only for a provably
+bounded single objective; otherwise one internal Sol turn chooses a single execution agent or a
+bounded DAG.
 
 ## Model Routing
 
-| Tier  | Primary responsibility                                                               |
-| ----- | ------------------------------------------------------------------------------------ |
-| Luna  | Search, extraction, data processing, focused implementation, tests, mechanical edits |
-| Terra | Recovery/stateful work, coupled debugging, review/synthesis, office artifacts        |
-| Sol   | Planning, difficult algorithms, architecture, security, hidden correctness risks     |
+| Tier  | Primary responsibility                                                                    |
+| ----- | ----------------------------------------------------------------------------------------- |
+| Luna  | Search, extraction, data processing, focused implementation, tests, read-only preparation |
+| Terra | Recovery/stateful work, coupled debugging, semantic merge, final office writer            |
+| Sol   | Planning, difficult algorithms, architecture, security, hidden correctness risks          |
 
-Bounded work defaults to Luna. A leaf is promoted only when its own evidence shows that stronger
-reasoning is needed; successful sibling work is retained. A normal host plan starts no internal Sol
-thread. A blocker, material conflict, contract change, non-mechanical validation failure, or low
-confidence can lazily start one internal Sol continuation for a minimal `PlanPatch`.
+Bounded work defaults to Luna. A Balanced DAG has at most one Terra execution node, counting a Terra
+writer or Terra integration; office, review, recovery, or synthesis words do not raise unrelated
+leaves. A leaf is promoted only when its own evidence shows that stronger reasoning is needed, and
+successful sibling work is retained. A normal host plan starts no internal Sol thread. A blocker,
+material conflict, contract change, non-mechanical validation failure, or low confidence can lazily
+start one internal Sol continuation for a minimal `PlanPatch`.
 
 ## Scheduler
 

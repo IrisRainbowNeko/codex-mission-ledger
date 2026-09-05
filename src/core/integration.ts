@@ -6,6 +6,8 @@ import type {
   LeafResult,
   ModelUsage,
   RemoteTurnRef,
+  RouteAdjustment,
+  RouteEvidence,
   RunRequest,
   ValidationResult,
   ValidationSpec,
@@ -38,6 +40,8 @@ export type AdmissionDecision =
       estimatedFanoutSeconds?: number | null;
       suggestedMaxLeaves?: number;
       routeSource?: RouteSource;
+      routeEvidence?: RouteEvidence;
+      routeAdjustment?: RouteAdjustment;
     }
   | {
       route: PlannerRequestedRoute;
@@ -50,6 +54,8 @@ export type AdmissionDecision =
       estimatedFanoutSeconds?: number | null;
       suggestedMaxLeaves?: number;
       routeSource?: RouteSource;
+      routeEvidence?: RouteEvidence;
+      routeAdjustment?: RouteAdjustment;
     }
   | {
       route: "waiting_input";
@@ -64,6 +70,8 @@ export type AdmissionDecision =
       estimatedFanoutSeconds?: number | null;
       suggestedMaxLeaves?: number;
       routeSource?: RouteSource;
+      routeEvidence?: RouteEvidence;
+      routeAdjustment?: RouteAdjustment;
     };
 
 export interface AdmissionController {
@@ -99,6 +107,8 @@ export interface IntegrationPlanIssue {
   type: "contract_incomplete" | "result_conflict" | "scope_change";
   taskIds: string[];
   summary: string;
+  /** False when Terra resolved the issue in its response without requiring more leaf work. */
+  requiresPlanPatch?: boolean;
 }
 
 export interface DeterministicValidator {

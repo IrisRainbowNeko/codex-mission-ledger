@@ -31,11 +31,23 @@ describe("monitor data", () => {
     writeSnapshot("running", "2026-09-02T00:00:00.000Z");
     writeFileSync(
       join(directory, "monitor.jsonl"),
-      `${JSON.stringify({ type: "app_server", method: "item/completed" })}\n`,
+      `${JSON.stringify({
+        type: "app_server",
+        method: "item/agentMessage/delta",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        data: { itemId: "message-1", delta: "working" },
+      })}\n`,
     );
 
     const initial = await readMonitorData(root, "run-1", { cursor: 0 });
     expect(initial.events).toHaveLength(1);
+    expect(initial.events[0]).toMatchObject({
+      type: "display",
+      displayKey: "thread-1|turn-1|message-1",
+      displayKind: "agent-message",
+      displayText: "working",
+    });
     expect(initial.nextCursor).toBeGreaterThan(0);
 
     const startedAt = Date.now();
@@ -64,11 +76,24 @@ describe("monitor data", () => {
     );
     writeFileSync(
       join(directory, "monitor.jsonl"),
-      `${JSON.stringify({ type: "app_server", data: { text: "x".repeat(40_000) } })}\n`,
+      `${JSON.stringify({
+        type: "app_server",
+        method: "item/completed",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        data: {
+          item: { id: "message-1", type: "agentMessage", text: "x".repeat(40_000) },
+        },
+      })}\n`,
     );
 
     const update = await readMonitorData(root, "legacy", { cursor: 0, maxEventBytes: 1024 });
     expect(update.events).toHaveLength(1);
+    expect(update.events[0]).toMatchObject({
+      type: "display",
+      displayKey: "thread-1|turn-1|message-1",
+      displayKind: "agent-message",
+    });
     expect(update.nextCursor).toBeGreaterThan(40_000);
     expect(update.hasMore).toBe(false);
   });

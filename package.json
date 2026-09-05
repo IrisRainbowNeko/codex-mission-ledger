@@ -1,6 +1,6 @@
 {
   "name": "codex-agent-trio",
-  "version": "3.4.3",
+  "version": "3.5.0",
   "private": true,
   "description": "A dual-profile, Sol-routed Codex App Server multi-agent runtime.",
   "type": "module",
@@ -46,6 +46,7 @@
     "benchmark:generate-authored-core": "node --import tsx scripts/generate-authored-core-benchmark.ts",
     "benchmark:audit-routes": "node --import tsx scripts/audit-authored-routing.ts",
     "benchmark:real": "node --import tsx scripts/run-real-benchmark.ts",
+    "benchmark:rescore": "node --import tsx scripts/rescore-real-benchmark.ts",
     "cli": "node --import tsx src/cli.ts",
     "doctor": "node --import tsx src/doctor.ts",
     "mcp": "node --import tsx src/mcp/server.ts",

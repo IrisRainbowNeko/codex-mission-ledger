@@ -117,19 +117,21 @@ enabled = true
       join(layout.sessionSkillDirectory, "SKILL.md"),
       "utf8",
     );
-    expect(installedSkill).toContain("`agent_trio` MCP runtime");
+    expect(installedSkill).toMatch(/`agent_trio` MCP\s+runtime/mu);
     expect(installedSkill).toContain("`monitorFirst=true`");
     expect(installedSkill).toMatch(/exactly one\s+`action=status`\s+call/mu);
     expect(installedSkill).toContain("flat top-level fields");
     expect(installedSkill).toContain("If submit returns an MCP/tool error");
     expect(installedSkill).toMatch(/never send either as a top-level\s+tool argument/mu);
+    expect(installedSkill).toContain("`access=readOnly`");
+    expect(installedSkill).toContain("`access=workspaceWrite`");
     expect(installedSkill).toMatch(/With `strategy=direct`, omit\s+`semanticPlan`/mu);
     expect(installedSkill).toContain("`directTier`");
     expect(installedSkill).toMatch(/exactly\s+`luna` or `terra`/mu);
     expect(installedSkill).toContain("danger-full-access");
     expect(installedSkill).toContain("Do not send `mode` or `selectedCapabilities`");
     expect(installedSkill).toContain("call containing only that action");
-    expect(installedSkill).toContain("MCP Apps monitor");
+    expect(installedSkill).toMatch(/MCP\s+Apps monitor/mu);
     expect(readFileSync(join(layout.skillDirectory, "agents", "openai.yaml"), "utf8")).toContain(
       "allow_implicit_invocation: false",
     );
@@ -140,6 +142,8 @@ enabled = true
     expect(installedSessionSkill).toContain("flat top-level fields");
     expect(installedSessionSkill).toContain("If submit returns an MCP/tool error");
     expect(installedSessionSkill).toMatch(/never send either as a top-level\s+tool argument/mu);
+    expect(installedSessionSkill).toContain("`access=readOnly`");
+    expect(installedSessionSkill).toContain("`access=workspaceWrite`");
     expect(installedSessionSkill).toContain("`directTier`");
     expect(installedSessionSkill).toContain("Do not send `mode` or `selectedCapabilities`");
     expect(

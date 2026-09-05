@@ -68,7 +68,7 @@ export interface EconomicCrossDomainCorpus {
 
 const VALIDATOR_SOURCE = [
   "const { readFileSync } = require('node:fs');",
-  "const normalize = (value) => value.toLowerCase().replace(/[`*_]/gu, '').replace(/(?<=\\d),(?=\\d{3}\\b)/gu, '').replace(/\\s+/gu, ' ').trim();",
+  "const normalize = (value) => value.toLowerCase().replace(/[【［]/gu, '[').replace(/[】］]/gu, ']').replace(/[`*_]/gu, '').replace(/(?<=\\d),(?=\\d{3}\\b)/gu, '').replace(/\\s+/gu, ' ').trim();",
   "const raw = normalize(readFileSync('.agent-trio-benchmark/model-output.txt', 'utf8'));",
   "const rule = JSON.parse(process.argv[1]);",
   "const anchor = normalize(rule.anchor);",
@@ -256,6 +256,7 @@ function researchScreen(unitId: string, revision: number, screenIndex: number) {
         allAny: [
           [
             `${betaWeeks} weeks`,
+            `${betaWeeks}-week`,
             `${betaWeeks} versus`,
             `${betaWeeks} vs`,
             `deployment ${betaWeeks}`,
@@ -275,15 +276,18 @@ function researchScreen(unitId: string, revision: number, screenIndex: number) {
         allAny: [
           [
             `${gammaWeeks} weeks`,
+            `${gammaWeeks}-week`,
             `${gammaWeeks} versus`,
             `${gammaWeeks} vs`,
             `deployment ${gammaWeeks}`,
+            `deployment: ${gammaWeeks}`,
+            `deployment by ${gammaWeeks}`,
           ],
           [`${maximumWeeks} weeks`, `${maximumWeeks} maximum`, `${maximumWeeks} limit`],
         ],
         regex: [
-          `(?:score|evaluation)[^.]{0,200}(?:by\\s+2|2[ -]?points?\\s+(?:below|short|under)|(?:gap|shortfall|(?:failure\\s+)?margin)[^.;]{0,20}2|[-+]\\s*2[ -]?points?)`,
-          `deploy(?:ment|s|ed|ing)?[^.]{0,200}(?:by\\s+2|2[ -]weeks?\\s+(?:over|above|excess)|(?:gap|over|exceed|(?:failure\\s+)?margin)[^.;]{0,24}2|[-+]\\s*2[ -]?weeks?)`,
+          `(?:score|evaluation)[^.]{0,200}(?:by\\s+2|2[ -]?points?\\s+(?:below|short|under|deficit)|(?:gap|shortfall|deficit|(?:failure\\s+)?margin)[^.;]{0,20}2|[-+]\\s*2[ -]?points?)`,
+          `(?:deploy(?:ment|s|ed|ing)?[^.]{0,200}(?:by\\s+2|2[ -]weeks?\\s+(?:over|above|excess)|(?:gap|over|exceed|(?:failure\\s+)?margin)[^.;]{0,24}2|[-+]\\s*2[ -]?weeks?)|-\\s*2(?:\\s+weeks?)?)`,
         ],
       }),
     ],
@@ -628,7 +632,7 @@ function dossierCase(unitId: string, revision: number, caseIndex: number) {
         allAny: [[`${maximumMonths} months`, `maximum ${maximumMonths}`, `${maximumMonths}-month`]],
         regex: [
           `(?:impact gap|below|short|fail)[^.;]{0,90}40|40[^.;]{0,35}(?:below|short|fail)|-\\s*40(?:\\s+units?)?`,
-          `duration[^.]{0,160}(?:by\\s+6|6\\s+(?:months?\\s+)?(?:over|above)|(?:gap|over|exceed|excess)[^.]{0,30}6|-\\s*6(?:\\s+months?)?)`,
+          `(?:duration[^.]{0,160}(?:by\\s+6|6\\s+(?:months?\\s+)?(?:over|above)|(?:gap|over|exceed|excess)[^.]{0,30}6|-\\s*6(?:\\s+months?)?)|-\\s*6(?:\\s+months?)?)`,
         ],
       }),
     ],

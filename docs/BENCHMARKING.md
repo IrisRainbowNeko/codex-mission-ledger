@@ -1,10 +1,52 @@
-# Agent Trio V3.4 Benchmarking
+# Agent Trio V3.5 Benchmarking
 
-The V3.4 balanced performance requirements are acceptance targets. They have not been demonstrated merely
-because the runtime and evaluator exist. Do not claim that Agent Trio is faster, cheaper, or within
-the quality target until the frozen three-arm suite passes on the release candidate.
+The 2026-09-05 V3.5 run executed 54 sealed tasks across 18 families with three arms per task:
+direct `gpt-5.6-sol/ultra`, Balanced, and Quality. Cost comes from recorded App Server usage and the
+configured provider price table. Elapsed time covers each complete arm.
 
-The 2026-09-01 tuning checkpoint covers one current instance in every target domain. Coding,
+## V3.5 Results
+
+| All 54 tasks | Total time | Time vs Sol | Total cost | Cost vs Sol | Mean quality | Minimum |
+| ------------ | ---------: | ----------: | ---------: | ----------: | -----------: | ------: |
+| Direct Sol   |   3,593.7s |      100.0% |    $3.1811 |      100.0% |       100.00 |     100 |
+| Balanced     |   2,193.0s |       61.0% |    $1.4419 |       45.3% |        98.98 |      67 |
+| Quality      |   2,716.9s |       75.6% |    $1.7083 |       53.7% |        98.22 |      67 |
+
+Calibration classified 12 tasks as `economic-decomposable` and 42 as `direct-fast-path`. The
+economic subset, rather than the all-task total, supplies the Balanced 40%/70% release gates:
+
+| Economic subset metric         | Balanced | Quality | Balanced limit |
+| ------------------------------ | -------: | ------: | -------------: |
+| Time relative to direct Sol    |   60.48% |  53.94% |         70.00% |
+| Cost relative to direct Sol    |   47.00% |  80.09% |         40.00% |
+| Maximum family time ratio      |   94.27% |  79.56% |         70.00% |
+| Maximum family cost ratio      |  130.92% | 241.84% |         40.00% |
+| Maximum family planning ratio  |   78.65% |  68.68% |         25.00% |
+| Quality relative to direct Sol |   98.98% |  98.22% |         95.00% |
+| Absolute quality gap           |     1.02 |    1.78 |    at most 3.0 |
+
+Balanced passes aggregate elapsed time, overall quality, per-domain quality, absolute quality,
+launch skew, protocol reliability, user-intervention, and critical-failure gates. It fails the
+aggregate and per-family cost gates, the per-family elapsed and Sol-planning gates, the 15% direct
+overhead gate at 39.10%, and the compact-fanout routing gates. Its observed fanouts still averaged
+three leaves and every observed fanout used three leaves. Quality passes its blocking quality and
+reliability gates; its economic values are reported rather than release-blocking.
+
+The final scoring pass reused all 162 saved outputs and made zero model calls. It reran 108
+output-only validators, preserved 54 artifact-based scores, corrected 20 false negatives, and left
+every timing, cost, token, and routing field unchanged. Corrected forms include Markdown tables,
+hierarchical item headings, bracketed or bare citation IDs, and semantically equivalent review
+language. The corrected corpus still requires every gold fixture to score 100 and rejects both a
+wrong-answer and a missing-answer mutant before sealing.
+
+The full report is attached to the
+[v3.5.0 GitHub release](https://github.com/IrisRainbowNeko/codex-mission-ledger/releases/tag/v3.5.0)
+as `agent-trio-v3.5.0-benchmark.json`. Its rescoring manifest SHA-256 is
+`4978ed7f7baa99bd626ad36d4dc81d360e114071b9a5723ec9e7f8c863e33d4d`.
+
+## Historical Tuning
+
+The historical V3.4 tuning checkpoint from 2026-09-01 covers one instance in every target domain. Coding,
 research, paper, and office are fresh paired runs. Algorithm is a paired run immediately before the
 boundary-only schema; auto research uses a paired run whose raw output was rescored after an
 equivalent-wording validator correction. All are diagnostic rather than release evidence, but every
@@ -85,9 +127,8 @@ changes the manifest digest, the replay is diagnostic rather than release eviden
 No successful economic run above used a mandatory reviewer, audit pass, user continuation, or
 protocol recovery. A fresh three-sample `coding-local-bugfix` direct-fast-path set measured -26.0%
 p95 overhead: every V3 arm was faster than its direct-Sol baseline, both arms scored 100 on every
-instance, and V3 used one Luna-low direct turn with zero planner turns and zero leaves. The remaining
-twelve release families and a larger cross-domain direct sample still need qualified frozen
-instances before the project can claim the complete target.
+instance, and V3 used one Luna-low direct turn with zero planner turns and zero leaves. The V3.5
+three-arm run above supersedes these smaller tuning samples for release reporting.
 
 The original cost failure was not caused primarily by validators. Its fixed model turns were Terra
 admission, a cold second Sol planner, four incorrectly routed Terra leaves, and Terra integration.
@@ -214,8 +255,14 @@ economic set. This prevents post-run route selection from hiding an economic fai
 The calibration must show direct Sol p50 of at least 90 seconds and at least two independent leaf
 p50 values strictly above 30 seconds. Balanced uses the same 30-second floor and requires at least
 90 seconds of candidate serial work; quality retains the V3.3 15-second startup-amortization floor.
-The 40% and 70% ratios are planning guidance and release gates, not runtime vetoes for an otherwise
-legal Sol plan.
+When the authored corpus is sealed with calibration, a previously economic family that is missing
+or fails this evidence is conservatively reclassified as `direct-fast-path` instead of aborting the
+whole corpus build. Its instances carry no economic eligibility claim.
+With at least three matching runtime history samples, Balanced fanout is admitted only at predicted
+cost <=40% and latency <=70% of direct Sol. Without history it also needs distinct structural units
+and must pass conservative <=30% cost and <=55% latency limits. Missing prices or workload evidence
+downgrade an already submitted fanout to one cheapest sufficient worker. Quality does not apply
+these economic vetoes unless an explicit `maxCostUsd` is exceeded.
 
 Supply calibration explicitly when sealing a candidate corpus:
 
@@ -272,7 +319,9 @@ For every arm, record:
 
 - family, instance, seed, exact prompt, and artifact hashes;
 - start/end timestamps and end-to-end elapsed milliseconds;
-- route, planner-turn count, leaf count, launch timestamps, and launch skew;
+- route, root-self flag, route evidence/adjustment, proposed and selected leaf counts, launch
+  timestamps, and launch skew;
+- model-tier counts, Terra execution-node count, and three-leaf critical-path gain;
 - App Server cached input, cache-write input, uncached input, output tokens, and USD usage by
   actual model;
 - Sol planning, patch, specialist, and final-review usage separately;
@@ -307,11 +356,11 @@ to the uncached-input rate rather than silently treating cache population as fre
 Prefer deterministic validators: tests, builds, linters, exact answers, numerical tolerances,
 schema checks, citation resolvers, and render comparisons. Freeze them before running either arm.
 
-Relative quality alone is insufficient: equal zero scores must never pass. Every V3 observation
-must also score at least 60/100 on its frozen validator or rubric. This candidate floor is a release
-gate in addition to the 95% ratio-or-3-point-gap requirement. A failed direct baseline remains in
-the paired time, cost, and relative-quality aggregates, but it does not invalidate a correct V3
-result merely because the baseline itself stopped early or answered incorrectly.
+Relative quality alone is insufficient: equal low scores must never pass. Every candidate and its
+direct Sol baseline must each score at least 60/100 on the frozen validator or rubric. Both absolute
+floors are release gates in addition to the 95% ratio-or-3-point-gap requirement. A task with an
+unqualified direct baseline must be fixed or replaced before release evaluation; it cannot make a
+weak candidate appear relatively competitive.
 
 For research, paper, and office outputs that need judgment, use a domain-specific rubric prepared
 before results are visible. Score blinded outputs on factual correctness, required coverage,
@@ -320,6 +369,21 @@ both arms or reported outside both arms.
 
 Quality must pass both globally and within every domain. Macro averaging by domain prevents cheap
 success in one domain from hiding a material regression in another.
+
+When a frozen scorer is corrected without changing task inputs or model outputs, re-run only the
+sealed validators against the retained `raw-output.txt` evidence:
+
+```bash
+npm run benchmark:rescore -- \
+  --corpus /absolute/corrected-corpus \
+  --source /absolute/original-report.json \
+  --evidence /absolute/original-evidence \
+  --output /absolute/rescored-report.json
+```
+
+The rescore report records `modelCalls: 0`, lists every changed score, and verifies that all
+non-quality observation fields remain sourced from the original report. Artifact/file scores are
+preserved when their ephemeral execution workspaces are unavailable.
 
 These are immediate release blockers regardless of aggregate score:
 
@@ -369,6 +433,7 @@ instances for a development family check, or pass `--full` for the complete 54-i
 
 ```bash
 npm run benchmark:real -- --family coding-cross-module --limit 3 \
+  --concurrency 2 \
   --output /tmp/agent-trio-coding.json \
   --evidence /tmp/agent-trio-coding-evidence
 
@@ -382,6 +447,9 @@ the cached records and their evidence hashes, skips their model calls, and execu
 arms. Resume is valid only when code, corpus, provider configuration, output path, and evidence path
 are unchanged. A single unterminated final JSONL fragment is repaired as an interrupted append;
 invalid or duplicate complete lines stop the run.
+
+`--concurrency 2` runs at most two instance pairs at once. Record persistence remains serialized,
+and each Balanced instance still has its own three-leaf ceiling. The default is one.
 
 The release runner uses host Sol semantic routing. Balanced may complete a strict fast-path task in
 the root, delegate one worker, or supply a two-to-three-leaf foreground DAG. Quality always delegates
@@ -414,8 +482,12 @@ be either an observation array or an object with an `observations` array. Pair r
       "elapsedMs": 600000,
       "costUsd": 2.5,
       "route": "direct",
+      "rootSelf": true,
       "plannerTurns": 0,
       "leafCount": 0,
+      "leafTierCounts": {},
+      "terraNodeCount": 0,
+      "threeLeafCriticalPathGain": null,
       "protocolErrors": 0,
       "userInterventions": 0,
       "criticalFailures": []
@@ -431,7 +503,11 @@ be either an observation array or an object with an `observations` array. Pair r
       "route": "fanout",
       "launchSkewMs": 1800,
       "plannerTurns": 1,
-      "leafCount": 3,
+      "leafCount": 2,
+      "rootSelf": false,
+      "leafTierCounts": { "luna": 2 },
+      "terraNodeCount": 0,
+      "threeLeafCriticalPathGain": null,
       "protocolErrors": 0,
       "userInterventions": 0,
       "criticalFailures": []
@@ -448,6 +524,10 @@ be either an observation array or an object with an `observations` array. Pair r
       "launchSkewMs": 1500,
       "plannerTurns": 0,
       "leafCount": 3,
+      "rootSelf": false,
+      "leafTierCounts": { "luna": 3 },
+      "terraNodeCount": 0,
+      "threeLeafCriticalPathGain": 0.25,
       "protocolErrors": 0,
       "userInterventions": 0,
       "criticalFailures": []
@@ -470,24 +550,31 @@ changes the per-family minimum. A partial result is not release evidence.
 
 Balanced passes only when all gates pass:
 
-| Dimension            | Gate                                                       |
-| -------------------- | ---------------------------------------------------------- |
-| Economic speed       | Preclassified economic macro time ratio is at most 0.70    |
-| Economic cost        | Preclassified economic macro USD ratio is at most 0.40     |
-| Sol planning cost    | Maximum economic family ratio is at most 0.25              |
-| Overall quality      | Ratio is at least 0.95 or absolute gap is at most 3 points |
-| Per-domain quality   | Every domain meets the same 0.95-or-3-point rule           |
-| Direct overhead      | p95 extra elapsed ratio is at most 0.15                    |
-| Direct routing       | Zero direct cases start Sol Planner or leaves              |
-| Launch skew          | Same-wave p95 is strictly below 5,000 ms                   |
-| Protocol reliability | Zero protocol errors                                       |
-| Human continuation   | Zero user interventions for internal readiness             |
-| Critical safety      | Zero critical failures                                     |
+| Dimension            | Gate                                                          |
+| -------------------- | ------------------------------------------------------------- |
+| Economic speed       | Preclassified economic macro time ratio is at most 0.70       |
+| Economic cost        | Preclassified economic macro USD ratio is at most 0.40        |
+| Per-family economics | Every economic family separately passes 0.70 time/0.40 cost   |
+| Sol planning cost    | Maximum economic family ratio is at most 0.25                 |
+| Overall quality      | Ratio is at least 0.95 or absolute gap is at most 3 points    |
+| Per-domain quality   | Every domain meets the same 0.95-or-3-point rule              |
+| Absolute quality     | Candidate and direct baseline are each at least 60            |
+| Direct overhead      | p95 extra elapsed ratio is at most 0.15                       |
+| Direct routing       | Every fast-path case is root self with zero planner/leaves    |
+| Fanout size          | Mean leaf count <=2.3; three-leaf share <=20%                 |
+| Three-leaf benefit   | Every three-leaf plan records at least 20% critical-path gain |
+| Terra allocation     | At most one Terra node per DAG and <=25% Terra leaves         |
+| Launch skew          | Same-wave p95 is strictly below 5,000 ms                      |
+| Protocol reliability | Zero protocol errors                                          |
+| Human continuation   | Zero user interventions for internal readiness                |
+| Critical safety      | Zero critical failures                                        |
 
-The cost and elapsed gates apply to every balanced pair pre-sealed as `economic-decomposable`,
-regardless of its actual route. Direct overhead and the zero-MCP-planner/zero-leaf check apply only
-to balanced pairs pre-sealed as `direct-fast-path`. Candidate quality must also be at least 60.
-Missing USD data makes the economic cost gate fail; it is never treated as zero.
+The cost and elapsed gates apply to every Balanced pair pre-sealed as `economic-decomposable`, both
+as macro ratios and separately per family, regardless of actual route. Direct overhead and the
+root-self/zero-MCP-planner/zero-leaf check apply only to `direct-fast-path`. Candidate and direct
+quality must each be at least 60. Missing USD data makes the economic cost gate fail; it is never
+treated as zero. The three-leaf benefit gate is not applicable, and passes, when no three-leaf run
+exists.
 
 Quality must preserve V3.3 behavior and meet the quality and reliability gates. Its cost, elapsed
 time, planning ratio, direct overhead, and direct-delegation count are reported without blocking the

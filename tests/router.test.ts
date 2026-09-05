@@ -81,7 +81,7 @@ function decide(optimizer: LocalRouteOptimizer, request: RunRequest) {
   return optimizer.decide({ runId: "run", request, signal });
 }
 
-describe("LocalRouteOptimizer V3.4 profile routing", () => {
+describe("LocalRouteOptimizer V3.5 profile routing", () => {
   const optimizer = new LocalRouteOptimizer();
   const priced = new LocalRouteOptimizer({ priceTable: PRICE_TABLE });
 
@@ -138,14 +138,14 @@ describe("LocalRouteOptimizer V3.4 profile routing", () => {
     });
   });
 
-  it("caps balanced foreground planning at three leaves", () => {
+  it("defaults balanced foreground planning to two leaves without three named units", () => {
     expect(
       decide(priced, {
         objective: "Analyze several independent modules",
         cwd: "/workspace",
         profile: "balanced",
       }),
-    ).toMatchObject({ route: "adaptive", suggestedMaxLeaves: 3 });
+    ).toMatchObject({ route: "adaptive", suggestedMaxLeaves: 2 });
   });
 
   it("does not use domain or prompt length as a fanout decision", () => {
@@ -185,7 +185,7 @@ describe("LocalRouteOptimizer V3.4 profile routing", () => {
     },
   );
 
-  it("reports a missed 40%/70% release target without vetoing the host plan", () => {
+  it("keeps quality fanout when economic targets are missed", () => {
     const semanticPlan = hostPlan(2, {
       merge: "terra",
       tasks: hostPlan(2).tasks.map((task) => ({ ...task, floor: "terra" })),
@@ -199,6 +199,7 @@ describe("LocalRouteOptimizer V3.4 profile routing", () => {
     const decision = decide(expensive, {
       objective: "Analyze two independent systems and synthesize them",
       cwd: "/workspace",
+      profile: "quality",
       strategy: "fanout",
       semanticPlan,
     });
@@ -212,6 +213,154 @@ describe("LocalRouteOptimizer V3.4 profile routing", () => {
       estimatedFanoutSeconds: expect.any(Number),
     });
     expect(decision.reason).toContain("release target missed");
+  });
+
+  it("hard-downgrades balanced fanout that misses its economic limits", () => {
+    const expensive = new LocalRouteOptimizer({
+      maxCostRatio: 0.01,
+      maxLatencyRatio: 0.01,
+      priceTable: PRICE_TABLE,
+    });
+    const semanticPlan = hostPlan(2, {
+      tasks: ["alpha", "beta"].map((unit) => ({
+        goal: `[unit:${unit}] Analyze ${unit}`,
+        paths: [],
+        after: [],
+        floor: null,
+        expectedSeconds: 60,
+      })),
+    });
+
+    expect(
+      decide(expensive, {
+        objective: "Analyze [unit:alpha] and [unit:beta] independently",
+        cwd: "/workspace",
+        profile: "balanced",
+        strategy: "fanout",
+        semanticPlan,
+      }),
+    ).toMatchObject({
+      route: "direct",
+      routeEvidence: "structural_cold_start",
+      routeAdjustment: "downgraded_to_single",
+      reason: expect.stringContaining("balanced fanout rejected"),
+    });
+  });
+
+  it("uses three matching direct-Sol samples for Balanced economic admission", () => {
+    const objective = "Analyze [unit:alpha] and [unit:beta] independently in read-only mode";
+    const semanticPlan = hostPlan(2, {
+      tasks: ["alpha", "beta"].map((unit) => ({
+        goal: `[unit:${unit}] Analyze ${unit}`,
+        paths: [],
+        after: [],
+        floor: null,
+        expectedSeconds: 90,
+      })),
+    });
+    const historical = new LocalRouteOptimizer({
+      priceTable: PRICE_TABLE,
+      historyStore: {
+        readSnapshots: () => directSolHistory(objective, 3, 300, 1),
+      },
+    });
+
+    expect(
+      decide(historical, {
+        objective,
+        cwd: "/workspace",
+        profile: "balanced",
+        strategy: "fanout",
+        semanticPlan,
+      }),
+    ).toMatchObject({
+      route: "fanout",
+      routeEvidence: "history",
+      routeAdjustment: "none",
+    });
+  });
+
+  it("does not treat fewer than three matching samples as history", () => {
+    const objective = "Analyze [unit:alpha] and [unit:beta] independently in read-only mode";
+    const sparse = new LocalRouteOptimizer({
+      priceTable: PRICE_TABLE,
+      historyStore: {
+        readSnapshots: () => directSolHistory(objective, 2, 300, 1),
+      },
+    });
+    const decision = decide(sparse, {
+      objective,
+      cwd: "/workspace",
+      profile: "balanced",
+      strategy: "fanout",
+      semanticPlan: hostPlan(2, {
+        tasks: ["alpha", "beta"].map((unit) => ({
+          goal: `[unit:${unit}] Analyze ${unit}`,
+          paths: [],
+          after: [],
+          floor: null,
+          expectedSeconds: 90,
+        })),
+      }),
+    });
+
+    expect(decision.routeEvidence).not.toBe("history");
+  });
+
+  it("rejects vague cold-start plans and multiple Terra nodes", () => {
+    expect(
+      decide(priced, {
+        objective: "Analyze architecture, risks, and tests",
+        cwd: "/workspace",
+        profile: "balanced",
+        strategy: "fanout",
+        semanticPlan: hostPlan(2),
+      }),
+    ).toMatchObject({
+      route: "direct",
+      routeEvidence: "unavailable",
+      reason: expect.stringContaining("lacks distinct paths, sources"),
+    });
+
+    expect(
+      decide(priced, {
+        objective: "Analyze [unit:alpha] and [unit:beta]",
+        cwd: "/workspace",
+        profile: "balanced",
+        strategy: "fanout",
+        semanticPlan: hostPlan(2, {
+          tasks: hostPlan(2).tasks.map((task) => ({ ...task, floor: "terra" })),
+        }),
+      }),
+    ).toMatchObject({
+      route: "direct",
+      reason: "balanced plan requires more than one Terra execution node",
+    });
+  });
+
+  it("requires a material three-leaf gain in balanced mode", () => {
+    const semanticPlan = hostPlan(3, {
+      tasks: [100, 31, 31].map((expectedSeconds, index) => ({
+        goal: `[unit:${String(index)}] Analyze unit ${String(index)}`,
+        paths: [],
+        after: [],
+        floor: null,
+        expectedSeconds,
+      })),
+    });
+    expect(
+      decide(priced, {
+        objective: "Analyze [unit:0], [unit:1], and [unit:2] independently",
+        cwd: "/workspace",
+        profile: "balanced",
+        strategy: "fanout",
+        semanticPlan,
+      }),
+    ).toMatchObject({
+      route: "direct",
+      reason: expect.stringContaining("20% critical-path gain"),
+      routeAdjustment: "downgraded_to_single",
+    });
   });
 
   it("rejects a host plan whose leaves do not exceed the minimum useful duration", () => {
@@ -251,7 +400,7 @@ describe("LocalRouteOptimizer V3.4 profile routing", () => {
     });
   });
 
-  it("rejects a final plan that has no positive wall-time saving", () => {
+  it("rejects a final plan with no concurrently runnable leaves", () => {
     const sequential = plan(2);
     sequential.tasks[1]!.dependsOn = [sequential.tasks[0]!.id];
 
@@ -270,11 +419,11 @@ describe("LocalRouteOptimizer V3.4 profile routing", () => {
     ).toMatchObject({
       route: "direct",
       routeSource: "internal_sol",
-      reason: expect.stringContaining("no positive predicted wall-time saving"),
+      reason: "planned DAG has fewer than two concurrently runnable leaves",
     });
   });
 
-  it("rejects an independent DAG when the calibrated direct baseline shows no time saving", () => {
+  it("keeps an independent DAG when an uncertain latency projection misses the target", () => {
     const strictTargets = new LocalRouteOptimizer({
       maxCostRatio: 0.01,
       maxLatencyRatio: 0.01,
@@ -289,10 +438,57 @@ describe("LocalRouteOptimizer V3.4 profile routing", () => {
         signal,
       }),
     ).toMatchObject({
-      route: "direct",
+      route: "fanout",
       routeSource: "internal_sol",
-      reason: expect.stringContaining("no positive predicted wall-time saving"),
+      reason: expect.stringContaining("release target missed"),
+      estimatedDirectSeconds: expect.any(Number),
+      estimatedFanoutSeconds: expect.any(Number),
     });
+  });
+
+  it("preserves the observed three-stream host plan despite a pessimistic direct baseline", () => {
+    const semanticPlan = hostPlan(3, {
+      merge: "terra",
+      tasks: [75, 75, 90].map((expectedSeconds, index) => ({
+        goal: `Analyze RainbowNekoEngine workstream ${String(index + 1)}`,
+        paths: ["."],
+        after: [],
+        floor: index === 2 ? ("terra" as const) : ("luna" as const),
+        expectedSeconds,
+      })),
+    });
+    const executionPlan = plan(3, {
+      tasks: semanticPlan.tasks.map((task, index) => ({
+        ...plan(3).tasks[index]!,
+        tier: task.floor ?? "luna",
+        expectedSeconds: task.expectedSeconds,
+      })),
+      integration: { ...plan(3).integration, aggregation: "terra" },
+    });
+
+    const decision = priced.assessPlan!({
+      runId: "rainbow-neko-host-plan",
+      request: {
+        objective: "系统分析 RainbowNekoEngine 的架构、模块、工程质量和风险",
+        cwd: "/workspace/RainbowNekoEngine",
+        profile: "quality",
+        strategy: "fanout",
+        semanticPlan,
+      },
+      plan: executionPlan,
+      source: "host",
+      signal,
+    });
+
+    expect(decision).toMatchObject({
+      route: "fanout",
+      routeSource: "host_sol",
+      suggestedMaxLeaves: 3,
+      reason: expect.stringContaining("release target missed"),
+    });
+    expect(decision.estimatedFanoutSeconds).toBeGreaterThan(
+      decision.estimatedDirectSeconds ?? Number.POSITIVE_INFINITY,
+    );
   });
 
   it("enforces an explicit maxCostUsd and missing pre-call pricing", () => {
@@ -351,6 +547,27 @@ describe("LocalRouteOptimizer V3.4 profile routing", () => {
     ).toThrow("stop");
   });
 });
+
+function directSolHistory(
+  objective: string,
+  count: number,
+  elapsedSeconds: number,
+  costUsd: number,
+): unknown[] {
+  return Array.from({ length: count }, () => ({
+    request: { objective, cwd: "/workspace" },
+    result: {
+      status: "completed",
+      plan: null,
+      metrics: {
+        elapsedMs: elapsedSeconds * 1_000,
+        usageByStage: {
+          direct: { usage: [{ tier: "sol" }], estimatedCostUsd: costUsd },
+        },
+      },
+    },
+  }));
+}
 
 describe("direct tier recommendation", () => {
   it("honors the host Sol tier and defaults bounded work to Luna", () => {

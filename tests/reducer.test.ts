@@ -97,6 +97,20 @@ describe("deterministic result reducer", () => {
     });
   });
 
+  it("delivers the sole downstream writer result without repeating preparation summaries", () => {
+    const candidate = plan();
+    candidate.domain = "office";
+    candidate.tasks[0]!.access = "readOnly";
+    candidate.tasks[1]!.access = "workspaceWrite";
+    candidate.tasks[1]!.dependsOn = ["a"];
+    const result = reduceLeafResults(candidate, [leaf("a"), leaf("b")]);
+
+    expect(result.response).not.toContain("a: a complete");
+    expect(result.response).toContain("b: b complete");
+    expect(result.response).toContain("artifacts/b.json");
+    expect(result.response).not.toContain("artifacts/a.json");
+  });
+
   it("automatically reduces only low-risk independent read-only results", () => {
     const candidate = plan();
     candidate.integration.aggregation = "auto";

@@ -1793,7 +1793,14 @@ describe("integration adapters", () => {
         response: "integrated",
         needsAction: null,
         error: null,
-        planIssues: [],
+        planIssues: [
+          {
+            type: "result_conflict",
+            taskIds: ["leaf-1"],
+            summary: "unsupported validation claim was omitted",
+            requiresPlanPatch: false,
+          },
+        ],
       },
     });
     const plan = executionPlan();
@@ -1824,8 +1831,12 @@ describe("integration adapters", () => {
     });
 
     expect(outcome.validation).toEqual([]);
+    expect(outcome.planIssues).toEqual([expect.objectContaining({ requiresPlanPatch: false })]);
     expect(server.turnStarts[0]?.outputSchema).toEqual(INTEGRATOR_OUTCOME_OUTPUT_SCHEMA);
     expect(INTEGRATOR_OUTCOME_OUTPUT_SCHEMA.properties).not.toHaveProperty("validation");
+    expect(INTEGRATOR_OUTCOME_OUTPUT_SCHEMA.properties.planIssues.items.required).toContain(
+      "requiresPlanPatch",
+    );
     const prompt = server.turnStarts[0]?.input[0];
     expect(prompt).toMatchObject({ type: "text" });
     if (prompt?.type === "text") {
@@ -1835,6 +1846,8 @@ describe("integration adapters", () => {
       expect(prompt.text).not.toContain("private passing validator command");
       expect(prompt.text).not.toContain("private passing validator output");
       expect(prompt.text).not.toContain("private aggregate validator command");
+      expect(prompt.text).toContain("validation.status=not_run therefore does not conflict");
+      expect(prompt.text).toContain("requiresPlanPatch=false");
     }
   });
 

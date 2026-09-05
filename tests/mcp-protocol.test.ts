@@ -25,13 +25,19 @@ function result(): BatchResult {
 
 describe("AgentTrioMcpProtocol", () => {
   it("makes the current Sol root the semantic router", () => {
-    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("flat top-level fields");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("pass all fields flat");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain(
+      "objective and absolute cwd are mandatory top-level arguments",
+    );
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("only after submit succeeds");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("profile defaults to balanced");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("strategy=direct delegates one worker");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Balanced normally uses 2 tasks");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain(">=20% critical-path gain");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Terra handles recovery/stateful work");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain(
+      "keep read-only repository/framework evidence leaves on Luna",
+    );
     expect(AGENT_TRIO_TOOL_SCHEMA.properties.profile).toMatchObject({ default: "balanced" });
     expect("request" in AGENT_TRIO_TOOL_SCHEMA.properties).toBe(false);
   });
@@ -322,6 +328,84 @@ describe("AgentTrioMcpProtocol", () => {
     ).toThrow("top-level risk conflicts with semanticPlan.risk");
   });
 
+  it("preserves a host fanout plan that omits access by defaulting to read-only", () => {
+    const parsed = parseAgentTrioRequest({
+      action: "submit",
+      runId: "rainbow-neko-analysis",
+      objective: "系统分析 RainbowNekoEngine，保持全程只读",
+      cwd: "/workspace/RainbowNekoEngine",
+      hostAccess: "fullAccess",
+      hostApproval: "never",
+      profile: "quality",
+      strategy: "fanout",
+      domain: "coding",
+      constraints: ["全程只读，不修改仓库文件。"],
+      semanticPlan: {
+        merge: "terra",
+        risk: "low",
+        tasks: ["cfgs", "engine", "tests"].map((path) => ({
+          goal: `分析 ${path}`,
+          paths: [path],
+          after: [],
+          floor: "luna",
+          expectedSeconds: 120,
+        })),
+      },
+      limits: { maxConcurrent: 3, maxLeaves: 3, maxCostUsd: 6 },
+    });
+
+    expect(parsed).toMatchObject({
+      hostAccess: "fullAccess",
+      semanticPlan: {
+        access: "readOnly",
+        merge: "terra",
+        risk: "low",
+        tasks: expect.any(Array),
+      },
+    });
+    expect(parsed.action).toBe("submit");
+    if (parsed.action !== "submit") {
+      throw new Error("expected a parsed submit request");
+    }
+    expect(parsed.semanticPlan?.tasks).toHaveLength(3);
+    expect(parsed.constraints).toEqual(["全程只读，不修改仓库文件。"]);
+  });
+
+  it("recovers omitted fanout objective and cwd without a second model submission", () => {
+    const parsed = parseAgentTrioRequest(
+      {
+        action: "submit",
+        strategy: "fanout",
+        semanticPlan: {
+          access: "readOnly",
+          merge: "terra",
+          risk: "low",
+          tasks: ["architecture", "tests"].map((area) => ({
+            goal: `inspect ${area}`,
+            paths: [area],
+            after: [],
+            floor: "luna",
+            expectedSeconds: 60,
+          })),
+        },
+      },
+      { cwd: "/workspace/from-root" },
+    );
+
+    expect(parsed).toMatchObject({
+      cwd: "/workspace/from-root",
+      objective: expect.stringContaining("inspect architecture"),
+      semanticPlan: { tasks: expect.any(Array) },
+    });
+    expect("objective" in parsed ? parsed.objective : "").toContain("inspect tests");
+    expect(() =>
+      parseAgentTrioRequest(
+        { action: "submit", strategy: "direct", directTier: "luna" },
+        { cwd: "/workspace/from-root" },
+      ),
+    ).toThrow("objective must be a non-empty string");
+  });
+
   it("parses bounded resume input and rejects input for every other action", () => {
     const exactBoundary = `${"\u754c".repeat(1_365)}a`;
     expect(AGENT_TRIO_TOOL_SCHEMA.properties.input).toEqual({
@@ -364,7 +448,7 @@ describe("AgentTrioMcpProtocol", () => {
   });
 
   it("parses the bounded Monitor-first submit and one blocking status wait", () => {
-    expect(AGENT_TRIO_TOOL_SCHEMA.properties.monitorFirst).toEqual({ type: "boolean" });
+    expect(AGENT_TRIO_TOOL_SCHEMA.properties.monitorFirst).toMatchObject({ type: "boolean" });
     expect(AGENT_TRIO_TOOL_SCHEMA.properties.wait).toEqual({ type: "boolean" });
     expect(
       parseAgentTrioRequest({
@@ -380,14 +464,21 @@ describe("AgentTrioMcpProtocol", () => {
       runId: "run-1",
       wait: true,
     });
-    expect(() =>
+    expect(
       parseAgentTrioRequest({
         action: "run",
         objective: "inspect a project",
         cwd: "/workspace",
+        strategy: "auto",
         monitorFirst: true,
       }),
-    ).toThrow("monitorFirst is only valid when action is submit");
+    ).toEqual({
+      action: "run",
+      objective: "inspect a project",
+      cwd: "/workspace",
+      profile: "balanced",
+      strategy: "auto",
+    });
     expect(() => parseAgentTrioRequest({ action: "cancel", runId: "run-1", wait: true })).toThrow(
       "unknown agent_trio argument: wait",
     );
@@ -542,7 +633,10 @@ describe("AgentTrioMcpProtocol", () => {
         snapshot: { request: { objective: "inspect the project" } },
       },
     });
-    expect(JSON.parse(response.result.content[0]!.text)).toMatchObject({ finalResponse: null });
+    expect(JSON.parse(response.result.content[0]!.text)).toMatchObject({
+      status: "completed",
+      finalResponseComplete: false,
+    });
   });
 
   it("keeps dense embedded monitor updates below the MCP transport limit", async () => {
@@ -575,7 +669,15 @@ describe("AgentTrioMcpProtocol", () => {
         events: Array.from({ length: 100 }, (_, index) => ({
           type: "app_server",
           method: "item/completed",
-          data: { itemId: `item-${String(index)}`, text: "x".repeat(20_000) },
+          threadId: "thread-1",
+          turnId: "turn-1",
+          data: {
+            item: {
+              id: `item-${String(index)}`,
+              type: "agentMessage",
+              text: "x".repeat(20_000),
+            },
+          },
         })),
         nextCursor: 999_999,
         hasMore: true,
@@ -595,6 +697,11 @@ describe("AgentTrioMcpProtocol", () => {
     };
     expect(response.result.structuredContent.monitor.nextCursor).toBe(999_999);
     expect(response.result.structuredContent.monitor.events.length).toBeGreaterThan(0);
+    expect(response.result.structuredContent.monitor.events.at(-1)).toMatchObject({
+      type: "display",
+      displayKind: "agent-message",
+      displayComplete: true,
+    });
   });
 
   it("accepts only an explicit caller permission mode on start actions", () => {
@@ -837,7 +944,16 @@ describe("AgentTrioMcpProtocol", () => {
       "Use strategy=auto only when semantic boundaries are unavailable",
     );
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Quality allows 2-5 tasks and >15s each");
-    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("positive time saving");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain(
+      "at least two structurally concurrent useful leaves",
+    );
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain(
+      "Balanced history admission needs 3 matching samples",
+    );
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("0.30x cost and 0.55x latency");
+    expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain(
+      "Quality is exempt from these Balanced economic vetoes",
+    );
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Inside semanticPlan, tasks contain only goal");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("Put merge and risk only inside semanticPlan");
     expect(AGENT_TRIO_TOOL_DESCRIPTION).toContain("strategy=direct delegates");
@@ -948,7 +1064,7 @@ describe("AgentTrioMcpProtocol", () => {
       strategy: "auto",
       runId: expect.any(String),
     });
-    expect(text).toContain('"finalResponse":"done"');
+    expect(text).toContain('"text":"done"');
     expect(text).not.toContain("workspace roots");
   });
 
@@ -1012,15 +1128,147 @@ describe("AgentTrioMcpProtocol", () => {
       }),
     );
     const response = messages.find((message) => message["id"] === 2) as {
-      result: { content: Array<{ text: string }>; structuredContent: BatchResult };
+      result: {
+        content: Array<{ text: string }>;
+        structuredContent: Record<string, unknown>;
+      };
     };
-    expect(response.result.structuredContent.monitorUrl).toContain(
+    expect(response.result.structuredContent["monitorUrl"]).toContain(
       "/runs/generated-run?token=test",
     );
-    expect(response.result.structuredContent.finalResponse).toBe(
+    expect(response.result.structuredContent).not.toHaveProperty("finalResponse");
+    expect(response.result.structuredContent["finalResponseComplete"]).toBe(true);
+    expect(response.result.content[0]!.text).toBe(
       "[Open Agent Trio Monitor](http://127.0.0.1:43173/runs/generated-run?token=test)\n\ndone",
     );
-    expect(response.result.content[0]!.text).toContain("Open Agent Trio Monitor");
+  });
+
+  it("returns the final delivery once without duplicating plans or leaf summaries", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let text = "";
+    output.setEncoding("utf8");
+    output.on("data", (chunk: string) => {
+      text += chunk;
+    });
+    const completed: BatchResult = {
+      ...result(),
+      plan: {
+        protocolVersion: 1,
+        planId: "plan-1",
+        objective: "inspect the project",
+        domain: "coding",
+        assumptions: [],
+        risk: "low",
+        origin: "sol",
+        tasks: [
+          {
+            id: "leaf-1",
+            objective: "inspect the engine",
+            domain: "coding",
+            tier: "luna",
+            effort: "medium",
+            access: "readOnly",
+            ownedPaths: ["src"],
+            dependsOn: [],
+            capabilities: [],
+            validation: [],
+            communicationWith: [],
+            expectedSeconds: 60,
+            difficulty: 0.3,
+            ambiguity: 0.2,
+            confidence: 0.9,
+            critical: false,
+          },
+        ],
+        integration: {
+          objective: "integrate the report",
+          requiredOutputs: ["complete report"],
+          validation: [],
+          finalReview: "never",
+          aggregation: "terra",
+        },
+      },
+      leaves: [
+        {
+          taskId: "leaf-1",
+          status: "completed",
+          summary: "LEAF_SUMMARY_MUST_NOT_BE_DUPLICATED",
+          confidence: 0.9,
+          changedFiles: [],
+          validation: [],
+          citations: [],
+          artifacts: [],
+          threadId: "thread-1",
+          turnId: "turn-1",
+          usage: [],
+          findings: [],
+          messages: [],
+          startedAt: "2026-09-04T00:00:00.000Z",
+          completedAt: "2026-09-04T00:01:00.000Z",
+        },
+      ],
+      finalResponse: "FINAL_DELIVERY_ONCE",
+    };
+    const protocol = new AgentTrioMcpProtocol({
+      service: { handle: vi.fn(async () => completed) },
+      input,
+      output,
+    });
+    const running = protocol.run();
+    input.end(
+      `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agent_trio", arguments: { action: "status", runId: "run-1" } } })}\n`,
+    );
+    await running;
+
+    const response = JSON.parse(text.trim()) as {
+      result: {
+        content: Array<{ text: string }>;
+        structuredContent: {
+          finalResponseComplete: boolean;
+        };
+      };
+    };
+    const serialized = JSON.stringify(response.result);
+    expect(response.result.structuredContent).not.toHaveProperty("finalResponse");
+    expect(response.result.structuredContent.finalResponseComplete).toBe(true);
+    expect(response.result.structuredContent).not.toHaveProperty("plan");
+    expect(response.result.structuredContent).not.toHaveProperty("leaves");
+    expect(serialized.match(/FINAL_DELIVERY_ONCE/gu)).toHaveLength(1);
+    expect(serialized).not.toContain("LEAF_SUMMARY_MUST_NOT_BE_DUPLICATED");
+  });
+
+  it("marks a delivery incomplete only when its final response exceeds the transport bound", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let text = "";
+    output.setEncoding("utf8");
+    output.on("data", (chunk: string) => {
+      text += chunk;
+    });
+    const protocol = new AgentTrioMcpProtocol({
+      service: {
+        handle: vi.fn(async () => ({ ...result(), finalResponse: "x".repeat(60 * 1024) })),
+      },
+      input,
+      output,
+    });
+    const running = protocol.run();
+    input.end(
+      `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agent_trio", arguments: { action: "status", runId: "run-1" } } })}\n`,
+    );
+    await running;
+
+    const response = JSON.parse(text.trim()) as {
+      result: {
+        content: Array<{ text: string }>;
+        structuredContent: { finalResponseComplete: boolean };
+      };
+    };
+    expect(response.result.structuredContent.finalResponseComplete).toBe(false);
+    expect(Buffer.byteLength(response.result.content[0]!.text, "utf8")).toBeLessThanOrEqual(
+      48 * 1024,
+    );
   });
 
   it("drains in-flight request handlers after graceful EOF", async () => {
@@ -1065,7 +1313,7 @@ describe("AgentTrioMcpProtocol", () => {
     await running;
 
     expect(text).toContain('"id":2');
-    expect(text).toContain('"finalResponse":"done"');
+    expect(text).toContain('"text":"done"');
   });
 
   it("returns managed job failures as data instead of MCP transport errors", async () => {

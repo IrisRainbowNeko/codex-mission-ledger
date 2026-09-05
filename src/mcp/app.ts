@@ -1,6 +1,7 @@
 import { MONITOR_STYLES } from "../monitor/ui.js";
+import { MONITOR_CONVERSATION_CLIENT_JS } from "../monitor/client.js";
 
-export const AGENT_TRIO_MONITOR_RESOURCE_URI = "ui://agent-trio/run-monitor-v1.html";
+export const AGENT_TRIO_MONITOR_RESOURCE_URI = "ui://agent-trio/run-monitor-v2.html";
 export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
 
 const EMBEDDED_STYLES = `
@@ -11,7 +12,7 @@ body{background:var(--surface);min-width:280px}.topbar{position:relative;height:
 export const MCP_MONITOR_APP_JS = String.raw`
 (() => {
   const terminalStates = new Set(["completed", "failed", "cancelled", "waiting_input", "indeterminate"]);
-  const state = { runId: "", objective: "", snapshot: null, events: [], streams: Object.create(null), cursor: 0, revision: "", selected: "overview", polling: false, stopped: false, retryTimer: null };
+  const state = { runId: "", objective: "", snapshot: null, events: [], items: Object.create(null), cursor: 0, revision: "", selected: "overview", polling: false, stopped: false, retryTimer: null };
   const pending = new Map();
   let nextRequestId = 1;
   const $ = (id) => document.getElementById(id);
@@ -68,7 +69,7 @@ export const MCP_MONITOR_APP_JS = String.raw`
 
   function start(runId) {
     if (state.runId === runId) return;
-    state.runId = runId; state.cursor = 0; state.revision = ""; state.events = []; state.streams = Object.create(null); state.snapshot = null; state.stopped = false;
+    state.runId = runId; state.cursor = 0; state.revision = ""; state.events = []; state.items = Object.create(null); state.snapshot = null; state.stopped = false;
     $("run-title").textContent = shortId(runId); $("run-title").title = runId;
     $("waiting").classList.add("hidden");
     $("monitor-view").classList.remove("hidden");
@@ -113,37 +114,14 @@ export const MCP_MONITOR_APP_JS = String.raw`
     if (monitor.snapshot) state.snapshot = monitor.snapshot;
     if (typeof monitor.revision === "string") state.revision = monitor.revision;
     if (typeof monitor.nextCursor === "number") {
-      if (monitor.nextCursor < state.cursor) { state.events = []; state.streams = Object.create(null); }
+      if (monitor.nextCursor < state.cursor) { state.events = []; state.items = Object.create(null); }
       state.cursor = monitor.nextCursor;
     }
     appendEvents(Array.isArray(monitor.events) ? monitor.events : []);
     render();
   }
 
-  function appendEvents(events) {
-    for (const event of events) {
-      const key = deltaStreamKey(event);
-      const existing = key ? state.streams[key] : null;
-      if (existing) {
-        existing.data.delta += event.data.delta;
-        existing.at = event.at || existing.at;
-      } else {
-        state.events.push(event);
-        if (key) state.streams[key] = event;
-      }
-    }
-    if (state.events.length > 1500) {
-      state.events.splice(0, state.events.length - 1500);
-      state.streams = Object.create(null);
-      for (const event of state.events) { const key = deltaStreamKey(event); if (key) state.streams[key] = event; }
-    }
-  }
-
-  function deltaStreamKey(event) {
-    const data = event && event.data;
-    if (!event || typeof event.method !== "string" || !event.method.toLowerCase().endsWith("delta") || !data || typeof data.itemId !== "string" || typeof data.delta !== "string") return "";
-    return [event.method, event.threadId || "", event.turnId || "", data.itemId].join("|");
-  }
+${MONITOR_CONVERSATION_CLIENT_JS}
 
   function render() {
     const snapshot = state.snapshot || {};
@@ -205,8 +183,10 @@ export const MCP_MONITOR_APP_JS = String.raw`
       fields.push(["Profile", metrics.profile || (snapshot.request || {}).profile || "balanced"]);
       fields.push(["Route", metrics.routeReason || (plan.origin ? plan.origin + " plan" : "Direct")]);
       fields.push(["Route source", metrics.routeSource || ""]);
+      fields.push(["Economic evidence", metrics.routeEvidence || ""]);
+      fields.push(["Route adjustment", formatRouteAdjustment(metrics.routeAdjustment)]);
       fields.push(["Domain", metrics.selectedDomain || plan.domain || ""]);
-      fields.push(["Plan", plan.tasks ? String(plan.tasks.length) + " leaves" : "No fanout"]);
+      fields.push(["Plan", formatPlanShape(snapshot, plan, metrics)]);
       fields.push(["Planning", formatPlanning(metrics, plan)]);
       fields.push(["Waves", metrics.selectedWaveCount == null ? "" : String(metrics.selectedWaveCount)]);
       fields.push(["Tier mix", formatTierCounts(metrics.selectedTierCounts)]);
@@ -235,6 +215,8 @@ export const MCP_MONITOR_APP_JS = String.raw`
   }
 
   function formatTierCounts(counts) { if (!counts) return ""; return ["luna", "terra", "sol"].filter((tier) => counts[tier]).map((tier) => tier + ": " + counts[tier]).join(", "); }
+  function formatPlanShape(snapshot, plan, metrics) { const proposed = ((((snapshot || {}).request || {}).semanticPlan || {}).tasks || []).length; const selected = metrics.selectedLeafCount == null ? ((plan.tasks || []).length) : Number(metrics.selectedLeafCount); if (proposed && proposed !== selected) return String(proposed) + " proposed -> " + String(selected) + " selected"; return selected > 0 ? String(selected) + " leaves" : "No fanout"; }
+  function formatRouteAdjustment(value) { return ({ reduced_to_two:"Reduced to two leaves", downgraded_to_single:"Downgraded to one agent", none:"None" })[value] || ""; }
   function formatPlanning(metrics, plan) { if (metrics.routeSource === "host_sol") return plan.tasks ? "External host Sol (not runtime-metered)" : "External host Sol selected one agent"; if (metrics.routeSource === "internal_sol") return "Internal Sol"; return metrics.plannerSkipped ? "None" : ""; }
   function formatPlannedTime(metrics) { const values = []; if (metrics.estimatedSerialSeconds != null) values.push("serial " + Number(metrics.estimatedSerialSeconds).toFixed(0) + "s"); if (metrics.estimatedCriticalPathSeconds != null) values.push("critical path " + Number(metrics.estimatedCriticalPathSeconds).toFixed(0) + "s"); return values.join(", "); }
   function formatRatios(metrics) { const values = []; if (metrics.estimatedCostRatio != null) values.push("cost " + Number(metrics.estimatedCostRatio).toFixed(2) + "x"); if (metrics.estimatedLatencyRatio != null) values.push("time " + Number(metrics.estimatedLatencyRatio).toFixed(2) + "x"); return values.join(", "); }
@@ -248,6 +230,7 @@ export const MCP_MONITOR_APP_JS = String.raw`
     } else {
       const heading = document.createElement("div"); heading.className = "event-title"; const strong = document.createElement("strong"); strong.textContent = event.displayLabel || "Activity"; heading.appendChild(strong);
       if (event.displayStatus) { const badge = document.createElement("span"); badge.textContent = event.displayStatus; heading.appendChild(badge); }
+      if (event.displayTruncated) { const badge = document.createElement("span"); badge.textContent = "truncated"; heading.appendChild(badge); }
       body.appendChild(heading);
       if (event.displayCommand) { const command = document.createElement("code"); command.className = "command-line"; command.textContent = event.displayCommand; body.appendChild(command); }
       if (event.displayText) { const content = document.createElement("div"); content.className = "event-text"; appendRichText(content, event.displayText); body.appendChild(content); }
@@ -255,55 +238,6 @@ export const MCP_MONITOR_APP_JS = String.raw`
       if (event.displayRaw) { const pre = document.createElement("pre"); pre.textContent = JSON.stringify(event.displayRaw, null, 2); body.appendChild(pre); }
     }
     row.append(time, body); return row;
-  }
-
-  function buildConversationEvents(events) {
-    const result = [], items = new Map();
-    for (const event of events) {
-      const descriptor = itemDescriptor(event);
-      if (!descriptor || descriptor.kind === "user") continue;
-      let logical = items.get(descriptor.key);
-      if (!logical) { logical = { at: event.at, role: event.role, taskId: event.taskId, displayKind: descriptor.kind }; items.set(descriptor.key, logical); result.push(logical); }
-      applyItemEvent(logical, event, descriptor);
-    }
-    return result.filter((event) => event.displayText || event.displayCommand || event.displayOutput || event.displayRaw);
-  }
-
-  function itemDescriptor(event) {
-    if (!event || event.type !== "app_server") return null;
-    const data = event.data || {}, item = data.item && typeof data.item === "object" ? data.item : null;
-    const itemId = (item && item.id) || data.itemId;
-    if (typeof itemId !== "string" || !itemId) return null;
-    const itemType = (item && item.type) || itemTypeFromMethod(event.method || "");
-    const kind = ({ userMessage:"user", agentMessage:"agent-message", reasoning:"reasoning", commandExecution:"command", fileChange:"file-change" })[itemType] || "tool";
-    return { key: [event.threadId || "", event.turnId || "", itemId].join("|"), kind, itemType, item };
-  }
-
-  function itemTypeFromMethod(method) { for (const type of ["agentMessage", "reasoning", "commandExecution", "fileChange"]) if (method.includes(type)) return type; return "tool"; }
-
-  function applyItemEvent(logical, event, descriptor) {
-    logical.at = event.at || logical.at; logical.role = event.role || logical.role; logical.taskId = event.taskId || logical.taskId;
-    const delta = event.data && typeof event.data.delta === "string" ? event.data.delta : "";
-    if (delta) logical.displayText = (logical.displayText || "") + delta;
-    const item = descriptor.item;
-    if (descriptor.kind === "agent-message") { logical.displayLabel = roleLabel(event.role || "agent"); if (item && typeof item.text === "string") logical.displayText = unwrapAgentMessage(item.text); else if (event.method === "item/completed" && logical.displayText) logical.displayText = unwrapAgentMessage(logical.displayText); return; }
-    if (descriptor.kind === "reasoning") { logical.displayLabel = "Reasoning"; const text = extractText(item); if (text) logical.displayText = text; return; }
-    if (descriptor.kind === "command") { logical.displayLabel = "Command"; if (item && typeof item.command === "string") logical.displayCommand = item.command; if (item && typeof item.aggregatedOutput === "string" && item.aggregatedOutput) logical.displayOutput = item.aggregatedOutput; else if (delta) { logical.displayOutput = (logical.displayOutput || "") + delta; logical.displayText = ""; } if (item && item.status) logical.displayStatus = String(item.status); return; }
-    if (descriptor.kind === "file-change") { logical.displayLabel = "File change"; const text = extractText(item); if (text) logical.displayText = text; if (item && item.status) logical.displayStatus = String(item.status); return; }
-    logical.displayLabel = descriptor.itemType || "Tool"; if (item) logical.displayRaw = item;
-  }
-
-  function unwrapAgentMessage(text) {
-    try { const value = JSON.parse(text); return value && typeof value.response === "string" ? value.response : text; }
-    catch {
-      const match = /"response"\s*:\s*"/.exec(text);
-      if (!match) return text;
-      const source = text.slice(match.index + match[0].length); let escaped = false, end = source.length;
-      for (let index = 0; index < source.length; index += 1) { const char = source[index]; if (char === '"' && !escaped) { end = index; break; } if (char === "\\" && !escaped) escaped = true; else escaped = false; }
-      let encoded = source.slice(0, end); while (encoded.endsWith("\\")) encoded = encoded.slice(0, -1);
-      try { return JSON.parse('"' + encoded + '"'); }
-      catch { return encoded.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "\t").replace(/\\"/g, '"').replace(/\\\\/g, "\\"); }
-    }
   }
 
   function appendRichText(container, text) {
@@ -320,7 +254,6 @@ export const MCP_MONITOR_APP_JS = String.raw`
   }
 
   function appendInline(container, text) { const tick = String.fromCharCode(96), pattern = new RegExp("(" + tick + "[^" + tick + "]+" + tick + ")", "g"); for (const part of String(text).split(pattern)) { if (part.startsWith(tick) && part.endsWith(tick) && part.length > 2) { const code = document.createElement("code"); code.textContent = part.slice(1, -1); container.appendChild(code); } else container.appendChild(document.createTextNode(part)); } }
-  function extractText(value) { if (Array.isArray(value)) return value.map(extractText).filter(Boolean).join("\n"); if (!value || typeof value !== "object") return typeof value === "string" ? value : ""; for (const key of ["delta", "text", "message", "summary", "output", "aggregatedOutput"]) if (typeof value[key] === "string" && value[key]) return value[key]; for (const key of ["item", "content", "turn"]) { const nested = extractText(value[key]); if (nested) return nested; } return ""; }
   function normalizeStatus(status) { if (status === "terminal") return "completed"; if (status === "thread_started") return "pending"; return status || "pending"; }
   function roleLabel(role) { return ({ admission:"Admission", planner:"Sol planner", direct:"Direct agent", leaf:"Leaf", integrator:"Terra integrator", finalReview:"Sol final review" })[role] || role; }
   function tierLabel(tier, effort) { return [tier ? String(tier).toUpperCase() : "Agent", effort || ""].filter(Boolean).join(" / "); }

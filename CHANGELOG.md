@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-09-05
+
+### Added
+
+- Added `routeEvidence` and `routeAdjustment` metrics, recovery support, and Monitor presentation
+  for history-backed, structural cold-start, two-leaf reduction, and single-agent fallback routes.
+- Added Balanced benchmark gates for per-family economics, direct baseline quality, average fanout
+  size, three-leaf share and critical-path gain, and Terra node/leaf allocation.
+- Added `benchmark:rescore` to re-run sealed output validators against saved raw outputs without
+  repeating model calls or changing recorded token, cost, latency, and routing evidence.
+
+### Changed
+
+- Balanced skill invocation now enables a conservative routing policy instead of guaranteeing an
+  MCP call. Root Sol retains single deliverables, repository reviews, algorithms, office artifacts,
+  recovery work, and other tasks without proven delegation value.
+- Balanced fanout defaults to two Luna leaves. Three leaves require three independent workstreams,
+  at least 120 seconds of serial work, and at least 20% critical-path improvement over the best
+  two-leaf grouping. Each DAG may use at most one Terra execution node.
+- History-backed Balanced fanout now enforces the 40% cost and 70% latency thresholds at runtime;
+  structural cold starts require 30% cost, 55% latency, and explicit independent boundaries.
+  Missing economics or structural evidence downgrades the submitted run to one worker.
+- Balanced office DAGs use Luna preparation followed by one Terra writer. A final writer that
+  depends on all preparation leaves becomes the result directly without another Terra integration.
+- Quality retains its V3.3 routing, leaf limits, and exemption from Balanced economic admission.
+- The 162-arm V3.5 benchmark measured Balanced at 61.0% total time, 45.3% total cost, and 98.98%
+  quality relative to direct Sol. Quality measured 75.6% total time, 53.7% total cost, and 98.22%
+  relative quality.
+
+### Fixed
+
+- Treat the three-leaf benchmark benefit gate as not applicable when a suite contains no three-leaf
+  runs, while continuing to fail any observed three-leaf plan below the 20% threshold.
+- Correct output-validator escaping and accept equivalent item headings, citation wrappers,
+  Markdown severity cells, methodological consequences, and bounded-correction wording. Gold and
+  mutant qualifications still run before a corpus is sealed.
+
 ## [3.4.3] - 2026-09-03
 
 ### Fixed

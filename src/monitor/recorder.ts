@@ -387,15 +387,11 @@ function boundedEventLine(event: MonitorEvent): string {
   if (Buffer.byteLength(line, "utf8") <= MAX_EVENT_BYTES) {
     return line;
   }
-  const serializedData = JSON.stringify(event.data) ?? "";
   let previewBytes = Math.floor(MAX_EVENT_BYTES / 2);
   while (previewBytes > 0) {
     line = `${JSON.stringify({
       ...event,
-      data: {
-        truncated: true,
-        preview: truncateUtf8(serializedData, previewBytes),
-      },
+      data: compactStoredEventData(event.data, previewBytes),
     })}\n`;
     if (Buffer.byteLength(line, "utf8") <= MAX_EVENT_BYTES) {
       return line;
@@ -403,6 +399,57 @@ function boundedEventLine(event: MonitorEvent): string {
     previewBytes = Math.floor(previewBytes / 2);
   }
   return `${JSON.stringify({ ...event, data: { truncated: true } })}\n`;
+}
+
+function compactStoredEventData(value: unknown, maxFieldBytes: number): JsonValue {
+  if (!isJsonRecord(value)) {
+    return { truncated: true };
+  }
+  const compact: Record<string, JsonValue> = { truncated: true };
+  for (const key of ["threadId", "turnId", "itemId", "startedAtMs", "completedAtMs"]) {
+    const field = value[key];
+    if (
+      field === null ||
+      typeof field === "string" ||
+      typeof field === "number" ||
+      typeof field === "boolean"
+    ) {
+      compact[key] = field;
+    }
+  }
+  if (typeof value["delta"] === "string") {
+    compact["delta"] = truncateUtf8(value["delta"], maxFieldBytes);
+  }
+  const item = value["item"];
+  if (isJsonRecord(item)) {
+    const compactItem: Record<string, JsonValue> = {};
+    for (const key of ["id", "type", "status", "exitCode", "durationMs", "name"]) {
+      const field = item[key];
+      if (
+        field === null ||
+        typeof field === "string" ||
+        typeof field === "number" ||
+        typeof field === "boolean"
+      ) {
+        compactItem[key] = field;
+      }
+    }
+    for (const key of ["command", "text", "aggregatedOutput"]) {
+      if (typeof item[key] === "string") {
+        compactItem[key] = truncateUtf8(item[key], maxFieldBytes);
+      }
+    }
+    for (const key of ["content", "changes"]) {
+      if (item[key] !== undefined) {
+        compactItem[key] = truncateUtf8(JSON.stringify(item[key]), maxFieldBytes);
+      }
+    }
+    compact["item"] = compactItem;
+  }
+  if (compact["item"] === undefined && compact["delta"] === undefined) {
+    compact["preview"] = truncateUtf8(JSON.stringify(value), maxFieldBytes);
+  }
+  return compact;
 }
 
 function jsonSafe(value: unknown, depth = 0): JsonValue | undefined {

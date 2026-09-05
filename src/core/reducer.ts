@@ -30,18 +30,22 @@ export function reduceLeafResults(
     };
   }
 
-  const summaries = completed
+  const finalWriter = terminalWriterTaskId(plan);
+  const delivered =
+    finalWriter === null ? completed : completed.filter((leaf) => leaf.taskId === finalWriter);
+
+  const summaries = delivered
     .map((leaf) => `${leaf.taskId}: ${leaf.summary.trim()}`)
     .filter((summary) => !summary.endsWith(":"));
-  const findings = dedupeFindings(completed.flatMap((leaf) => leaf.findings)).filter(
+  const findings = dedupeFindings(delivered.flatMap((leaf) => leaf.findings)).filter(
     (finding) =>
-      !completed.some((leaf) => summaryContainsFinding(leaf.summary.trim(), finding.text.trim())),
+      !delivered.some((leaf) => summaryContainsFinding(leaf.summary.trim(), finding.text.trim())),
   );
   const citations = dedupe(
-    completed.flatMap((leaf) => leaf.citations.map((citation) => citation.url)),
+    delivered.flatMap((leaf) => leaf.citations.map((citation) => citation.url)),
   );
   const artifacts = dedupe(
-    completed.flatMap((leaf) => leaf.artifacts.map((artifact) => artifact.path)),
+    delivered.flatMap((leaf) => leaf.artifacts.map((artifact) => artifact.path)),
   );
   const lines = [
     ...summaries,
@@ -61,6 +65,23 @@ export function reduceLeafResults(
     threadId: null,
     usage: [],
   };
+}
+
+function terminalWriterTaskId(plan: ExecutionPlan): string | null {
+  const writers = plan.tasks.filter((task) => task.access === "workspaceWrite");
+  if (writers.length !== 1 || plan.integration.aggregation !== "deterministic") return null;
+  const writer = writers[0]!;
+  const dependencies = new Set<string>();
+  const byId = new Map(plan.tasks.map((task) => [task.id, task]));
+  const visit = (taskId: string): void => {
+    if (dependencies.has(taskId)) return;
+    dependencies.add(taskId);
+    for (const dependency of byId.get(taskId)?.dependsOn ?? []) visit(dependency);
+  };
+  for (const dependency of writer.dependsOn) visit(dependency);
+  return plan.tasks.every((task) => task.id === writer.id || dependencies.has(task.id))
+    ? writer.id
+    : null;
 }
 
 function summaryContainsFinding(summary: string, finding: string): boolean {

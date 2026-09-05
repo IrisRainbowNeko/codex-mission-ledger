@@ -5,6 +5,8 @@ export type ModelTier = "luna" | "terra" | "sol";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type ExecutionStrategy = "auto" | "direct" | "fanout";
 export type OptimizationProfile = "balanced" | "quality";
+export type RouteEvidence = "history" | "structural_cold_start" | "unavailable";
+export type RouteAdjustment = "none" | "reduced_to_two" | "downgraded_to_single";
 export type AggregationMode = "auto" | "deterministic" | "terra";
 export type ValidatorStrength = "none" | "weak" | "strong";
 export type TaskAccess = "readOnly" | "workspaceWrite";
@@ -314,6 +316,10 @@ export interface BatchMetrics {
   estimatedDirectCostUsd?: number | null;
   estimatedFanoutCostUsd?: number | null;
   routeSource?: "host_sol" | "internal_sol" | "deterministic_direct";
+  /** Evidence used for the Balanced economic admission decision. */
+  routeEvidence?: RouteEvidence;
+  /** Deterministic change made after the caller proposed an execution shape. */
+  routeAdjustment?: RouteAdjustment;
   selectedDomain?: TaskDomain;
   selectedWaveCount?: number;
   selectedTierCounts?: Partial<Record<ModelTier, number>>;

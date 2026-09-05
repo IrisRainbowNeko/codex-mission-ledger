@@ -1,8 +1,8 @@
-# Agent Trio V3.4 Architecture
+# Agent Trio V3.5 Architecture
 
 ## Objective
 
-Agent Trio V3.4 exposes two policies over the same runtime: `balanced` minimizes elapsed time and
+Agent Trio V3.5 exposes two policies over the same runtime: `balanced` minimizes elapsed time and
 actual model cost while staying close to a direct `gpt-5.6-sol/ultra` baseline; `quality` preserves
 the wider, always-delegate V3.3 policy. Both separate semantic decisions from execution mechanics:
 
@@ -71,7 +71,9 @@ The local router returns one of:
 
 A runtime direct result does not start Sol Planner or fanout leaves. A balanced skill may instead
 finish one bounded deliverable or an indivisible Sol task in the root without calling MCP; quality
-always delegates.
+always delegates. Balanced selects a single worker only with at least three matching historical
+samples predicting no more than 40% of direct Sol cost and 100% of its latency. Without that
+evidence the host Sol retains the task.
 The zero-model runtime fast path is positive, not exhaustive: it recognizes only clearly bounded
 single-objective work. Prompt length, Chinese character count, domain, and decomposition keywords
 do not prove direct or fanout. All uncertain medium or larger `auto` requests go to adaptive
@@ -107,19 +109,24 @@ validate hard constraints -> prepare workspaces -> run DAG
 Cost and latency projections compare the complete candidate path against direct
 `gpt-5.6-sol/ultra`. Matching historical p50/p95 data supplies the direct baseline; an independent
 cold projection is used when no history exists. Host-declared leaf durations affect only the DAG
-critical path and cannot inflate that baseline. Ratios are reported in metrics and used by Sol as
-planning guidance and by the release benchmark. Missing the 40% cost or 70% latency target does not
-veto a valid host plan.
-Runtime rejection is limited to hard failures: permission mismatch, cycles, unsafe concurrent write
-ownership, explicit limits or `maxCostUsd`, fewer than two useful concurrently runnable leaves, or
-no positive critical-path saving using the plan's declared durations.
+critical path and cannot inflate that baseline. Three or more matching signature samples use hard
+40% cost and 70% latency limits. Without history, fanout requires distinct paths, sources, or named
+work units and must pass conservative 30% cost and 55% latency limits. Pricing or workload evidence
+that cannot support either calculation downgrades the submitted request to one cheapest sufficient
+worker. Quality bypasses these Balanced economic checks unless `maxCostUsd` is explicit.
+
+All profiles still reject permission mismatch, cycles, unsafe concurrent write ownership, explicit
+limits, fewer than two useful concurrently runnable leaves, or no structural critical-path saving.
+Balanced additionally rejects more than one Terra execution node and three-leaf plans without 120
+seconds of total work and at least 20% improvement over the best two-leaf grouping.
 
 There are two Sol entry paths. In Desktop, VS Code, and interactive CLI, the current root Sol can
 supply the compact `semanticPlan` directly with the `agent_trio` call. The runtime expands IDs,
 effort, and scheduler fields mechanically and adopts low/medium/high-risk, dependency-bearing,
 multi-wave, deterministic or Terra-integrated plans with zero additional planning usage. The host
-session has a logical `external:<runId>` ID. It creates no internal Sol thread during normal
-execution.
+skill limits these tool arguments to 350 tokens without plan narration. Internal Responses
+execution plans use the same 350-token output cap. The host session has a logical
+`external:<runId>` ID. It creates no internal Sol thread during normal execution.
 
 If a leaf reports a blocker or contract change, results materially conflict, a non-mechanical
 validator fails, or confidence becomes too low, the first PlanPatch request lazily starts one real
@@ -148,15 +155,18 @@ deterministic integration. Sol still chooses the semantic partition; it does not
 tokens repeating mechanical defaults. Dirty or non-Git writer tasks and dependency-bearing DAGs
 cannot use this profile.
 
-Host tasks with no explicit tier floor are bounded Luna work unless their contract requires a
-capability, office artifact, state recovery, resume/idempotency behavior, review, or semantic
-synthesis; those shapes retain Terra. A `floor=terra` or `floor=sol` remains authoritative. The host
-protocol carries only `goal`, `paths`, numeric dependency indexes, and `floor`; the runtime, not
-Sol, supplies repetitive transport and policy fields.
+Balanced host tasks with no explicit tier floor are Luna work. Read-only analysis, evidence,
+extraction, and preparation remain Luna even when the parent task is office, review, recovery, or
+synthesis. Terra is assigned only from that leaf's own coupled reasoning or writer contract, and a
+Terra merge consumes the same one-node allowance. Explicit `floor=terra` and `floor=sol` remain
+authoritative, but a plan that exceeds the one-Terra-node or one-Sol-leaf limit is inadmissible. Sol
+is reserved for a clearly difficult algorithm, security, or concurrency package. The protocol carries only
+`goal`, `paths`, numeric dependency indexes, and `floor`; the runtime supplies repetitive fields.
 
 The adaptive Sol turn returns a strict compact wire plan within the active profile ceiling. One
-task becomes `planned_single`; multiple tasks become a DAG. Balanced uses a 30-second leaf floor,
-at least 90 seconds of serial work, and at most three foreground or five durable leaves. Quality
+task becomes `planned_single`; multiple tasks become a DAG. Balanced defaults to two leaves, uses a
+30-second leaf floor and at least 90 seconds of serial work, and permits a third leaf only with 120
+seconds total plus the 20% critical-path gain. Quality
 uses the V3.3 15-second floor and wider ceiling. Sol supplies domain when the caller did not, semantic
 partition, tier floors, dependency indexes, capability indexes, expected durations, risk, and merge
 choice; TypeScript derives repetitive execution fields. The planner receives the user objective,
@@ -242,7 +252,7 @@ leaf is bounded and strongly validated; explicit `minTier` prevents an unsafe do
 | Work shape                                                             | Default tier | Allowed effort |
 | ---------------------------------------------------------------------- | ------------ | -------------- |
 | Search, extraction, data processing, mechanical edits, focused tests   | Luna         | low, medium    |
-| Recovery/stateful work, coupled debugging, review/synthesis, office    | Terra        | medium, high   |
+| Recovery/stateful work, coupled debugging, semantic merge/final writer | Terra        | medium, high   |
 | Difficult algorithms, architecture, security, hidden correctness risks | Sol          | high, xhigh    |
 
 The default model map is `gpt-5.6-luna`, `gpt-5.6-terra`, and `gpt-5.6-sol`. Providers, service
@@ -292,6 +302,11 @@ Every App Server created by the production runtime is subscribed once for `turn/
 thread usage notifications. Remote-turn checkpoints provide the `runId`, role, task, thread, and
 turn mapping; the monitor recorder then appends only matching events to that run's
 `monitor.jsonl`. This path is observational and never feeds content back into a model.
+
+Snapshots and both Monitor views expose `routeEvidence` (`history`, `structural_cold_start`, or
+`unavailable`) and `routeAdjustment` (`none`, `reduced_to_two`, or `downgraded_to_single`). They also
+show proposed versus selected leaf count, selected tier distribution, and the exact downgrade
+reason. Legacy snapshots omit these optional fields and remain readable.
 
 The recorder uses a bounded 250 ms asynchronous batch, a 512 KiB pending-memory ceiling, a 16 KiB
 per-event ceiling, and an 8 MiB per-run log ceiling. Token delta notifications are discarded;
@@ -406,6 +421,10 @@ Leaves self-test against their local validation contract. Low-risk, independent,
 with no review requirement are reduced locally from structured results; this uses no model turn.
 Other plans use one Terra semantic integration turn and aggregate validation. There is no default
 reviewer or producer/verifier ceremony.
+
+For an office or other staged plan with one final Terra writer that depends on every preparation
+leaf, deterministic reduction returns that writer's result directly. It does not start a second
+Terra integration turn.
 
 Sol final review is optional and is not inserted into every fanout. A host plan, including a
 high-risk host plan, does not receive an eager review merely because of its risk label; real anomaly

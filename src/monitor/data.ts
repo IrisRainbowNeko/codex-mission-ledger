@@ -1,6 +1,7 @@
 import { existsSync, watch, type FSWatcher } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { projectMonitorEvents } from "./display.js";
 
 const MAX_JOB_BYTES = 8 * 1024 * 1024;
 const DEFAULT_EVENT_CHUNK_BYTES = 512 * 1024;
@@ -64,19 +65,21 @@ export async function readMonitorEvents(
     return { events: [], nextCursor: cursor, hasMore: true };
   }
   const consumed = lastNewline + 1;
-  const events = coalesceEventPage(
-    chunk
-      .subarray(0, consumed)
-      .toString("utf8")
-      .split("\n")
-      .filter((line) => line.length > 0)
-      .flatMap((line) => {
-        try {
-          return [JSON.parse(line) as unknown];
-        } catch {
-          return [];
-        }
-      }),
+  const events = projectMonitorEvents(
+    coalesceEventPage(
+      chunk
+        .subarray(0, consumed)
+        .toString("utf8")
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .flatMap((line) => {
+          try {
+            return [JSON.parse(line) as unknown];
+          } catch {
+            return [];
+          }
+        }),
+    ),
   );
   const nextCursor = cursor + consumed;
   return { events, nextCursor, hasMore: nextCursor < size };

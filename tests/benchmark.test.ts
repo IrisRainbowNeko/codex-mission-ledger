@@ -6,7 +6,9 @@ import {
   assertReleaseBenchmarkCorpus,
   allocatePairStorage,
   assertNoSubAgentActivity,
+  balancedRouteEvidenceInstruction,
   benchmarkCheapRootTier,
+  benchmarkDynamicToolLimits,
   benchmarkDirectRootThreadConfig,
   benchmarkRootThreadConfig,
   diagnosticHostPlan,
@@ -37,6 +39,7 @@ import {
   hashBenchmarkBytes,
   parseBenchmarkManifest,
   parseBenchmarkCalibrationTable,
+  qualifiedEconomicEligibilityFromCalibration,
   runPairedBenchmark,
   sealBenchmarkManifest,
   type BenchmarkArtifactReader,
@@ -64,10 +67,14 @@ function passingObservations(): BenchmarkObservation[] {
       elapsedMs: 1_000,
       costUsd: 1,
       route: "direct",
+      rootSelf: true,
       evaluationClass: family.decomposable ? "economic-decomposable" : "direct-fast-path",
       launchSkewMs: null,
       plannerTurns: 0,
       leafCount: 0,
+      leafTierCounts: {},
+      terraNodeCount: 0,
+      threeLeafCriticalPathGain: null,
       protocolErrors: 0,
       userInterventions: 0,
       criticalFailures: [],
@@ -79,9 +86,13 @@ function passingObservations(): BenchmarkObservation[] {
       elapsedMs: family.decomposable ? 650 : 1_100,
       costUsd: family.decomposable ? 0.35 : 0.5,
       route: family.decomposable ? "fanout" : "direct",
+      rootSelf: !family.decomposable,
       launchSkewMs: family.decomposable ? 1_000 : null,
       plannerTurns: family.decomposable ? 1 : 0,
       leafCount: family.decomposable ? 2 : 0,
+      leafTierCounts: family.decomposable ? { luna: 2 } : {},
+      terraNodeCount: 0,
+      threeLeafCriticalPathGain: null,
     };
     return [direct, candidate];
   });
@@ -104,6 +115,18 @@ describe("real benchmark runner", () => {
 
     expect(benchmarkCheapRootTier(officeRequest, { dispatchOnly: true })).toBe("luna");
     expect(benchmarkCheapRootTier(officeRequest, { dispatchOnly: false })).toBe("terra");
+  });
+
+  it("caps dynamic-tool leaves by profile without rejecting a valid balanced plan", () => {
+    expect(benchmarkDynamicToolLimits("balanced")).toMatchObject({
+      maxConcurrent: 3,
+      maxLeaves: 3,
+      maxWaves: 3,
+    });
+    expect(benchmarkDynamicToolLimits("quality")).toMatchObject({ maxLeaves: 5 });
+    expect(benchmarkDynamicToolLimits("balanced", { maxLeaves: 2 })).toMatchObject({
+      maxLeaves: 2,
+    });
   });
 
   it("disables native collaboration in every benchmark root config", () => {
@@ -132,6 +155,7 @@ describe("real benchmark runner", () => {
 
   it("uses the existing root Sol by default and keeps diagnostic planner modes explicit", () => {
     expect(parseOptions([]).planningMode).toBe("host-sol");
+    expect(parseOptions([]).concurrency).toBe(1);
     expect(parseOptions([]).release).toBe(false);
     expect(parseOptions(["--release", "--full"])).toMatchObject({ release: true, full: true });
     expect(parseOptions(["--dynamic-tool", "--force-delegated"])).toMatchObject({
@@ -148,6 +172,8 @@ describe("real benchmark runner", () => {
     expect(parseOptions(["--instance", "coding-02"]).instance).toBe("coding-02");
     expect(parseOptions(["--balanced-only"]).balancedOnly).toBe(true);
     expect(parseOptions(["--resume"]).resume).toBe(true);
+    expect(parseOptions(["--concurrency", "2"]).concurrency).toBe(2);
+    expect(() => parseOptions(["--concurrency", "3"])).toThrow("must be 1 or 2");
     expect(() => parseOptions(["--resume", "--v3-only"])).toThrow(
       "only supported for paired benchmark runs",
     );
@@ -157,6 +183,16 @@ describe("real benchmark runner", () => {
     expect(() => parseOptions(["--balanced-only", "--v3-only"])).toThrow("mutually exclusive");
     expect(() => parseOptions(["--release", "--balanced-only"])).toThrow(
       "release evidence requires all arms",
+    );
+  });
+
+  it("gives host Sol only sealed calibration evidence for balanced routing", () => {
+    const instance = benchmarkFixture().manifest.instances[0]!;
+    const withoutEligibility = structuredClone(instance);
+    delete withoutEligibility.eligibility;
+    expect(balancedRouteEvidenceInstruction(instance)).toContain("direct Sol p50=120s");
+    expect(balancedRouteEvidenceInstruction(withoutEligibility)).toContain(
+      "complete it in root Sol",
     );
   });
 
@@ -222,6 +258,64 @@ describe("real benchmark runner", () => {
       expect.objectContaining({ name: "Sol planning cost by family", passed: false }),
     );
     expect(balancedReport.passed).toBe(false);
+  });
+
+  it("requires every economic family to pass the balanced time and cost limits", () => {
+    const observations = passingObservations().map((item) =>
+      item.arm === "v3" ? { ...item, arm: "balanced" as const, planningCostUsd: 0.2 } : item,
+    );
+    const outlier = observations.find(
+      (item) => item.arm === "balanced" && item.familyId === "coding-cross-module",
+    )!;
+    outlier.elapsedMs = 900;
+    outlier.costUsd = 0.6;
+
+    const report = evaluateBenchmark(observations, {
+      minimumInstancesPerFamily: 1,
+      candidateArm: "balanced",
+    });
+
+    expect(report.speedRatio).toBeLessThan(0.7);
+    expect(report.costRatio).toBeLessThan(0.4);
+    expect(report.maximumFamilySpeedRatio).toBe(0.9);
+    expect(report.maximumFamilyCostRatio).toBe(0.6);
+    expect(report.gates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "economic wall time by family", passed: false }),
+        expect.objectContaining({ name: "economic cost by family", passed: false }),
+      ]),
+    );
+    expect(report.passed).toBe(false);
+  });
+
+  it("enforces the balanced DAG size and Terra allocation limits", () => {
+    const observations = passingObservations().map((item) =>
+      item.arm === "v3" ? { ...item, arm: "balanced" as const, planningCostUsd: 0.2 } : item,
+    );
+    const fanouts = observations.filter(
+      (item) => item.arm === "balanced" && item.route === "fanout",
+    );
+    for (const [index, item] of fanouts.entries()) {
+      item.leafCount = index < 5 ? 3 : 2;
+      item.leafTierCounts = index === 0 ? { terra: 2, luna: 1 } : { terra: 1, luna: 2 };
+      item.terraNodeCount = index === 0 ? 2 : 1;
+      item.threeLeafCriticalPathGain = item.leafCount === 3 ? 0.1 : null;
+    }
+
+    const report = evaluateBenchmark(observations, {
+      minimumInstancesPerFamily: 1,
+      candidateArm: "balanced",
+    });
+
+    expect(report.gates.filter((item) => !item.passed).map((item) => item.name)).toEqual(
+      expect.arrayContaining([
+        "average fanout leaf count",
+        "three-leaf fanout share",
+        "three-leaf critical-path gain",
+        "Terra nodes per DAG",
+        "Terra leaf ratio",
+      ]),
+    );
   });
 
   it("resumes completed arms and discards only an unterminated JSONL tail", async () => {
@@ -335,6 +429,26 @@ describe("real benchmark runner", () => {
         }),
       ),
     ).toEqual({ mode: "delegate", tier: "terra" });
+    expect(
+      parseRootSolRouteDecision(
+        JSON.stringify({
+          mode: "plan",
+          answer: null,
+          access: "readOnly",
+          merge: "deterministic",
+          risk: "low",
+          tasks: [
+            {
+              goal: "inspect the sealed sources",
+              paths: [],
+              after: [],
+              floor: null,
+              expectedSeconds: 60,
+            },
+          ],
+        }),
+      ),
+    ).toEqual({ mode: "delegate", tier: "luna" });
     expect(
       parseRootSolRouteDecision(
         JSON.stringify({
@@ -568,7 +682,7 @@ describe("evaluateBenchmark", () => {
     );
   });
 
-  it("applies the absolute quality floor to V3 rather than a failed baseline", () => {
+  it("requires the direct baseline to qualify before release comparison", () => {
     const observations = passingObservations();
     for (const observation of observations) {
       if (observation.arm === "direct_sol") observation.qualityScore = 0;
@@ -578,9 +692,17 @@ describe("evaluateBenchmark", () => {
       minimumInstancesPerFamily: 1,
     });
 
-    expect(report.passed).toBe(true);
-    expect(report.gates).toContainEqual(
-      expect.objectContaining({ name: "absolute quality floor", passed: true, actual: 97 }),
+    expect(report.passed).toBe(false);
+    expect(report.baselineQualityFloor).toBe(0);
+    expect(report.gates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "absolute quality floor", passed: true, actual: 97 }),
+        expect.objectContaining({
+          name: "direct baseline quality floor",
+          passed: false,
+          actual: 0,
+        }),
+      ]),
     );
   });
 
@@ -813,6 +935,42 @@ describe("paired benchmark harness", () => {
     expect(fanout?.usageByStage.integration).toHaveLength(1);
     expect(fanout?.observation.evaluationClass).toBe("economic-decomposable");
     expect(result.manifestSha256).toBe(fixture.manifest.manifestSha256);
+  });
+
+  it("waits for concurrent pair workers to settle before reporting a failure", async () => {
+    const fixture = benchmarkFixture();
+    const direct = executorFor("direct_sol", fixture.manifest, []);
+    const candidate = executorFor("v3", fixture.manifest, []);
+    let releaseSecondWorker!: () => void;
+    const secondWorkerStarted = new Promise<void>((resolve) => {
+      releaseSecondWorker = resolve;
+    });
+    const secondWorkerCalls: string[] = [];
+    const execute = (arm: "direct_sol" | "v3") => async (request: BenchmarkExecutionRequest) => {
+      if (request.pairIndex === 0) {
+        await secondWorkerStarted;
+        throw new Error("first pair failed");
+      }
+      releaseSecondWorker();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      secondWorkerCalls.push(arm);
+      return arm === "direct_sol" ? direct(request) : candidate(request);
+    };
+
+    await expect(
+      runPairedBenchmark(
+        fixture.manifest,
+        { direct_sol: execute("direct_sol"), v3: execute("v3") },
+        {
+          artifactReader: fixture.reader,
+          runArtifactReader: fixture.runArtifactReader,
+          environment: fixture.environment,
+          evaluation: { minimumInstancesPerFamily: 1, requireAllFamilies: false },
+          maxConcurrency: 2,
+        },
+      ),
+    ).rejects.toThrow("first pair failed");
+    expect(secondWorkerCalls).toHaveLength(2);
   });
 
   it("accepts Luna direct execution and deterministic fanout reduction", async () => {
@@ -1083,6 +1241,33 @@ describe("paired benchmark harness", () => {
     expect(economicEligibilityFromCalibration(undefined, "coding-cross-module", 3)).toBeUndefined();
     expect(() => economicEligibilityFromCalibration(calibration, "coding-cross-module", 2)).toThrow(
       "corpus requires 2",
+    );
+  });
+
+  it("treats missing or undersized calibration as ineligible for conservative corpus routing", () => {
+    const calibration = parseBenchmarkCalibrationTable(
+      JSON.stringify({
+        schemaVersion: 1,
+        revision: "development-calibration-v8",
+        entries: [
+          {
+            familyId: "algorithm-exact",
+            developmentInstanceIds: ["dev-01", "dev-02", "dev-03"],
+            directSolSeconds: [60, 70, 80],
+            independentLeafP50Seconds: [35, 40, 45],
+          },
+        ],
+      }),
+    );
+
+    expect(
+      qualifiedEconomicEligibilityFromCalibration(calibration, "algorithm-exact", 3),
+    ).toBeUndefined();
+    expect(
+      qualifiedEconomicEligibilityFromCalibration(calibration, "office-document", 3),
+    ).toBeUndefined();
+    expect(() => economicEligibilityFromCalibration(calibration, "algorithm-exact", 3)).toThrow(
+      "does not qualify algorithm-exact",
     );
   });
 
@@ -1448,12 +1633,16 @@ function benchmarkRecord(
       elapsedMs,
       costUsd,
       route,
+      rootSelf: route === "direct",
       launchSkewMs: route === "fanout" ? 1_000 : null,
       plannerTurns: route === "fanout" ? 1 : 0,
       replanCount: 0,
       promotionCount: 0,
       finalReviewTurns: 0,
       leafCount: route === "fanout" ? 2 : 0,
+      leafTierCounts: route === "fanout" ? { luna: 2 } : {},
+      terraNodeCount: route === "fanout" ? 1 : 0,
+      threeLeafCriticalPathGain: null,
       protocolErrors: 0,
       userInterventions: 0,
       criticalFailures: [],

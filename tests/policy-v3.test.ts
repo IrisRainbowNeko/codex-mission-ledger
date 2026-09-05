@@ -11,6 +11,7 @@ import {
   normalizeExecutionLimits,
   normalizeExecutionLimitsForMode,
   rebalanceExecutionPlan,
+  rebalanceExecutionPlanForProfile,
   recommendEffort,
   recommendEffectiveTier,
   recommendTier,
@@ -229,6 +230,63 @@ describe("V3 execution policy", () => {
         }),
       ).toBe("terra");
     }
+  });
+
+  it("keeps Balanced evidence leaves on Luna and reserves one Terra writer", () => {
+    const candidate = plan(
+      [
+        leaf("review", {
+          objective: "Review and synthesize source A",
+          access: "readOnly",
+          ownedPaths: [],
+          domain: "paper",
+          difficulty: 0.75,
+          ambiguity: 0.6,
+          validation: [],
+        }),
+        leaf("slides", {
+          objective: "Create the final presentation",
+          domain: "office",
+          difficulty: 0.3,
+          ambiguity: 0.2,
+          validation: [],
+          capabilities: [{ kind: "skill", name: "presentations" }],
+        }),
+        leaf("second-writer", {
+          objective: "Write supporting output",
+          difficulty: 0.8,
+          ambiguity: 0.6,
+          validation: [],
+        }),
+      ],
+      { integration: { ...plan([]).integration, aggregation: "deterministic" } },
+    );
+
+    expect(rebalanceExecutionPlanForProfile(candidate, "balanced").tasks).toEqual([
+      expect.objectContaining({ id: "review", tier: "luna" }),
+      expect.objectContaining({ id: "slides", tier: "terra" }),
+      expect.objectContaining({ id: "second-writer", tier: "luna" }),
+    ]);
+    expect(rebalanceExecutionPlanForProfile(candidate, "quality").tasks).toEqual([
+      expect.objectContaining({ id: "review", tier: "terra" }),
+      expect.objectContaining({ id: "slides", tier: "terra" }),
+      expect.objectContaining({ id: "second-writer", tier: "terra" }),
+    ]);
+  });
+
+  it("spends the Balanced Terra slot on integration instead of evidence leaves", () => {
+    const candidate = plan(
+      [
+        leaf("a", { access: "readOnly", ownedPaths: [], difficulty: 0.8, validation: [] }),
+        leaf("b", { access: "readOnly", ownedPaths: [], difficulty: 0.8, validation: [] }),
+      ],
+      { integration: { ...plan([]).integration, aggregation: "terra" } },
+    );
+    expect(
+      rebalanceExecutionPlanForProfile(candidate, "balanced").tasks.every(
+        (task) => task.tier === "luna",
+      ),
+    ).toBe(true);
   });
 
   it("admits only fanout that beats serial work with long, independent ready packages", () => {

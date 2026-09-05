@@ -100,7 +100,7 @@ describe("ResponsesPlannerTransport", () => {
       reasoning: { effort: "medium" },
       tools: [],
       store: false,
-      max_output_tokens: 512,
+      max_output_tokens: 350,
       service_tier: "priority",
       text: {
         format: {

@@ -443,7 +443,7 @@ describe("createDefaultRuntime", () => {
         capabilityCatalog: { listSkills: async () => [], listPlugins: async () => [] },
       },
     });
-    const ownedPaths = ["alpha", "beta"].map((id) =>
+    const ownedPaths = ["alpha", "beta", "gamma"].map((id) =>
       Array.from({ length: 20 }, (_, index) => {
         const path = `${id}-${String(index)}.txt`;
         writeFileSync(join(root, path), "x".repeat(4_096));
@@ -454,7 +454,7 @@ describe("createDefaultRuntime", () => {
       access: "readOnly" as const,
       merge: "deterministic" as const,
       risk: "low" as const,
-      tasks: ["alpha", "beta"].map((id, index) => ({
+      tasks: ["alpha", "beta", "gamma"].map((id, index) => ({
         goal: `Inspect ${id}`,
         paths: ownedPaths[index]!,
         after: [],
@@ -466,11 +466,11 @@ describe("createDefaultRuntime", () => {
     const result = await runtime.service.run({
       runId: "runtime-host-plan",
       objective:
-        "Inspect alpha and beta as two independent long-running workstreams and produce a comprehensive evidence report.",
+        "Inspect alpha, beta, and gamma as three independent long-running workstreams and produce a comprehensive evidence report.",
       cwd: root,
       domain: "autoResearch",
       semanticPlan,
-      limits: { maxLeaves: 2 },
+      limits: { maxLeaves: 3 },
     });
 
     expect(result, JSON.stringify(result)).toMatchObject({
@@ -478,11 +478,11 @@ describe("createDefaultRuntime", () => {
       plan: { planId: "host-plan" },
       metrics: {
         plannerSkipped: true,
-        selectedLeafCount: 2,
+        selectedLeafCount: 3,
         usageByStage: { planning: { usage: [] } },
       },
     });
-    expect(appServer.threadStarts).toHaveLength(2);
+    expect(appServer.threadStarts).toHaveLength(3);
     expect(appServer.threadStarts.every((thread) => thread.model === "gpt-5.6-luna")).toBe(true);
     await runtime.close();
   });

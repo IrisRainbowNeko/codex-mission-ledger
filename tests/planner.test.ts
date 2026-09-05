@@ -451,7 +451,7 @@ describe("PlannerService", () => {
           items: {
             required: ["goal", "paths", "after", "floor", "expectedSeconds"],
             properties: {
-              after: { maxItems: 0 },
+              after: { maxItems: 8 },
               expectedSeconds: { type: "number", exclusiveMinimum: 15 },
             },
           },
@@ -1208,6 +1208,124 @@ describe("PlannerService", () => {
     );
   });
 
+  it("normalizes read-only scopes and derives leaf costs without an internal Sol repair", async () => {
+    const transport = new FakePlannerTransport(executionPlan());
+    const planner = new PlannerService(transport, {
+      contextProvider: {
+        load: async () => ({
+          workspaceKind: "git" as const,
+          workspaceDirty: false,
+          workspaceFiles: [],
+          keyFiles: [],
+          capabilities: [],
+          economics: [
+            {
+              tier: "luna" as const,
+              model: "gpt-5.6-luna",
+              uncachedInputPerMillion: 0.2,
+              cachedInputPerMillion: 0.02,
+              outputPerMillion: 1.2,
+            },
+          ],
+        }),
+      },
+    });
+
+    const session = await planner.adoptHostPlan(
+      {
+        objective: "系统分析 RainbowNekoEngine，保持全程只读",
+        cwd: "/workspace/RainbowNekoEngine",
+        hostAccess: "fullAccess",
+        profile: "quality",
+        domain: "coding",
+        constraints: ["全程只读，不修改仓库文件。"],
+        limits: { maxConcurrent: 3, maxLeaves: 3, maxCostUsd: 6 },
+        semanticPlan: hostPlan(
+          [
+            {
+              goal: "分析配置与 CLI",
+              paths: ["/workspace/RainbowNekoEngine/rainbowneko/cfgs/**/*.py"],
+              after: [],
+              floor: "luna",
+              expectedSeconds: 120,
+            },
+            {
+              goal: "分析训练引擎",
+              paths: ["rainbowneko/engine/**"],
+              after: [],
+              floor: "luna",
+              expectedSeconds: 150,
+            },
+            {
+              goal: "分析测试与工程质量",
+              paths: ["tests/*.py"],
+              after: [],
+              floor: "luna",
+              expectedSeconds: 120,
+            },
+          ],
+          { merge: "terra" },
+        ),
+      },
+      "rainbow-neko-analysis",
+    );
+
+    expect(session.plan).toMatchObject({
+      integration: { aggregation: "terra" },
+      tasks: [
+        { tier: "luna", access: "readOnly", ownedPaths: ["rainbowneko/cfgs"] },
+        { tier: "luna", access: "readOnly", ownedPaths: ["rainbowneko/engine"] },
+        { tier: "luna", access: "readOnly", ownedPaths: ["tests"] },
+      ],
+    });
+    expect(session.plan.tasks.every((task) => (task.expectedCostUsd ?? 0) > 0)).toBe(true);
+    expect(
+      session.plan.tasks.reduce((total, task) => total + (task.expectedCostUsd ?? 0), 0),
+    ).toBeLessThan(6);
+    expect(transport.starts).toHaveLength(0);
+    expect(transport.continuations).toHaveLength(0);
+  });
+
+  it("does not promote balanced read-only evidence leaves ahead of a Terra merge", async () => {
+    const transport = new FakePlannerTransport(executionPlan());
+    const planner = new PlannerService(transport);
+    const session = await planner.adoptHostPlan(
+      {
+        objective: "Analyze framework execution and recovery risks without modifying files",
+        cwd: "/workspace/project",
+        profile: "balanced",
+        domain: "coding",
+        semanticPlan: hostPlan(
+          [
+            {
+              goal: "Trace checkpoint, state machine, and recovery risks",
+              paths: ["src/runtime"],
+              after: [],
+              floor: "luna",
+            },
+            {
+              goal: "Review tests and integration risks",
+              paths: ["tests"],
+              after: [],
+              floor: "luna",
+            },
+            {
+              goal: "Inspect architecture boundaries",
+              paths: ["src/core"],
+              after: [],
+              floor: "terra",
+            },
+          ],
+          { merge: "terra" },
+        ),
+      },
+      "balanced-read-only-evidence",
+    );
+
+    expect(session.plan.tasks.map((task) => task.tier)).toEqual(["luna", "luna", "terra"]);
+    expect(transport.starts).toHaveLength(0);
+  });
+
   it("propagates only explicitly selected capabilities to host-plan leaves", async () => {
     const planner = new PlannerService(new FakePlannerTransport(executionPlan()), {
       contextProvider: {
@@ -1367,6 +1485,43 @@ describe("PlannerService", () => {
         "unsafe-writer-run",
       ),
     ).rejects.toMatchObject({ code: "host_plan_requires_internal_sol" });
+  });
+
+  it("adopts Luna preparation followed by one bounded office writer", async () => {
+    const planner = new PlannerService(new FakePlannerTransport(executionPlan()));
+    const session = await planner.adoptHostPlan(
+      {
+        objective: "Build one presentation from two independent source packets",
+        cwd: "/workspace/project",
+        profile: "balanced",
+        domain: "office",
+        semanticPlan: hostPlan(
+          [
+            { goal: "[unit:a] Extract source A", paths: [], after: [], floor: null },
+            { goal: "[unit:b] Extract source B", paths: [], after: [], floor: null },
+            {
+              goal: "Create the final presentation",
+              paths: ["output/result.pptx"],
+              after: [0, 1],
+              floor: "terra",
+            },
+          ],
+          { access: "workspaceWrite", merge: "deterministic" },
+        ),
+      },
+      "office-writer-run",
+    );
+
+    expect(session.plan.tasks).toEqual([
+      expect.objectContaining({ access: "readOnly", tier: "luna", dependsOn: [] }),
+      expect.objectContaining({ access: "readOnly", tier: "luna", dependsOn: [] }),
+      expect.objectContaining({
+        access: "workspaceWrite",
+        tier: "terra",
+        dependsOn: ["leaf-1", "leaf-2"],
+      }),
+    ]);
+    expect(session.plan.integration.aggregation).toBe("deterministic");
   });
 
   it("preserves read-only access for tasks scoped to workspace paths", async () => {
@@ -1831,6 +1986,31 @@ describe("PlannerService", () => {
     expect(transport.starts[0]?.responseFormat.schema).toMatchObject({
       properties: { t: { minItems: 1, maxItems: count } },
     });
+  });
+
+  it("keeps balanced read-only analysis leaves on Luna when Terra performs the merge", async () => {
+    const transport = new FakePlannerTransport(executionPlan());
+    const planner = new PlannerService(transport);
+
+    await planner.plan(
+      {
+        objective: "Analyze a framework architecture and risks without modifying files",
+        cwd: "/workspace",
+        profile: "balanced",
+        domain: "coding",
+        constraints: ["read-only"],
+      },
+      "balanced-analysis",
+      undefined,
+      "adaptive",
+    );
+
+    expect(transport.starts[0]?.prompt).toContain(
+      "Read-only evidence, extraction, research, and preparation stay on Luna",
+    );
+    expect(transport.starts[0]?.prompt).toContain(
+      "A Terra merge consumes the plan's only Terra slot",
+    );
   });
 
   it("rejects multiple leaves on planned_single", async () => {

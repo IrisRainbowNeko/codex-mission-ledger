@@ -78,8 +78,13 @@ describe("Agent Trio Monitor server", () => {
       nextCursor: number;
       hasMore: boolean;
     };
-    expect(firstPage.events).toHaveLength(2);
-    expect(firstPage.events[1]).toMatchObject({ data: { delta: "hello world" } });
+    expect(firstPage.events).toHaveLength(1);
+    expect(firstPage.events[0]).toMatchObject({
+      type: "display",
+      displayKey: "thread-1|turn-1|message-1",
+      displayKind: "agent-message",
+      displayText: "hello world",
+    });
     expect(firstPage.nextCursor).toBeGreaterThan(0);
     expect(firstPage.hasMore).toBe(false);
 

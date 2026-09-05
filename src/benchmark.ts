@@ -282,6 +282,8 @@ export interface PairedBenchmarkOptions {
   armOrder?: "balanced" | "direct-first" | "v3-first";
   /** Candidate profile to compare with direct Sol; defaults to legacy v3. */
   candidateArm?: BenchmarkCandidateArm;
+  /** Concurrent instance pairs. Release runners cap this at two to bound process memory. */
+  maxConcurrency?: number;
   onRecord?: (record: Readonly<BenchmarkRunRecord>) => void | Promise<void>;
 }
 
@@ -304,6 +306,8 @@ export interface BenchmarkObservation {
   /** Sol planning/admission cost attributed to the candidate root and internal planner. */
   planningCostUsd?: number | null;
   route: "direct" | "delegated" | "fanout";
+  /** True when the candidate stayed in the calling Sol instead of invoking the runtime. */
+  rootSelf?: boolean;
   /** Copied from the sealed corpus instance, never inferred from the observed route. */
   evaluationClass?: BenchmarkEvaluationClass;
   launchSkewMs?: number | null;
@@ -314,6 +318,11 @@ export interface BenchmarkObservation {
   promotionCount?: number;
   finalReviewTurns?: number;
   leafCount?: number;
+  leafTierCounts?: Partial<Record<BenchmarkModelUsageEvidence["tier"], number>>;
+  /** Terra leaves plus a Terra integration turn for a DAG. */
+  terraNodeCount?: number;
+  /** Critical-path improvement over the best two-leaf grouping for a three-leaf plan. */
+  threeLeafCriticalPathGain?: number | null;
   protocolErrors?: number;
   userInterventions?: number;
   criticalFailures?: string[];
@@ -333,11 +342,19 @@ export interface BenchmarkEvaluation {
   evaluationClassCounts: Record<BenchmarkEvaluationClass, number>;
   speedRatio: number | null;
   costRatio: number | null;
+  maximumFamilySpeedRatio: number | null;
+  maximumFamilyCostRatio: number | null;
   planningCostRatio: number | null;
   qualityRatio: number | null;
   qualityGap: number | null;
   directOverheadP95: number | null;
   launchSkewP95Ms: number | null;
+  baselineQualityFloor: number | null;
+  averageFanoutLeafCount: number | null;
+  threeLeafShare: number | null;
+  minimumThreeLeafCriticalPathGain: number | null;
+  maximumTerraNodeCount: number | null;
+  terraLeafRatio: number | null;
   gates: BenchmarkGate[];
   errors: string[];
 }
@@ -396,9 +413,28 @@ export function economicEligibilityFromCalibration(
   if (calibration === undefined) {
     return undefined;
   }
+  const eligibility = qualifiedEconomicEligibilityFromCalibration(
+    calibration,
+    familyId,
+    independentUnits,
+  );
+  if (eligibility === undefined) {
+    throw new Error(
+      `calibration ${calibration.table.revision} does not qualify ${familyId}: direct Sol p50 must be at least 90 seconds and every independent leaf p50 must exceed 30 seconds`,
+    );
+  }
+  return eligibility;
+}
+
+/** Returns no eligibility when a candidate family lacks enough calibrated work for fanout. */
+export function qualifiedEconomicEligibilityFromCalibration(
+  calibration: Readonly<LoadedBenchmarkCalibration>,
+  familyId: string,
+  independentUnits: number,
+): BenchmarkEconomicEligibility | undefined {
   const entry = calibration.table.entries.find((candidate) => candidate.familyId === familyId);
   if (entry === undefined) {
-    throw new Error(`calibration ${calibration.table.revision} has no entry for ${familyId}`);
+    return undefined;
   }
   if (entry.independentLeafP50Seconds.length !== independentUnits) {
     throw new Error(
@@ -408,9 +444,7 @@ export function economicEligibilityFromCalibration(
   const directSolP50Seconds = median(entry.directSolSeconds);
   const estimatedMinLeafSeconds = Math.min(...entry.independentLeafP50Seconds);
   if (directSolP50Seconds < 90 || estimatedMinLeafSeconds <= 30) {
-    throw new Error(
-      `calibration ${calibration.table.revision} does not qualify ${familyId}: direct Sol p50 must be at least 90 seconds and every independent leaf p50 must exceed 30 seconds`,
-    );
+    return undefined;
   }
   return {
     independentUnits,
@@ -692,44 +726,73 @@ export async function runPairedBenchmark(
   const records: BenchmarkRunRecord[] = [];
   const observations: BenchmarkObservation[] = [];
   const armOrder = options.armOrder ?? "balanced";
-  for (const [pairIndex, instance] of manifest.instances.entries()) {
-    const instanceSha256 = benchmarkInstanceSha256(instance);
-    const artifacts = await loadVerifiedInstanceArtifacts(instance, options.artifactReader);
-    const candidateArm = options.candidateArm ?? "v3";
-    const order = benchmarkArmOrder(armOrder, pairIndex, candidateArm);
-    const pairRecords = new Map<BenchmarkArm, BenchmarkRunRecord>();
-    for (const [orderInPair, arm] of order.entries()) {
-      const executor = executors[arm];
-      if (typeof executor !== "function") {
-        throw new Error(`missing benchmark executor for ${arm}`);
+  const maxConcurrency = options.maxConcurrency ?? 1;
+  if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1 || maxConcurrency > 2) {
+    throw new Error("maxConcurrency must be an integer between 1 and 2");
+  }
+  const pairResults = new Array<BenchmarkRunRecord[]>(manifest.instances.length);
+  let nextPairIndex = 0;
+  let recordCallback = Promise.resolve();
+  const runPair = async (): Promise<void> => {
+    while (nextPairIndex < manifest.instances.length) {
+      const pairIndex = nextPairIndex;
+      nextPairIndex += 1;
+      const instance = manifest.instances[pairIndex]!;
+      const instanceSha256 = benchmarkInstanceSha256(instance);
+      const artifacts = await loadVerifiedInstanceArtifacts(instance, options.artifactReader);
+      const candidateArm = options.candidateArm ?? "v3";
+      const order = benchmarkArmOrder(armOrder, pairIndex, candidateArm);
+      const pairRecords = new Map<BenchmarkArm, BenchmarkRunRecord>();
+      const completedPair: BenchmarkRunRecord[] = [];
+      for (const [orderInPair, arm] of order.entries()) {
+        const executor = executors[arm];
+        if (typeof executor !== "function") {
+          throw new Error(`missing benchmark executor for ${arm}`);
+        }
+        const record = structuredClone(
+          await executor({
+            arm,
+            pairIndex,
+            orderInPair: orderInPair as 0 | 1,
+            suiteId: manifest.suiteId,
+            manifestSha256: manifest.manifestSha256,
+            instanceSha256,
+            baseline: structuredClone(manifest.baseline),
+            environment: structuredClone(options.environment),
+            instance: structuredClone(instance),
+            artifacts: structuredClone(artifacts),
+          }),
+        );
+        validateRunRecord(record, manifest, instance, arm, instanceSha256, options.environment);
+        applySealedEvaluationClass(record, instance);
+        await verifyRunArtifacts(record, options.runArtifactReader);
+        completedPair.push(record);
+        pairRecords.set(arm, record);
+        if (options.onRecord !== undefined) {
+          recordCallback = recordCallback.then(() => options.onRecord!(structuredClone(record)));
+          await recordCallback;
+        }
       }
-      const record = structuredClone(
-        await executor({
-          arm,
-          pairIndex,
-          orderInPair: orderInPair as 0 | 1,
-          suiteId: manifest.suiteId,
-          manifestSha256: manifest.manifestSha256,
-          instanceSha256,
-          baseline: structuredClone(manifest.baseline),
-          environment: structuredClone(options.environment),
-          instance: structuredClone(instance),
-          artifacts: structuredClone(artifacts),
-        }),
+      assertMatchingEnvironment(
+        requireMapValue(pairRecords, "direct_sol"),
+        requireMapValue(pairRecords, candidateArm),
+        instance,
       );
-      validateRunRecord(record, manifest, instance, arm, instanceSha256, options.environment);
-      applySealedEvaluationClass(record, instance);
-      await verifyRunArtifacts(record, options.runArtifactReader);
-      records.push(record);
-      observations.push(record.observation);
-      pairRecords.set(arm, record);
-      await options.onRecord?.(structuredClone(record));
+      pairResults[pairIndex] = completedPair;
     }
-    assertMatchingEnvironment(
-      requireMapValue(pairRecords, "direct_sol"),
-      requireMapValue(pairRecords, candidateArm),
-      instance,
-    );
+  };
+  const workerResults = await Promise.allSettled(
+    Array.from({ length: Math.min(maxConcurrency, manifest.instances.length) }, () => runPair()),
+  );
+  const failure = workerResults.find(
+    (result): result is PromiseRejectedResult => result.status === "rejected",
+  );
+  if (failure !== undefined) {
+    throw failure.reason;
+  }
+  for (const pair of pairResults) {
+    records.push(...pair);
+    observations.push(...pair.map((record) => record.observation));
   }
 
   return {
@@ -818,6 +881,7 @@ export function evaluateBenchmark(
   const telemetryErrors = benchmarkTelemetryErrors(pairs);
   errors.push(...telemetryErrors);
   const speedRatio = macroRatio(economicPairs, (item) => item.elapsedMs);
+  const maximumFamilySpeedRatio = maximumFamilyRatio(economicPairs, (item) => item.elapsedMs);
   const costComplete = economicPairs.every(
     (pair) =>
       pair.direct.costUsd !== null &&
@@ -826,10 +890,15 @@ export function evaluateBenchmark(
       pair.candidate.costUsd > 0,
   );
   const costRatio = costComplete ? macroRatio(economicPairs, (item) => item.costUsd ?? 0) : null;
+  const maximumFamilyCostRatio = costComplete
+    ? maximumFamilyRatio(economicPairs, (item) => item.costUsd ?? 0)
+    : null;
   const planningCostRatio = maximumFamilyPlanningCostRatio(economicPairs);
   const quality = macroQuality(pairs);
   const absoluteQualityFloor =
     pairs.length === 0 ? null : Math.min(...pairs.map((pair) => pair.candidate.qualityScore));
+  const baselineQualityFloor =
+    pairs.length === 0 ? null : Math.min(...pairs.map((pair) => pair.direct.qualityScore));
   const directOverheadP95 = percentile(
     directFastPathPairs.map((pair) => ratio(pair.candidate.elapsedMs, pair.direct.elapsedMs) - 1),
     0.95,
@@ -850,12 +919,30 @@ export function evaluateBenchmark(
   const directRoutingViolations = directFastPathPairs.filter(
     (pair) =>
       pair.candidate.route !== "direct" ||
+      (candidateArm === "balanced" && pair.candidate.rootSelf !== true) ||
       (pair.candidate.plannerTurns ?? 0) !== 0 ||
       (pair.candidate.leafCount ?? 0) !== 0,
   ).length;
+  const averageFanoutLeafCount = completeMean(
+    actualFanoutPairs,
+    (pair) => pair.candidate.leafCount,
+  );
+  const threeLeafPairs = actualFanoutPairs.filter((pair) => (pair.candidate.leafCount ?? 0) === 3);
+  const threeLeafShare =
+    actualFanoutPairs.length === 0 ? null : threeLeafPairs.length / actualFanoutPairs.length;
+  const minimumThreeLeafCriticalPathGain = completeMinimum(
+    threeLeafPairs,
+    (pair) => pair.candidate.threeLeafCriticalPathGain,
+  );
+  const maximumTerraNodeCount = completeMaximum(
+    actualFanoutPairs,
+    (pair) => pair.candidate.terraNodeCount,
+  );
+  const terraLeafRatio = aggregateTerraLeafRatio(actualFanoutPairs);
   const domainQualityFailures = domainQualityGates(pairs).filter((gate) => !gate.passed);
   const scopedEvaluation = options.requireAllFamilies === false;
   const qualityReportingOnly = candidateArm === "quality";
+  const balancedTopologyGates = candidateArm === "balanced";
 
   const gates: BenchmarkGate[] = [
     qualityReportingOnly
@@ -878,6 +965,26 @@ export function evaluateBenchmark(
           economicPairs.length > 0,
           scopedEvaluation,
         ),
+    qualityReportingOnly
+      ? reportOnlyGate("economic wall time by family", maximumFamilySpeedRatio)
+      : applicableGate(
+          "economic wall time by family",
+          maximumFamilySpeedRatio,
+          0.7,
+          "max",
+          economicPairs.length > 0,
+          scopedEvaluation,
+        ),
+    qualityReportingOnly
+      ? reportOnlyGate("economic cost by family", maximumFamilyCostRatio)
+      : applicableGate(
+          "economic cost by family",
+          maximumFamilyCostRatio,
+          0.4,
+          "max",
+          economicPairs.length > 0,
+          scopedEvaluation,
+        ),
     candidateArm !== "balanced"
       ? reportOnlyGate("Sol planning cost by family", planningCostRatio)
       : applicableGate(
@@ -886,6 +993,58 @@ export function evaluateBenchmark(
           0.25,
           "max",
           economicPairs.length > 0,
+          scopedEvaluation,
+        ),
+    !balancedTopologyGates
+      ? reportOnlyGate("average fanout leaf count", averageFanoutLeafCount)
+      : applicableGate(
+          "average fanout leaf count",
+          averageFanoutLeafCount,
+          2.3,
+          "max",
+          actualFanoutPairs.length > 0,
+          scopedEvaluation,
+        ),
+    !balancedTopologyGates
+      ? reportOnlyGate("three-leaf fanout share", threeLeafShare)
+      : applicableGate(
+          "three-leaf fanout share",
+          threeLeafShare,
+          0.2,
+          "max",
+          actualFanoutPairs.length > 0,
+          scopedEvaluation,
+        ),
+    !balancedTopologyGates
+      ? reportOnlyGate("three-leaf critical-path gain", minimumThreeLeafCriticalPathGain)
+      : threeLeafPairs.length === 0
+        ? notApplicableGate("three-leaf critical-path gain", 0.2)
+        : applicableGate(
+            "three-leaf critical-path gain",
+            minimumThreeLeafCriticalPathGain,
+            0.2,
+            "min",
+            threeLeafPairs.length > 0,
+            scopedEvaluation,
+          ),
+    !balancedTopologyGates
+      ? reportOnlyGate("Terra nodes per DAG", maximumTerraNodeCount)
+      : applicableGate(
+          "Terra nodes per DAG",
+          maximumTerraNodeCount,
+          1,
+          "max",
+          actualFanoutPairs.length > 0,
+          scopedEvaluation,
+        ),
+    !balancedTopologyGates
+      ? reportOnlyGate("Terra leaf ratio", terraLeafRatio)
+      : applicableGate(
+          "Terra leaf ratio",
+          terraLeafRatio,
+          0.25,
+          "max",
+          actualFanoutPairs.length > 0,
           scopedEvaluation,
         ),
     {
@@ -910,6 +1069,7 @@ export function evaluateBenchmark(
       limit: "every domain passes",
     },
     gate("absolute quality floor", absoluteQualityFloor, 60, "min"),
+    gate("direct baseline quality floor", baselineQualityFloor, 60, "min"),
     qualityReportingOnly
       ? reportOnlyGate("direct overhead p95", directOverheadP95)
       : applicableGate(
@@ -947,11 +1107,19 @@ export function evaluateBenchmark(
     evaluationClassCounts,
     speedRatio,
     costRatio,
+    maximumFamilySpeedRatio,
+    maximumFamilyCostRatio,
     planningCostRatio,
     qualityRatio: quality.ratio,
     qualityGap: quality.gap,
     directOverheadP95,
     launchSkewP95Ms,
+    baselineQualityFloor,
+    averageFanoutLeafCount,
+    threeLeafShare,
+    minimumThreeLeafCriticalPathGain,
+    maximumTerraNodeCount,
+    terraLeafRatio,
     gates,
     errors,
   };
@@ -1077,6 +1245,32 @@ function validateObservation(value: BenchmarkObservation): void {
   }
   if (value.hostPlanned !== undefined && typeof value.hostPlanned !== "boolean") {
     throw new Error("hostPlanned must be boolean when provided");
+  }
+  if (value.rootSelf !== undefined && typeof value.rootSelf !== "boolean") {
+    throw new Error("rootSelf must be boolean when present");
+  }
+  if (value.threeLeafCriticalPathGain !== undefined && value.threeLeafCriticalPathGain !== null) {
+    if (
+      !Number.isFinite(value.threeLeafCriticalPathGain) ||
+      value.threeLeafCriticalPathGain < 0 ||
+      value.threeLeafCriticalPathGain > 1
+    ) {
+      throw new Error("threeLeafCriticalPathGain must be null or between 0 and 1");
+    }
+  }
+  if (value.terraNodeCount !== undefined) {
+    requireNonNegativeInteger(value.terraNodeCount, "terraNodeCount");
+  }
+  if (value.leafTierCounts !== undefined) {
+    if (!isRecord(value.leafTierCounts)) {
+      throw new Error("leafTierCounts must be an object");
+    }
+    for (const [tier, count] of Object.entries(value.leafTierCounts)) {
+      if (!["luna", "terra", "sol", "other"].includes(tier)) {
+        throw new Error(`leafTierCounts contains unknown tier: ${tier}`);
+      }
+      requireNonNegativeInteger(count, `leafTierCounts.${tier}`);
+    }
   }
   for (const [name, number] of [
     ["launchSkewMs", value.launchSkewMs],
@@ -1340,6 +1534,10 @@ function validateRunRecord(
     "promotionCount",
     "finalReviewTurns",
     "leafCount",
+    "rootSelf",
+    "leafTierCounts",
+    "terraNodeCount",
+    "threeLeafCriticalPathGain",
     "protocolErrors",
     "userInterventions",
     "criticalFailures",
@@ -1991,6 +2189,61 @@ function macroRatio(
   return mean(ratios);
 }
 
+function maximumFamilyRatio(
+  pairs: readonly Pair[],
+  value: (observation: BenchmarkObservation) => number,
+): number | null {
+  const ratios = [...groupPairs(pairs).values()].map((group) =>
+    ratio(
+      group.reduce((total, pair) => total + value(pair.candidate), 0),
+      group.reduce((total, pair) => total + value(pair.direct), 0),
+    ),
+  );
+  return ratios.length === 0 ? null : Math.max(...ratios);
+}
+
+function completeMean<T>(
+  items: readonly T[],
+  value: (item: T) => number | undefined,
+): number | null {
+  if (items.length === 0) return null;
+  const values = items.map(value);
+  return values.some((item) => item === undefined) ? null : mean(values as number[]);
+}
+
+function completeMinimum<T>(
+  items: readonly T[],
+  value: (item: T) => number | null | undefined,
+): number | null {
+  if (items.length === 0) return null;
+  const values = items.map(value);
+  return values.some((item) => item === undefined || item === null)
+    ? null
+    : Math.min(...(values as number[]));
+}
+
+function completeMaximum<T>(
+  items: readonly T[],
+  value: (item: T) => number | undefined,
+): number | null {
+  if (items.length === 0) return null;
+  const values = items.map(value);
+  return values.some((item) => item === undefined) ? null : Math.max(...(values as number[]));
+}
+
+function aggregateTerraLeafRatio(pairs: readonly Pair[]): number | null {
+  if (pairs.length === 0) return null;
+  let terra = 0;
+  let total = 0;
+  for (const pair of pairs) {
+    const counts = pair.candidate.leafTierCounts;
+    if (counts === undefined) return null;
+    terra += counts.terra ?? 0;
+    total += Object.values(counts).reduce((sum, count) => sum + (count ?? 0), 0);
+  }
+  return total === 0 ? null : terra / total;
+}
+
 function macroQuality(pairs: readonly Pair[]): { ratio: number | null; gap: number | null } {
   const byDomain = new Map<BenchmarkDomain, Pair[]>();
   for (const pair of pairs) {
@@ -2106,6 +2359,10 @@ function gate(
 
 function reportOnlyGate(name: string, actual: number | null): BenchmarkGate {
   return { name, passed: true, actual, limit: "reported only" };
+}
+
+function notApplicableGate(name: string, limit: number): BenchmarkGate {
+  return { name, passed: true, actual: "not applicable", limit };
 }
 
 function applicableGate(

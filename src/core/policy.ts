@@ -309,24 +309,89 @@ export function recommendEffectiveTier(
 
 /** Rebalances planner hints without another model turn or a semantic plan repair. */
 export function rebalanceExecutionPlan(plan: ExecutionPlan): ExecutionPlan {
+  return rebalanceExecutionPlanForProfile(plan);
+}
+
+export function rebalanceExecutionPlanForProfile(
+  plan: ExecutionPlan,
+  profile: OptimizationProfile = "quality",
+): ExecutionPlan {
+  if (profile === "quality") {
+    return {
+      ...plan,
+      tasks: plan.tasks.map((task) => withEffectiveTier(task, recommendEffectiveTier(task))),
+    };
+  }
+
+  const terraIntegration = plan.integration.aggregation === "terra";
+  const candidates = plan.tasks.map((task) => balancedTierCandidate(task, terraIntegration));
+  const automaticTerraIndex = terraIntegration
+    ? -1
+    : (candidates
+        .map((tier, index) => ({ tier, index, score: balancedTerraPriority(plan.tasks[index]!) }))
+        .filter(({ tier, index }) => tier === "terra" && plan.tasks[index]?.minTier !== "terra")
+        .sort((left, right) => right.score - left.score || left.index - right.index)[0]?.index ??
+      -1);
   return {
     ...plan,
-    tasks: plan.tasks.map((task) => {
-      const tier = recommendEffectiveTier(task);
-      return {
-        ...task,
-        tier,
-        effort:
-          tier === "luna"
-            ? (task.access === "workspaceWrite" && task.domain !== "office") ||
-              task.domain === "algorithm"
-              ? "medium"
-              : task.critical
-                ? recommendEffort(tier, task)
-                : "low"
-            : recommendEffort(tier, task),
-      };
+    tasks: plan.tasks.map((task, index) => {
+      const proposed = candidates[index] ?? "luna";
+      const tier =
+        proposed === "terra" && task.minTier !== "terra" && index !== automaticTerraIndex
+          ? "luna"
+          : proposed;
+      return withEffectiveTier(task, tier);
     }),
+  };
+}
+
+function balancedTierCandidate(task: LeafTask, terraIntegration: boolean): ModelTier {
+  if (task.minTier === "sol") return "sol";
+  if (task.minTier === "terra") return "terra";
+  const objective = task.objective ?? "";
+  const hardSpecialist =
+    task.domain === "algorithm" ||
+    /\b(?:cryptograph|race condition|memory ordering|formal proof|numerical stability)\b/i.test(
+      objective,
+    ) ||
+    /(?:密码|竞态|内存序|形式化证明|数值稳定)/u.test(objective);
+  if ((task.difficulty >= 0.85 || task.ambiguity >= 0.8) && hardSpecialist) return "sol";
+  if (task.access === "readOnly" || terraIntegration) return "luna";
+  if (task.domain === "office") return "terra";
+  const validatorStrength: ValidatorStrength =
+    task.validatorStrength ?? (task.validation.length > 0 ? "strong" : "weak");
+  if (
+    task.difficulty >= 0.7 ||
+    task.ambiguity >= 0.55 ||
+    (task.critical && validatorStrength === "none")
+  ) {
+    return "terra";
+  }
+  return "luna";
+}
+
+function balancedTerraPriority(task: LeafTask): number {
+  return (
+    (task.access === "workspaceWrite" ? 2 : 0) +
+    (task.domain === "office" ? 1 : 0) +
+    task.difficulty +
+    task.ambiguity
+  );
+}
+
+function withEffectiveTier(task: LeafTask, tier: ModelTier): LeafTask {
+  return {
+    ...task,
+    tier,
+    effort:
+      tier === "luna"
+        ? (task.access === "workspaceWrite" && task.domain !== "office") ||
+          task.domain === "algorithm"
+          ? "medium"
+          : task.critical
+            ? recommendEffort(tier, task)
+            : "low"
+        : recommendEffort(tier, task),
   };
 }
 

@@ -125,6 +125,8 @@ interface MutableRunState {
   plannerSkipped?: boolean;
   integrationSkipped?: boolean;
   routeSource: "host_sol" | "internal_sol" | "deterministic_direct" | undefined;
+  routeEvidence: BatchMetrics["routeEvidence"];
+  routeAdjustment: BatchMetrics["routeAdjustment"];
   estimatedDirectCostUsd: number | null | undefined;
   estimatedFanoutCostUsd: number | null | undefined;
   estimatedDirectSeconds: number | null | undefined;
@@ -517,6 +519,8 @@ export class AgentTrioService {
         estimatedDirectSeconds: undefined,
         estimatedFanoutSeconds: undefined,
         routeSource: undefined,
+        routeEvidence: undefined,
+        routeAdjustment: undefined,
       };
       const stopControl = this.#watchCancellation(runId, controller);
       const operation = this.#execute(state, controller.signal)
@@ -656,6 +660,8 @@ export class AgentTrioService {
     state.estimatedDirectSeconds = decision.estimatedDirectSeconds;
     state.estimatedFanoutSeconds = decision.estimatedFanoutSeconds;
     state.routeSource = decision.routeSource;
+    state.routeEvidence = decision.routeEvidence;
+    state.routeAdjustment = decision.routeAdjustment;
     state.plannerSkipped = decision.route === "direct";
 
     if (decision.route === "waiting_input") {
@@ -804,6 +810,8 @@ export class AgentTrioService {
       state.estimatedDirectSeconds = finalAdmission.estimatedDirectSeconds;
       state.estimatedFanoutSeconds = finalAdmission.estimatedFanoutSeconds;
       state.routeSource = finalAdmission.routeSource ?? state.routeSource;
+      state.routeEvidence = finalAdmission.routeEvidence ?? state.routeEvidence;
+      state.routeAdjustment = finalAdmission.routeAdjustment ?? state.routeAdjustment;
       if (finalAdmission.route !== "fanout") {
         state.snapshot.result.plan = null;
         delete state.snapshot.plannerSession;
@@ -2234,6 +2242,8 @@ export class AgentTrioService {
           ? {}
           : { estimatedFanoutCostUsd: state.estimatedFanoutCostUsd }),
         ...(state.routeSource === undefined ? {} : { routeSource: state.routeSource }),
+        ...(state.routeEvidence === undefined ? {} : { routeEvidence: state.routeEvidence }),
+        ...(state.routeAdjustment === undefined ? {} : { routeAdjustment: state.routeAdjustment }),
         ...(selectedPlan === null
           ? state.snapshot.request.domain === undefined
             ? {}
@@ -2809,6 +2819,8 @@ function recoveredRunState(
     estimatedDirectSeconds: snapshot.result.metrics?.estimatedDirectSeconds,
     estimatedFanoutSeconds: snapshot.result.metrics?.estimatedFanoutSeconds,
     routeSource: snapshot.result.metrics?.routeSource,
+    routeEvidence: snapshot.result.metrics?.routeEvidence,
+    routeAdjustment: snapshot.result.metrics?.routeAdjustment,
   };
 }
 
@@ -2829,6 +2841,8 @@ function recoveredWaitingRunState(snapshot: JobSnapshot, now: Date): MutableRunS
     estimatedDirectSeconds: snapshot.result.metrics?.estimatedDirectSeconds,
     estimatedFanoutSeconds: snapshot.result.metrics?.estimatedFanoutSeconds,
     routeSource: snapshot.result.metrics?.routeSource,
+    routeEvidence: snapshot.result.metrics?.routeEvidence,
+    routeAdjustment: snapshot.result.metrics?.routeAdjustment,
   };
 }
 
@@ -2896,7 +2910,8 @@ function integrationIssueTriggers(
   now: Date,
 ): ReplanTrigger[] {
   const taskIds = new Set(plan.tasks.map((task) => task.id));
-  return issues.map((issue) => {
+  const triggers: ReplanTrigger[] = [];
+  for (const issue of issues) {
     const unknown = issue.taskIds.find((taskId) => !taskIds.has(taskId));
     if (unknown !== undefined) {
       throw new AgentTrioServiceError(
@@ -2904,13 +2919,17 @@ function integrationIssueTriggers(
         `Terra integration issue references unknown task '${unknown}'`,
       );
     }
-    return {
+    if (issue.requiresPlanPatch === false) {
+      continue;
+    }
+    triggers.push({
       type: issue.type,
       taskIds: [...new Set(issue.taskIds)].sort(),
       summary: issue.summary,
       observedAt: now.toISOString(),
-    };
-  });
+    });
+  }
+  return triggers;
 }
 
 function integrationValidationTriggers(
@@ -3542,6 +3561,10 @@ function finishSnapshotMetrics(
       ? {}
       : { estimatedFanoutCostUsd: existing.estimatedFanoutCostUsd }),
     ...(existing?.routeSource === undefined ? {} : { routeSource: existing.routeSource }),
+    ...(existing?.routeEvidence === undefined ? {} : { routeEvidence: existing.routeEvidence }),
+    ...(existing?.routeAdjustment === undefined
+      ? {}
+      : { routeAdjustment: existing.routeAdjustment }),
     ...(existing?.selectedDomain === undefined ? {} : { selectedDomain: existing.selectedDomain }),
     ...(existing?.selectedWaveCount === undefined
       ? {}

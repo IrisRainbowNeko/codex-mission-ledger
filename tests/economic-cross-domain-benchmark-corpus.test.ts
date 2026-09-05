@@ -359,6 +359,40 @@ describe("economic cross-domain benchmark corpus", () => {
     }
   });
 
+  it("accepts hyphenated deployment durations in frozen research briefs", async () => {
+    const corpus = createEconomicCrossDomainCorpus();
+    const byPath = new Map(corpus.artifacts.map((artifact) => [artifact.path, artifact.bytes]));
+    const instance = corpus.manifest.instances.find(
+      (candidate) => candidate.instanceId === "research-economic-01",
+    )!;
+    const validatorSeal = instance.artifacts.find((artifact) => artifact.role === "validator")!;
+    const sealed = parseSealedBenchmarkValidatorV1(
+      JSON.parse(new TextDecoder().decode(byPath.get(validatorSeal.path)!)) as unknown,
+    );
+    const commandChecks = ["eligible", "alpha", "gamma"].map((suffix) =>
+      sealed.commandChecks.find((candidate) => candidate.id === `research-1b-screen-01-${suffix}`)!,
+    );
+    const validator = { ...sealed, commandChecks };
+    const validOutput =
+      "[item:research-1b-screen-01] Requirements are score >=80, critical defects <=5%, and deployment <=10 weeks. Alpha scored 86 with 7% defects and 9-week deployment, failing defects by 2 percentage points. [SRC-RESEARCH-1B-SCREEN-01-ALPHA] Beta scored 83 with 4% defects and 9-week deployment, satisfying all thresholds and making Beta the sole eligible candidate. [SRC-RESEARCH-1B-SCREEN-01-BETA] Gamma scored 78 with 5% defects and 12-week deployment, failing score by 2 points and deployment by 2 weeks. [SRC-RESEARCH-1B-SCREEN-01-GAMMA]";
+    const workspace = await mkdtemp(join(tmpdir(), "agent-trio-economic-research-wording-"));
+    try {
+      await mkdir(join(workspace, ".agent-trio-benchmark"));
+      await writeFile(
+        join(workspace, ".agent-trio-benchmark", "model-output.txt"),
+        validOutput,
+        "utf8",
+      );
+      await expect(runSealedBenchmarkValidator(validator, { workspace })).resolves.toMatchObject({
+        score: 100,
+        passedChecks: 3,
+        totalChecks: 3,
+      });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("accepts exact office margins and day counts in equivalent wording", async () => {
     const corpus = createEconomicCrossDomainCorpus();
     const byPath = new Map(corpus.artifacts.map((artifact) => [artifact.path, artifact.bytes]));

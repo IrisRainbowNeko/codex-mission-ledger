@@ -445,12 +445,14 @@ function verifyProfileSkill(
 function hasSafeMcpInvocationContract(skillText: string): boolean {
   return (
     skillText.includes("flat top-level fields") &&
-    skillText.includes("Never wrap the whole argument object") &&
+    /Never wrap the\s+whole argument object/mu.test(skillText) &&
     skillText.includes("Only if submit succeeds") &&
     skillText.includes("If submit returns an MCP/tool error") &&
     skillText.includes("do not call status") &&
     /valid only\s+inside `semanticPlan`/mu.test(skillText) &&
     /never send either as a top-level\s+tool argument/mu.test(skillText) &&
+    skillText.includes("`access=readOnly`") &&
+    skillText.includes("`access=workspaceWrite`") &&
     /With `strategy=direct`, omit\s+`semanticPlan`/mu.test(skillText) &&
     skillText.includes("`directTier`") &&
     /exactly\s+`luna` or `terra`/mu.test(skillText) &&

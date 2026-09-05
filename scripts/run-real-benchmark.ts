@@ -43,6 +43,7 @@ import {
   type BenchmarkArtifactReader,
   type BenchmarkArm,
   type BenchmarkCandidateArm,
+  type BenchmarkCorpusInstance,
   type BenchmarkExecutionRequest,
   type BenchmarkExecutors,
   type BenchmarkModelUsageEvidence,
@@ -70,6 +71,8 @@ import type {
   AgentTrioRequest,
   BatchResult,
   CapabilityRef,
+  ExecutionLimits,
+  ExecutionPlan,
   HostSemanticPlan,
   JobSnapshot,
   ModelUsage,
@@ -148,6 +151,7 @@ export interface RunnerOptions {
   balancedOnly: boolean;
   v3Only: boolean;
   resume: boolean;
+  concurrency: 1 | 2;
   planningMode: "host-sol" | "internal-sol" | "diagnostic-host";
 }
 
@@ -428,6 +432,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
             : { minimumInstancesPerFamily: 1, requireAllFamilies: false }),
           candidateArm: profile,
         },
+        maxConcurrency: options.concurrency,
         onRecord: async (record) => {
           const key = benchmarkRecordKey(record.observation);
           if (!completedRecords.has(key)) {
@@ -709,6 +714,7 @@ export function parseOptions(argv: readonly string[]): RunnerOptions {
   let balancedOnly = false;
   let v3Only = false;
   let resume = false;
+  let concurrency: 1 | 2 = 1;
   let planningMode: RunnerOptions["planningMode"] = "host-sol";
   const planningFlags = new Set<string>();
   for (let index = 0; index < argv.length; index += 1) {
@@ -727,6 +733,13 @@ export function parseOptions(argv: readonly string[]): RunnerOptions {
       v3Only = true;
     } else if (argument === "--resume") {
       resume = true;
+    } else if (argument === "--concurrency") {
+      const parsed = Number(value(index, argument));
+      if (parsed !== 1 && parsed !== 2) {
+        throw new Error("--concurrency must be 1 or 2");
+      }
+      concurrency = parsed;
+      index += 1;
     } else if (argument === "--force-fanout") {
       forceFanout = true;
     } else if (argument === "--force-delegated") {
@@ -764,7 +777,7 @@ export function parseOptions(argv: readonly string[]): RunnerOptions {
       index += 1;
     } else if (argument === "--help" || argument === "-h") {
       process.stdout.write(
-        "usage: tsx scripts/run-real-benchmark.ts [--full] [--release --recovery-profile] [--dynamic-tool] [--resume] [--balanced-only|--v3-only] [--force-delegated|--force-fanout] [--internal-sol-plan|--host-sol-plan|--host-plan] [--family ID] [--instance ID] [--limit N] [--corpus DIR] [--evidence DIR] [--output FILE]\n\nThe normal run executes direct Sol, balanced, and quality while reusing one verified direct record per instance. --balanced-only runs only the paired direct Sol and balanced arms. Host Sol selects root completion, one delegated worker, or a semantic DAG for balanced; quality always delegates and retains the wider V3.3 policy. --internal-sol-plan and --host-plan are diagnostics. --resume reuses verified completed arms from the output .records.jsonl only with unchanged code, corpus, provider configuration, and evidence paths. --v3-only, forced delegation, and forced fanout are diagnostics and never release evidence. --release requires --recovery-profile, --dynamic-tool, a complete calibration-qualified corpus, and natural host-Sol routing.\n",
+        "usage: tsx scripts/run-real-benchmark.ts [--full] [--release --recovery-profile] [--dynamic-tool] [--resume] [--concurrency 1|2] [--balanced-only|--v3-only] [--force-delegated|--force-fanout] [--internal-sol-plan|--host-sol-plan|--host-plan] [--family ID] [--instance ID] [--limit N] [--corpus DIR] [--evidence DIR] [--output FILE]\n\nThe normal run executes direct Sol, balanced, and quality while reusing one verified direct record per instance. --balanced-only runs only the paired direct Sol and balanced arms. Host Sol selects root completion, one delegated worker, or a semantic DAG for balanced; quality always delegates and retains the wider V3.3 policy. --concurrency is capped at two instance pairs. --internal-sol-plan and --host-plan are diagnostics. --resume reuses verified completed arms from the output .records.jsonl only with unchanged code, corpus, provider configuration, and evidence paths. --v3-only, forced delegation, and forced fanout are diagnostics and never release evidence. --release requires --recovery-profile, --dynamic-tool, a complete calibration-qualified corpus, and natural host-Sol routing.\n",
       );
       process.exit(0);
     } else {
@@ -811,6 +824,7 @@ export function parseOptions(argv: readonly string[]): RunnerOptions {
     balancedOnly,
     v3Only,
     resume,
+    concurrency,
     planningMode,
   };
 }
@@ -1721,18 +1735,7 @@ async function pairRuntimeFor(
         const canonicalRequest = markInternalPlannerDispatch({
           ...parsed,
           objective: promptFor(request),
-          limits: {
-            ...requestedLimits,
-            maxConcurrent: Math.min(requestedLimits.maxConcurrent ?? 3, 3),
-            maxLeaves: Math.min(requestedLimits.maxLeaves ?? 5, 5),
-            maxWaves: Math.min(requestedLimits.maxWaves ?? 3, 3),
-            maxSolLeaves: Math.min(requestedLimits.maxSolLeaves ?? 1, 1),
-            maxReplans: Math.min(requestedLimits.maxReplans ?? 1, 1),
-            deadlineMs: Math.min(
-              requestedLimits.deadlineMs ?? BENCHMARK_RUN_DEADLINE_MS,
-              BENCHMARK_RUN_DEADLINE_MS,
-            ),
-          },
+          limits: benchmarkDynamicToolLimits(parsed.profile, requestedLimits),
         });
         const batch = await activeRuntime.service.handle(canonicalRequest);
         toolState.runs.push({ request: canonicalRequest, batch });
@@ -1873,6 +1876,25 @@ async function pairRuntimeFor(
     }
     throw error;
   }
+}
+
+export function benchmarkDynamicToolLimits(
+  profile: "balanced" | "quality" | undefined,
+  requested: Partial<ExecutionLimits> = {},
+): Partial<ExecutionLimits> {
+  const profileMaxLeaves = profile === "quality" ? 5 : 3;
+  return {
+    ...requested,
+    maxConcurrent: Math.min(requested.maxConcurrent ?? 3, 3),
+    maxLeaves: Math.min(requested.maxLeaves ?? profileMaxLeaves, profileMaxLeaves),
+    maxWaves: Math.min(requested.maxWaves ?? 3, 3),
+    maxSolLeaves: Math.min(requested.maxSolLeaves ?? 1, 1),
+    maxReplans: Math.min(requested.maxReplans ?? 1, 1),
+    deadlineMs: Math.min(
+      requested.deadlineMs ?? BENCHMARK_RUN_DEADLINE_MS,
+      BENCHMARK_RUN_DEADLINE_MS,
+    ),
+  };
 }
 
 async function assertBenchmarkMcpAvailable(appServer: AppServer, threadId: string): Promise<void> {
@@ -2373,9 +2395,12 @@ async function executeDynamicToolV3(
                 benchmarkProfile(request.arm) === "balanced"
                   ? "MODE: ROUTE. Make one semantic choice. For a clear single deliverable needing one focused inspect/edit/verify sequence, or indivisible Sol reasoning, fully solve and verify it now without calling a tool; never return a promise or future-tense status. Otherwise call mcp__agent_trio__agent_trio exactly once."
                   : "MODE: TOOL. Quality profile always delegates. Do not solve, inspect, modify, or validate the task yourself. Call mcp__agent_trio__agent_trio exactly once.",
-                `Reuse the supplied task as objective and set cwd=${JSON.stringify(pair.workspace)}, domain=${JSON.stringify(domainForFamily(request.instance.familyId))}, profile=${benchmarkProfile(request.arm)}, capabilities=${JSON.stringify(routeRequest.capabilities)}, action=run, hostAccess=workspaceWrite, hostApproval=never, and integrate=true. Do not invent another permission or approval value.`,
-                "For a tightly coupled task choose strategy=direct and directTier=luna or terra. Use Luna for bounded local implementation, extraction, mechanical editing, and exact work with a clear contract. Use Terra for state recovery, resume/idempotency logic, coupled multi-file work, ordinary debugging, review/synthesis, and one office artifact.",
-                `For useful parallel work choose strategy=fanout and provide semanticPlan with access=${pair.workspaceConfig.access} and ${benchmarkProfile(request.arm) === "balanced" ? "2-3" : "2-5"} complete tasks. Set merge to deterministic unless semantic synthesis truly requires terra and set risk to low, medium, or high. Default to two tasks and group homogeneous inputs. ${benchmarkProfile(request.arm) === "balanced" ? "Use three only for three substantial streams when it lowers the critical path by at least 20% versus the best two-task grouping; every leaf must exceed 30 seconds and total serial work must be at least 90 seconds." : "Use three for three real streams and reserve four or five for large corpora; every leaf must exceed 15 seconds."} Every added leaf must reduce the critical path.`,
+                ...(benchmarkProfile(request.arm) === "balanced"
+                  ? [balancedRouteEvidenceInstruction(request.instance)]
+                  : []),
+                `Reuse the supplied task as objective and set cwd=${JSON.stringify(pair.workspace)}, domain=${JSON.stringify(domainForFamily(request.instance.familyId))}, profile=${benchmarkProfile(request.arm)}, capabilities=${JSON.stringify(routeRequest.capabilities)}, action=run, hostAccess=workspaceWrite, hostApproval=never, and integrate=true. Do not send monitorFirst with action=run. Do not invent another permission or approval value.`,
+                "For a tightly coupled task choose strategy=direct and directTier=luna or terra only when a long, tool-led worker is known to save cost without adding latency. Luna handles bounded mechanical work; Terra handles one coupled task.",
+                `For useful parallel work choose strategy=fanout and provide semanticPlan with access=${pair.workspaceConfig.access} and ${benchmarkProfile(request.arm) === "balanced" ? "2-3" : "2-5"} complete tasks. Set merge to deterministic unless semantic synthesis truly requires terra and set risk to low, medium, or high. Default to two tasks and group homogeneous inputs. ${benchmarkProfile(request.arm) === "balanced" ? "Use three only for three named units, at least 120 seconds total, and a 20% critical-path gain over two leaves; every leaf must exceed 30 seconds. Use disjoint paths or [unit:id] goal tags as structural evidence." : "Use three for three real streams and reserve four or five for large corpora; every leaf must exceed 15 seconds."} Every added leaf must reduce the critical path.`,
                 "Each semanticPlan task contains only goal, paths, after, floor, and expectedSeconds. In workspace-write plans, paths grant exclusive write ownership: make them pairwise disjoint and include only files or directories that leaf may modify. Do not include README, tests, shared manifests, or other read-only context unless exactly one leaf must edit them. Default floor=null for Luna; use Terra or at most one Sol specialist only when the leaf truly requires it. Use only the supplied objective and Workspace file index, and do not add review or audit leaves.",
                 "After the tool returns reply only: Agent Trio completed. Do not repeat finalResponse.",
               ].join("\n\n");
@@ -2677,11 +2702,12 @@ async function generateHostSolRouteDecision(
         [
           "Choose the cheapest execution shape for the task already supplied.",
           profile === "balanced"
-            ? "MODE: ROUTE. Fully complete and verify a clear single deliverable here when it is confined to one file or target plus its focused verification, or when it needs indivisible Sol reasoning. Use the required inspect/edit/test tools before returning mode=direct; a promise, plan, or future-tense status is not completion. A few ordinary tool calls are still direct work, and delegating an explicit single-file fix or similarly bounded task is a routing failure. Otherwise delegate one worker or a useful DAG. Cost and latency targets are guidance, not output-contract gates."
+            ? "MODE: ROUTE. Complete and verify the task here when it has one deliverable, one repository, one algorithm, one office artifact, quick research, recovery work, indivisible Sol reasoning, or uncertain delegation economics. Use required tools before mode=direct; a promise or plan is not completion. Delegate only when the cheaper route has concrete structural and economic evidence."
             : "MODE: ROUTE. Quality profile always delegates. Never solve the task in this turn; choose one worker or a useful DAG.",
-          `${profile === "balanced" ? "To complete now, return mode=direct with the full final answer in answer, access/merge/risk=null, and tasks=[]. " : ""}To delegate the whole bounded task, use the exact answer delegate:luna or delegate:terra. Prefer Luna for mechanical work; use Terra for state recovery, resume/idempotency logic, coupled debugging, review/synthesis, or one office artifact.`,
-          `Return mode=plan and answer=null only when at least two independent tasks each exceed ${String(minimumSeconds)} seconds${profile === "balanced" ? " and total serial work is at least 90 seconds" : ""}. Set access=${pair.workspaceConfig.access}, merge=deterministic unless semantic synthesis requires terra, and risk=low, medium, or high from the actual task.`,
-          `For a plan use the smallest useful ${profile === "balanced" ? "2-3" : "2-5"} tasks. Group homogeneous inputs.${profile === "balanced" ? " Use three only when it lowers the critical path by at least 20% versus the best two-task grouping." : ""} For homogeneous path partitions set goal=null; otherwise keep it under 80 characters. paths are workspace-relative; after contains zero-based prerequisite indexes. Use floor=null unless Luna is insufficient.`,
+          ...(profile === "balanced" ? [balancedRouteEvidenceInstruction(request.instance)] : []),
+          `${profile === "balanced" ? "To complete now, return mode=direct with the full final answer in answer, access/merge/risk=null, and tasks=[]. " : ""}Delegate one worker only for long tool-led work with a known cost advantage and no latency penalty; answer exactly delegate:luna or delegate:terra. Never return mode=plan with fewer than two tasks.`,
+          `Return mode=plan and answer=null only for named independent units above ${String(minimumSeconds)} seconds${profile === "balanced" ? " and at least 90 seconds total" : ""}. Set access=${pair.workspaceConfig.access}, merge=deterministic unless cross-source prose synthesis requires terra, and infer risk.`,
+          `Use the smallest useful ${profile === "balanced" ? "2-3" : "2-5"} tasks and group homogeneous inputs.${profile === "balanced" ? " Three tasks require three units, 120 seconds total, and 20% critical-path gain over two. Use disjoint paths or [unit:id] goal tags. Read-only tasks stay Luna; one Terra merge or writer is the plan's only Terra node." : ""} paths are workspace-relative writer ownership; empty paths are read-only preparation. after contains prerequisite indexes.`,
           ...(options.forceFanout
             ? ["This diagnostic run explicitly requires fanout; return a valid plan."]
             : []),
@@ -2724,6 +2750,22 @@ async function generateHostSolRouteDecision(
     priceTable: prices,
   });
   return { decision, usage, turnId };
+}
+
+export function balancedRouteEvidenceInstruction(
+  instance: Readonly<BenchmarkCorpusInstance>,
+): string {
+  const eligibility = instance.eligibility;
+  if (eligibility === undefined) {
+    return "No matching calibrated runtime history is supplied for this task. Treat delegation economics as uncertain: complete it in root Sol and do not delegate or plan fanout.";
+  }
+  return [
+    "Independent calibration qualifies this task for fanout consideration:",
+    `direct Sol p50=${String(eligibility.directSolP50Seconds)}s,`,
+    `independent units=${String(eligibility.independentUnits)},`,
+    `minimum leaf p50=${String(eligibility.estimatedMinLeafSeconds)}s.`,
+    "This supports considering a compact DAG, but does not justify single-agent delegation.",
+  ].join(" ");
 }
 
 function localBenchmarkRoute(request: RunRequest) {
@@ -2893,6 +2935,23 @@ export type RootSolRouteDecision =
 export function parseRootSolRouteDecision(output: string): RootSolRouteDecision {
   const envelope = parseRootSolEnvelope(output);
   if (envelope.mode === "plan") {
+    if (envelope.tasks.length === 1) {
+      const single = parseHostSemanticPlan(
+        {
+          access: envelope.access,
+          merge: envelope.merge,
+          risk: envelope.risk,
+          tasks: envelope.tasks,
+        },
+        "planned_single",
+        1,
+      );
+      const floor = single.tasks[0]!.floor;
+      if (floor === "sol") {
+        throw new Error("a single Sol task must be completed by the root Sol");
+      }
+      return { mode: "delegate", tier: floor === "terra" ? "terra" : "luna" };
+    }
     return { mode: "plan", plan: parseRootSolPlanOutput(output) };
   }
   // For direct/delegate decisions the plan metadata has no semantic effect. Structured-output
@@ -3009,6 +3068,7 @@ async function buildRecord(input: RecordInput): Promise<BenchmarkRunRecord> {
     costUsd: costUsd > 0 ? costUsd : null,
     planningCostUsd,
     route: input.route,
+    rootSelf: input.route === "direct" && input.batch === null,
     launchSkewMs: input.launchSkewMs,
     plannerTurns: input.plannerTurns,
     hostPlanned: input.hostPlanned,
@@ -3016,6 +3076,9 @@ async function buildRecord(input: RecordInput): Promise<BenchmarkRunRecord> {
     promotionCount: input.promotionCount,
     finalReviewTurns: input.finalReviewTurns,
     leafCount: input.leafCount,
+    leafTierCounts: benchmarkLeafTierCounts(input.batch),
+    terraNodeCount: benchmarkTerraNodeCount(input.batch),
+    threeLeafCriticalPathGain: benchmarkThreeLeafCriticalPathGain(input.batch),
     protocolErrors:
       (input.batch?.status === "failed" ? 1 : 0) +
       Math.max(input.protocolErrors ?? 0, countFailedMcpToolCalls(input.transportItems ?? [])),
@@ -3036,6 +3099,88 @@ async function buildRecord(input: RecordInput): Promise<BenchmarkRunRecord> {
     qualityDefinitionSha256: qualityArtifact.sha256,
     evidenceArtifacts: evidence,
   };
+}
+
+function benchmarkLeafTierCounts(
+  batch: BatchResult | null,
+): Partial<Record<BenchmarkModelUsageEvidence["tier"], number>> {
+  const counts: Partial<Record<BenchmarkModelUsageEvidence["tier"], number>> = {};
+  for (const task of batch?.plan?.tasks ?? []) {
+    counts[task.tier] = (counts[task.tier] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function benchmarkTerraNodeCount(batch: BatchResult | null): number {
+  if (batch?.plan === null || batch === null) return 0;
+  const terraLeaves = batch.plan.tasks.filter((task) => task.tier === "terra").length;
+  const terraIntegration =
+    batch.metrics?.usageByStage?.integration.usage.some((usage) => usage.tier === "terra") === true
+      ? 1
+      : 0;
+  return terraLeaves + terraIntegration;
+}
+
+function benchmarkThreeLeafCriticalPathGain(batch: BatchResult | null): number | null {
+  const tasks = batch?.plan?.tasks;
+  if (tasks === undefined || tasks.length !== 3) return null;
+  const indexes = new Map(tasks.map((task, index) => [task.id, index]));
+  const roots = tasks
+    .map((task, index) => ({ task, index }))
+    .filter(({ task }) => task.dependsOn.length === 0);
+  const criticalPath = benchmarkCriticalPathSeconds(tasks);
+  if (criticalPath === null) return null;
+  let bestTwoLeafPath: number;
+  if (roots.length === 3) {
+    const durations = tasks.map((task) => task.expectedSeconds);
+    bestTwoLeafPath = Math.min(
+      Math.max(durations[0]! + durations[1]!, durations[2]!),
+      Math.max(durations[0]! + durations[2]!, durations[1]!),
+      Math.max(durations[1]! + durations[2]!, durations[0]!),
+    );
+  } else if (roots.length === 2) {
+    const sink = tasks.find((task) => task.dependsOn.length === 2);
+    const rootIndexes = roots.map(({ index }) => index).sort((left, right) => left - right);
+    const dependencies = (sink?.dependsOn ?? [])
+      .map((dependency) => indexes.get(dependency) ?? -1)
+      .sort((left, right) => left - right);
+    if (sink === undefined || JSON.stringify(rootIndexes) !== JSON.stringify(dependencies)) {
+      return null;
+    }
+    bestTwoLeafPath =
+      roots[0]!.task.expectedSeconds + roots[1]!.task.expectedSeconds + sink.expectedSeconds;
+  } else {
+    return null;
+  }
+  return (bestTwoLeafPath - criticalPath) / bestTwoLeafPath;
+}
+
+function benchmarkCriticalPathSeconds(
+  tasks: readonly ExecutionPlan["tasks"][number][],
+): number | null {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const memo = new Map<string, number>();
+  const visiting = new Set<string>();
+  const duration = (id: string): number | null => {
+    const cached = memo.get(id);
+    if (cached !== undefined) return cached;
+    if (visiting.has(id)) return null;
+    const task = byId.get(id);
+    if (task === undefined) return null;
+    visiting.add(id);
+    let previous = 0;
+    for (const dependency of task.dependsOn) {
+      const dependencyDuration = duration(dependency);
+      if (dependencyDuration === null) return null;
+      previous = Math.max(previous, dependencyDuration);
+    }
+    visiting.delete(id);
+    const total = previous + task.expectedSeconds;
+    memo.set(id, total);
+    return total;
+  };
+  const durations = tasks.map((task) => duration(task.id));
+  return durations.some((item) => item === null) ? null : Math.max(...(durations as number[]));
 }
 
 function benchmarkEvidenceBase(

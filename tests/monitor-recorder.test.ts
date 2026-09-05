@@ -185,7 +185,10 @@ describe("MonitorRecorder", () => {
     expect(lines).toHaveLength(1);
     expect(Buffer.byteLength(`${lines[0]}\n`, "utf8")).toBeLessThanOrEqual(16 * 1024);
     expect(JSON.parse(lines[0]!) as Record<string, unknown>).toMatchObject({
-      data: { truncated: true },
+      data: {
+        truncated: true,
+        item: { id: "message", type: "agentMessage" },
+      },
     });
   });
 });

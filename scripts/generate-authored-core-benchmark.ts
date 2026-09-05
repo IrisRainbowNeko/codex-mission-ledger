@@ -11,9 +11,9 @@ import {
   BENCHMARK_MANIFEST_VERSION,
   BENCHMARK_FAMILIES,
   createFileBenchmarkArtifactReader,
-  economicEligibilityFromCalibration,
   hashBenchmarkBytes,
   loadBenchmarkCalibrationTable,
+  qualifiedEconomicEligibilityFromCalibration,
   sealBenchmarkManifest,
   verifyBenchmarkCorpus,
   type BenchmarkArtifactRole,
@@ -142,33 +142,36 @@ export interface AuthoredCoreCorpus {
   artifacts: Array<{ path: string; bytes: Uint8Array }>;
 }
 
-const OUTPUT_VALIDATOR_SOURCE = [
-  "const { readFileSync } = require('node:fs');",
-  "const n = (v) => v.toLowerCase().replace(/[`*_]/gu, '').replace(/(?<=\\d),(?=\\d{3}\\b)/gu, '').replace(/\\s+/gu, ' ').trim();",
-  "let source = readFileSync('.agent-trio-benchmark/model-output.txt', 'utf8');",
-  "source = source.replace(/(^|\\n)(\\s*)(review-paper-\\d+[a-z])\\s*:\\s*([\\s\\S]*?)(?=(?:\\n\\s*review-paper-\\d+[a-z]\\s*:)|$)/giu, (_match, prefix, space, root, body) => `${prefix}${space}${root}:\\n${body.replace(/(^|\\n)(\\s*-\\s*)section-(\\d{2})\\s*:/giu, (_section, sectionPrefix, bullet, number) => `${sectionPrefix}${bullet}[item:${root}-section-${number}]`)}`);",
-  "source = source.replace(/(?<!\\[item:)(review-paper-\\d+[a-z]-section-\\d{2})/giu, '[item:$1]');",
-  "const raw = n(source);",
-  "const rule = JSON.parse(process.argv[1]);",
-  "const anchor = n(rule.anchor);",
-  "const start = raw.indexOf(anchor);",
-  "if (start < 0) process.exit(1);",
-  "const after = start + anchor.length;",
-  "const nextItem = raw.indexOf('[item:', after);",
-  "const nextUnit = raw.indexOf('[unit:', after);",
-  "const stops = [nextItem, nextUnit].filter((value) => value >= 0);",
-  "const text = raw.slice(start, stops.length === 0 ? raw.length : Math.min(...stops));",
-  "const includes = (value) => text.includes(n(value));",
-  "const all = (rule.all ?? []).every(includes);",
-  "const allAny = (rule.allAny ?? []).every((group) => group.some(includes));",
-  "const any = !rule.any || rule.any.some(includes);",
-  "const none = (rule.none ?? []).every((value) => !includes(value));",
-  "const regex = (rule.regex ?? []).every((value) => new RegExp(value, 'iu').test(text));",
-  "const words = text.replace(anchor, '').trim().split(/\\s+/u).filter(Boolean).length;",
-  "const minWords = rule.minWords === undefined || words >= rule.minWords;",
-  "const maxWords = rule.maxWords === undefined || words <= rule.maxWords;",
-  "process.exit(all && allAny && any && none && regex && minWords && maxWords ? 0 : 1);",
-].join("\n");
+const OUTPUT_VALIDATOR_SOURCE = String.raw`const { readFileSync } = require('node:fs');
+const n = (v) => v.toLowerCase().replace(/[【［]/gu, '[').replace(/[】］]/gu, ']').replace(/[\x60*_]/gu, '').replace(/(?<=\d),(?=\d{3}\b)/gu, '').replace(/\s+/gu, ' ').trim();
+let source = readFileSync('.agent-trio-benchmark/model-output.txt', 'utf8');
+source = source.replace(/\[\s*(item|unit)\s*:\s*([a-z0-9._-]+)\s*\]/giu, '[$1:$2]');
+source = source.replace(/(?:[\[(\x60]\s*)?\b((?:web|audit|press|blog)-[a-z0-9-]+)\b(?:\s*[\])\x60])?/giu, '[$1]');
+source = source.replace(/(^|\n)(\s*)(?:#{1,6}\s*)?packet\s+(\d+[a-z])\s*:?\s*(?=\n)/giu, '$1$2review-paper-$3:');
+source = source.replace(/(^|\n)(\s*)(?:#{1,6}\s*)?(review-paper-\d+[a-z])\s*:?\s*\n([\s\S]*?)(?=(?:\n\s*(?:#{1,6}\s*)?(?:review-paper-\d+[a-z]|packet\s+\d+[a-z])\s*:?\s*\n)|$)/giu, (_match, prefix, space, root, body) => prefix + space + root + ':\n' + body.replace(/(^|\n)(\s*(?:[-*]\s*)?(?:#{1,6}\s*)?(?:\*\*)?)section[-\s](\d{2})(?:\*\*)?\s*:?\s*/giu, (_section, sectionPrefix, decoration, number) => sectionPrefix + decoration + '[item:' + root + '-section-' + number + '] '));
+source = source.replace(/(^|\n)(\s*)(?:#{1,6}\s*)?(opt-\d+[a-z])\s*:?\s*\n([\s\S]*?)(?=(?:\n\s*(?:#{1,6}\s*)?opt-\d+[a-z]\s*:?\s*\n)|$)/giu, (_match, prefix, space, root, body) => prefix + space + root + ':\n' + body.replace(/(^|\n)(\s*(?:[-*]\s*)?(?:#{1,6}\s*)?(?:\*\*)?)case[-\s](\d{2})(?:\*\*)?\s*:?\s*/giu, (_case, casePrefix, decoration, number) => casePrefix + decoration + '[item:' + root + '-case-' + number + '] '));
+source = source.replace(/(^|\n)(\s*)(?:#{1,6}\s*)?(conflict-\d+[a-z])\s*:?\s*\n([\s\S]*?)(?=(?:\n\s*(?:#{1,6}\s*)?conflict-\d+[a-z]\s*:?\s*\n)|$)/giu, (_match, prefix, space, root, body) => prefix + space + root + ':\n' + body.replace(/(^|\n)(\s*(?:[-*]\s*)?(?:#{1,6}\s*)?(?:\*\*)?)claim[-\s](\d{2})(?:\*\*)?\s*:?\s*/giu, (_claim, claimPrefix, decoration, number) => claimPrefix + decoration + '[item:' + root + '-claim-' + number + '] '));
+source = source.replace(/(?<!\[item:)(?<![a-z0-9-])\b((?:review-paper-\d+[a-z]-section|conflict-\d+[a-z]-claim|review-\d+[a-z]-case|opt-\d+[a-z]-case|num-\d+[a-z]-case)-\d{2})\b/giu, '[item:$1]');
+const raw = n(source);
+const rule = JSON.parse(process.argv[1]);
+const anchor = n(rule.anchor);
+const start = raw.indexOf(anchor);
+if (start < 0) process.exit(1);
+const after = start + anchor.length;
+const nextItem = raw.indexOf('[item:', after);
+const nextUnit = raw.indexOf('[unit:', after);
+const stops = [nextItem, nextUnit].filter((value) => value >= 0);
+const text = raw.slice(start, stops.length === 0 ? raw.length : Math.min(...stops));
+const includes = (value) => text.includes(n(value));
+const all = (rule.all ?? []).every(includes);
+const allAny = (rule.allAny ?? []).every((group) => group.some(includes));
+const any = !rule.any || rule.any.some(includes);
+const none = (rule.none ?? []).every((value) => !includes(value));
+const regex = (rule.regex ?? []).every((value) => new RegExp(value, 'iu').test(text));
+const words = text.replace(anchor, '').trim().split(/\s+/u).filter(Boolean).length;
+const minWords = rule.minWords === undefined || words >= rule.minWords;
+const maxWords = rule.maxWords === undefined || words <= rule.maxWords;
+process.exit(all && allAny && any && none && regex && minWords && maxWords ? 0 : 1);`;
 
 const FILE_VALIDATOR_SOURCE = [
   "const { readFileSync } = require('node:fs');",
@@ -494,7 +497,14 @@ function codingReviewDefinitions(): AddedDefinition[] {
       contract: "allow must be false once count is equal to the exclusive limit.",
       cause: "count <= limit",
       fix: "count < limit",
-      consequences: ["one extra request", "exclusive limit"],
+      consequences: [
+        "one extra request",
+        "one extra operation",
+        "exclusive limit",
+        "exclusive rate limit",
+        "exclusive boundary",
+        "limit is exclusive",
+      ],
     },
     {
       file: "src/page.mjs",
@@ -502,7 +512,7 @@ function codingReviewDefinitions(): AddedDefinition[] {
       contract: "pageCount includes a final partial page.",
       cause: "Math.floor",
       fix: "Math.ceil",
-      consequences: ["partial page", "omitted"],
+      consequences: ["partial page", "partial final page", "omitted", "omits", "unreachable"],
     },
     {
       file: "src/sort.mjs",
@@ -511,7 +521,7 @@ function codingReviewDefinitions(): AddedDefinition[] {
         "byScore is a numeric ascending comparator returning a negative, zero, or positive number.",
       cause: "a.score > b.score",
       fix: "a.score - b.score",
-      consequences: ["ordering", "comparator"],
+      consequences: ["ordering", "comparator", "sort", "order"],
     },
   ] as const;
   return Array.from({ length: 3 }, (_, instanceIndex) => {
@@ -654,6 +664,7 @@ function optimizationDefinitions(): AddedDefinition[] {
                 `ids [${item.answer.ids.join(",")}]`,
                 `ids=[${item.answer.ids.join(",")}]`,
                 `ids: [${item.answer.ids.join(",")}]`,
+                `ids: ${item.answer.ids.join(", ")}`,
                 `selected ids ${item.answer.ids.join(",")}`,
                 `selected ids ${item.answer.ids.join(", ")}`,
                 `selected ids: ${item.answer.ids.join(", ")}`,
@@ -662,6 +673,7 @@ function optimizationDefinitions(): AddedDefinition[] {
               ],
               [
                 `weight ${item.answer.weight}`,
+                `weight: ${item.answer.weight}`,
                 `total weight ${item.answer.weight}`,
                 `total weight: ${item.answer.weight}`,
                 `=${item.answer.weight}`,
@@ -669,6 +681,7 @@ function optimizationDefinitions(): AddedDefinition[] {
               ],
               [
                 `value ${item.answer.value}`,
+                `value: ${item.answer.value}`,
                 `total value ${item.answer.value}`,
                 `total value: ${item.answer.value}`,
                 `=${item.answer.value}`,
@@ -682,6 +695,9 @@ function optimizationDefinitions(): AddedDefinition[] {
               "dp 0..",
               "f=",
               "feasible subsets",
+              "subsets were feasible",
+              "optimality check",
+              "32/32 subsets",
             ],
           }),
         ),
@@ -739,8 +755,12 @@ function numericalDefinitions(): AddedDefinition[] {
       outputRules: roots.flatMap(({ cases }) =>
         cases.map((item) =>
           outputRule(item.id, `${item.id} exact numerical results`, {
-            all: [`mean ${item.mean}`, `variance ${item.variance}`, `trapezoid ${item.trapezoid}`],
-            any: ["sum", "substitution", "intermediate", "s="],
+            regex: [
+              `\\bmean\\s*(?::|=)?[^;]{0,80}\\b${item.mean.replace(".", "\\.")}\\b`,
+              `\\b(?:population\\s+)?variance\\s*(?::|=)?[^;]{0,80}\\b${item.variance.replace(".", "\\.")}\\b`,
+              `\\b(?:trapezoid|trapezoidal\\s+integral)\\s*(?::|=)?[^;]{0,80}\\b${item.trapezoid.replace(".", "\\.")}\\b`,
+            ],
+            any: ["sum", "substitution", "intermediate", "s=", "squared deviations", "/4"],
           }),
         ),
       ),
@@ -819,7 +839,7 @@ function researchLiveDefinitions(): AddedDefinition[] {
       ),
       outputRules: roots.map(({ id, winner }) =>
         outputRule(id, `${id} uses the exact captured winner`, {
-          allAny: [[`$${winner.price}`, `price ${winner.price}`]],
+          allAny: [[`$${winner.price}`, `price ${winner.price}`, `price: ${winner.price}`]],
           all: [
             winner.vendor,
             `${winner.latency} ms`,
@@ -1010,6 +1030,13 @@ function paperReviewDefinitions(): AddedDefinition[] {
               "contaminat",
               "inflate",
               "cannot support",
+              "invalid",
+              "unsupported",
+              "understat",
+              "overstat",
+              "not valid",
+              "not an unbiased",
+              "no longer an independent",
             ],
           }),
         ),
@@ -1019,31 +1046,69 @@ function paperReviewDefinitions(): AddedDefinition[] {
 }
 
 function paperReviewSemanticGroups(issue: string): readonly (readonly string[])[] {
-  const severity = ["severity: major", "severity: critical", "major.", "critical."];
+  const severity = [
+    "severity: major",
+    "severity: critical",
+    "severity: high",
+    "major.",
+    "critical.",
+    "high.",
+    "| major |",
+    "| critical |",
+    "| high |",
+  ];
   if (issue === "test-set leakage") {
     return [
       ["test-set leakage", "test set before", "final test set", "test-set reuse"],
       severity,
       [
         "separate validation set",
+        "separate validation procedure",
+        "validation data",
         "training/validation data",
         "training/development data",
         "untouched test set",
+        "untouched final",
+        "reserve the final test set",
+        "test set not used for selection",
+        "final test set not used for selection",
+        "final evaluation set",
         "nested cross-validation",
+        "without test-set access",
+        "without the final test set",
+        "relabel the score",
+        "label the score",
+        "remove claims that it is an unbiased",
       ],
     ];
   }
   if (issue === "unit-of-analysis error") {
     return [
-      ["unit-of-analysis error", "pseudoreplication", "repeated observations", "independent units"],
+      [
+        "unit-of-analysis error",
+        "pseudoreplication",
+        "repeated observations",
+        "repeated measurements",
+        "independence assumption",
+        "ignores clustering",
+        "independent units",
+      ],
       severity,
       [
         "participant-level or mixed-effects analysis",
         "participant-level dependence",
         "participant-level clustering",
         "participant clustering",
+        "participant-clustered",
+        "participant-aware",
         "participant level",
+        "within-participant dependence",
+        "within-participant",
+        "accounts for repeated observations",
+        "accounts for repeated measurements",
         "mixed-effects model",
+        "multilevel analysis",
+        "cluster-robust",
         "repeated-measures",
         "repeated measures",
         "cluster-aware analysis",
@@ -1063,7 +1128,16 @@ function paperReviewSemanticGroups(issue: string): readonly (readonly string[])[
         "associational wording",
         "association claim",
         "association statement",
+        "observed association",
+        "only an association",
+        "association only",
+        "association-only",
+        "non-causal association language",
         "as an association",
+        "to association",
+        "associational language",
+        "associational ones",
+        "observational association",
         "associative language",
         "qualified associational language",
       ],
@@ -1590,16 +1664,25 @@ export function stringifyCsv(rows){return rows.map(row=>row.map(value=>{const te
 function regexWitness(pattern: string): string {
   const cost = pattern.match(/\{0,12\}(\d+)\\b/u)?.[1];
   if (cost !== undefined) return `minimum cost ${cost}`;
+  const numericalValue = pattern.match(/(\d+)\\\.(\d+)/u);
+  if (numericalValue !== null) {
+    const value = `${numericalValue[1]}.${numericalValue[2]}`;
+    if (pattern.startsWith("\\bmean\\s*")) return `mean ${value}`;
+    if (pattern.startsWith("\\b(?:population\\s+)?variance")) return `variance ${value}`;
+    if (pattern.startsWith("\\b(?:trapezoid|trapezoidal")) return `trapezoid ${value}`;
+  }
   if (pattern.includes("a\\s*(?:->")) return "A -> B -> C -> F";
   if (pattern === "(?:edge|sum|check)") return "edge sum check";
   if (pattern.includes("beta") && pattern.includes("only|sole")) return "only beta";
   if (pattern.startsWith("alpha")) return "alpha fails by 2 percentage points";
   if (pattern.startsWith("(?:score|evaluation)")) return "score shortfall 2 points";
-  if (pattern.startsWith("deploy")) return "deployment exceeds by 2 weeks";
+  if (pattern.startsWith("deploy") || pattern.startsWith("(?:deploy"))
+    return "deployment exceeds by 2 weeks";
   if (pattern.includes("aurora") && pattern.includes("only|sole")) return "only aurora";
   if (pattern.includes("10000")) return "short by $10000";
   if (pattern.includes("impact gap")) return "impact gap 40";
-  if (pattern.startsWith("duration")) return "duration exceeds by 6 months";
+  if (pattern.startsWith("duration") || pattern.startsWith("(?:duration"))
+    return "duration exceeds by 6 months";
   throw new Error(`no authored qualification witness for regex ${pattern}`);
 }
 
@@ -2105,17 +2188,17 @@ function addDefinition(
   const evaluationClass =
     definition.evaluationClass ??
     (family.decomposable ? "economic-decomposable" : "direct-fast-path");
-  const eligibility =
-    evaluationClass === "economic-decomposable"
-      ? economicEligibilityFromCalibration(calibration, definition.familyId, 3)
-      : undefined;
+  const classification = calibratedClassification(
+    evaluationClass,
+    definition.familyId,
+    calibration,
+  );
   return {
     familyId: definition.familyId,
     instanceId: definition.instanceId,
     seed: definition.seed,
     ...releaseMetadata(),
-    evaluationClass,
-    ...(eligibility === undefined ? {} : { eligibility }),
+    ...classification,
     initialStateSha256: workspace.sha256,
     artifacts: seals,
   };
@@ -2125,8 +2208,8 @@ function importReusedInstances(
   artifacts: Array<{ path: string; bytes: Uint8Array }>,
   calibration?: Readonly<LoadedBenchmarkCalibration>,
 ): BenchmarkCorpusInstance[] {
-  const coding = createEconomicCodingCorpus(calibration);
-  const crossDomain = createEconomicCrossDomainCorpus(calibration);
+  const coding = createEconomicCodingCorpus();
+  const crossDomain = createEconomicCrossDomainCorpus();
   const selectedCrossDomain = crossDomain.manifest.instances.filter(
     (instance) => instance.familyId !== "office-document",
   );
@@ -2144,9 +2227,23 @@ function importReusedInstances(
     return {
       ...instance,
       ...releaseMetadata(),
-      evaluationClass: "economic-decomposable",
+      ...calibratedClassification("economic-decomposable", instance.familyId, calibration),
     };
   });
+}
+
+function calibratedClassification(
+  intended: BenchmarkEvaluationClass,
+  familyId: string,
+  calibration: Readonly<LoadedBenchmarkCalibration> | undefined,
+): Pick<BenchmarkCorpusInstance, "evaluationClass" | "eligibility"> {
+  if (intended === "direct-fast-path" || calibration === undefined) {
+    return { evaluationClass: intended };
+  }
+  const eligibility = qualifiedEconomicEligibilityFromCalibration(calibration, familyId, 3);
+  return eligibility === undefined
+    ? { evaluationClass: "direct-fast-path" }
+    : { evaluationClass: "economic-decomposable", eligibility };
 }
 
 let authoredCoreCorpus: Promise<AuthoredCoreCorpus> | undefined;

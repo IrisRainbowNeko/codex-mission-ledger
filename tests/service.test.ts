@@ -22,11 +22,8 @@ import type {
   WorkspaceController,
 } from "../src/core/integration.js";
 import { hashRunRequest, JobStore } from "../src/core/job-store.js";
-import {
-  PlannerStateError,
-  type PlannerService,
-  type PlannerSession,
-} from "../src/core/planner.js";
+import { PlannerService, PlannerStateError, type PlannerSession } from "../src/core/planner.js";
+import { LocalRouteOptimizer } from "../src/core/router.js";
 import {
   DeterministicScheduler,
   type LeafExecutor,
@@ -37,6 +34,7 @@ import {
   type AgentTrioServiceOptions,
   type NonLeafCostEstimator,
 } from "../src/core/service.js";
+import { parseAgentTrioRequest } from "../src/mcp/protocol.js";
 
 const roots: string[] = [];
 
@@ -488,6 +486,147 @@ describe("AgentTrioService", () => {
     expect(result.finalResponse).toBe("one-turn result");
     expect(result.metrics?.estimatedCostUsd).toBe(0.01);
     expect(directExecutor.execute).not.toHaveBeenCalled();
+  });
+
+  it("executes the observed three-stream analysis plan without economic fallback", async () => {
+    const plannerStart = vi.fn(async () => {
+      throw new Error("internal Sol must not run for the adopted host plan");
+    });
+    const plannerContinue = vi.fn(async () => {
+      throw new Error("internal Sol repair must not run for the adopted host plan");
+    });
+    const planner = new PlannerService(
+      { start: plannerStart, continue: plannerContinue },
+      {
+        contextProvider: {
+          load: async () => ({
+            workspaceKind: "git" as const,
+            workspaceDirty: false,
+            workspaceFiles: [],
+            keyFiles: [],
+            capabilities: [],
+            economics: [
+              {
+                tier: "luna" as const,
+                model: "gpt-5.6-luna",
+                uncachedInputPerMillion: 0.2,
+                cachedInputPerMillion: 0.02,
+                outputPerMillion: 1.2,
+              },
+              {
+                tier: "terra" as const,
+                model: "gpt-5.6-terra",
+                uncachedInputPerMillion: 2,
+                cachedInputPerMillion: 0.2,
+                outputPerMillion: 12,
+              },
+            ],
+          }),
+        },
+      },
+    );
+    const directExecute = vi.fn(async () => {
+      throw new Error("direct fallback must not run");
+    });
+    const runLeaf = vi.fn(async ({ task: item }: { task: ExecutionPlan["tasks"][number] }) => ({
+      ...leaf(item.id),
+      changedFiles: [],
+    }));
+    const integrate = vi.fn(async (): Promise<AgentOutcome> => ({
+      status: "completed",
+      response: "three-way framework analysis",
+      threadId: "terra-integration",
+      usage: [usage("terra", 0.03)],
+      planIssues: [],
+    }));
+    const service = createService({
+      admission: {
+        decide: () => {
+          throw new Error("host semantic routing must remain model-free");
+        },
+      },
+      routeOptimizer: new LocalRouteOptimizer({
+        priceTable: {
+          "gpt-5.6-sol": {
+            inputPerMillionUsd: 4,
+            cachedInputPerMillionUsd: 0.4,
+            outputPerMillionUsd: 20,
+          },
+          "gpt-5.6-terra": {
+            inputPerMillionUsd: 2,
+            cachedInputPerMillionUsd: 0.2,
+            outputPerMillionUsd: 12,
+          },
+          "gpt-5.6-luna": {
+            inputPerMillionUsd: 0.2,
+            cachedInputPerMillionUsd: 0.02,
+            outputPerMillionUsd: 1.2,
+          },
+        },
+      }),
+      directExecutor: { execute: directExecute },
+      planner,
+      scheduler: new DeterministicScheduler(
+        { runLeaf },
+        {
+          replan: async () => null,
+          answer: async () => "answer",
+        },
+      ),
+      integrator: { integrate },
+    });
+    const request = parseAgentTrioRequest({
+      action: "run",
+      runId: "rainbow-neko-analysis-service",
+      objective: "系统分析 RainbowNekoEngine，保持全程只读",
+      cwd: "/workspace/RainbowNekoEngine",
+      hostAccess: "fullAccess",
+      hostApproval: "never",
+      profile: "quality",
+      strategy: "fanout",
+      domain: "coding",
+      constraints: ["全程只读，不修改仓库文件。"],
+      semanticPlan: {
+        merge: "terra",
+        risk: "low",
+        tasks: ["cfgs", "engine", "tests"].map((path, index) => ({
+          goal: `分析 ${path}`,
+          paths: [path],
+          after: [],
+          floor: index === 2 ? "terra" : "luna",
+          expectedSeconds: [75, 75, 90][index],
+        })),
+      },
+      limits: {
+        maxConcurrent: 3,
+        maxLeaves: 3,
+        maxWaves: 1,
+        maxSolLeaves: 0,
+        maxReplans: 0,
+        maxCostUsd: 6,
+      },
+    });
+
+    const result = await service.handle(request);
+
+    expect(result).toMatchObject({
+      status: "completed",
+      finalResponse: "three-way framework analysis",
+      leaves: [{ status: "completed" }, { status: "completed" }, { status: "completed" }],
+      metrics: {
+        plannerSkipped: true,
+        routeSource: "host_sol",
+        selectedLeafCount: 3,
+        selectedTierCounts: { luna: 2, terra: 1 },
+        peakConcurrency: 3,
+        usageByStage: { planning: { usage: [], estimatedCostUsd: 0 } },
+      },
+    });
+    expect(runLeaf).toHaveBeenCalledTimes(3);
+    expect(integrate).toHaveBeenCalledOnce();
+    expect(plannerStart).not.toHaveBeenCalled();
+    expect(plannerContinue).not.toHaveBeenCalled();
+    expect(directExecute).not.toHaveBeenCalled();
   });
 
   it("falls back to the internal Sol planner when a host plan is outside the fast path", async () => {
@@ -1048,6 +1187,8 @@ describe("AgentTrioService", () => {
     const assessPlan = vi.fn(() => ({
       route: "direct" as const,
       reason: "fanout misses cost/time gate",
+      routeEvidence: "history" as const,
+      routeAdjustment: "downgraded_to_single" as const,
       estimatedDirectCostUsd: 0.05,
       estimatedFanoutCostUsd: 0.03,
       estimatedDirectSeconds: 100,
@@ -1089,6 +1230,8 @@ describe("AgentTrioService", () => {
       metrics: {
         selectedLeafCount: 0,
         routeReason: "fanout misses cost/time gate",
+        routeEvidence: "history",
+        routeAdjustment: "downgraded_to_single",
         usageByStage: {
           planning: { estimatedCostUsd: 0.01 },
           leaves: { usage: [] },
@@ -1657,6 +1800,74 @@ describe("AgentTrioService", () => {
     expect(integrate).not.toHaveBeenCalled();
     expect(workspace.integrate).toHaveBeenCalledOnce();
     expect(workspace.cleanup).toHaveBeenCalledOnce();
+  });
+
+  it("delivers Terra output when integration resolves a nonblocking evidence issue", async () => {
+    const executionPlan = plan({
+      tasks: plan().tasks.map((task) => ({
+        ...task,
+        access: "readOnly" as const,
+        ownedPaths: ["."],
+      })),
+      integration: { ...plan().integration, validation: [] },
+    });
+    const plannerSession: PlannerSession = {
+      threadId: "sol-nonblocking-integration",
+      request: { objective: "analyze a repository", cwd: "/workspace" },
+      limits,
+      initialPlan: executionPlan,
+      plan: executionPlan,
+      patch: null,
+      replanCount: 0,
+      usage: [],
+    };
+    const replan = vi.fn(async () => null);
+    const replanHandler = { replan, answer: async () => "answer" };
+    const leaves = executionPlan.tasks.map((task) => ({
+      ...leaf(task.id),
+      summary: `${task.id} attempted pytest; use static evidence only`,
+      changedFiles: [],
+      validation: [],
+    }));
+    const integrate = vi.fn(async (): Promise<AgentOutcome> => ({
+      status: "completed",
+      response: "complete report using static evidence",
+      threadId: "terra-nonblocking-integration",
+      usage: [],
+      planIssues: [
+        {
+          type: "result_conflict",
+          taskIds: executionPlan.tasks.map((task) => task.id),
+          summary: "Leaf summaries mention pytest while runtime validation was not configured",
+          requiresPlanPatch: false,
+        },
+      ],
+    }));
+    const service = createService({
+      admission: { decide: () => ({ route: "fanout", reason: "parallelizable" }) },
+      planner: {
+        plan: async () => plannerSession,
+        createReplanHandler: () => replanHandler,
+        getSession: () => plannerSession,
+      },
+      scheduler: new DeterministicScheduler(
+        { runLeaf: async ({ task }) => leaves.find((item) => item.taskId === task.id)! },
+        replanHandler,
+      ),
+      integrator: { integrate },
+    });
+
+    const result = await service.run({
+      runId: "nonblocking-integration-evidence",
+      objective: "analyze a repository",
+      cwd: "/workspace",
+      limits: { maxReplans: 0 },
+    });
+
+    expect(result.status).toBe("completed");
+    expect(result.finalResponse).toBe("complete report using static evidence");
+    expect(integrate).toHaveBeenCalledOnce();
+    expect(replan).not.toHaveBeenCalled();
   });
 
   it("replans once from Terra integration issues and preserves successful leaves", async () => {
@@ -3046,6 +3257,23 @@ describe("AgentTrioService", () => {
     snapshot.request.profile = "quality";
     snapshot.requestHash = hashRunRequest(snapshot.request);
     snapshot.plannerSession!.request = structuredClone(snapshot.request);
+    snapshot.result.metrics = {
+      profile: "quality",
+      startedAt: "2026-08-28T00:00:00.000Z",
+      completedAt: "2026-08-28T00:01:00.000Z",
+      elapsedMs: 60_000,
+      planningMs: 17,
+      integrationMs: 0,
+      launchSkewMs: 0,
+      peakConcurrency: 1,
+      replanCount: 0,
+      userInterventionCount: 0,
+      usage: [...snapshot.usageByStage!.admission.usage, ...snapshot.usageByStage!.planning.usage],
+      estimatedCostUsd: 0.03,
+      routeEvidence: "structural_cold_start",
+      routeAdjustment: "none",
+      usageByStage: structuredClone(snapshot.usageByStage!),
+    };
     store.save(snapshot);
 
     const planNewWork = vi.fn(async () => {
@@ -3162,6 +3390,8 @@ describe("AgentTrioService", () => {
     expect(workspace.integrate).toHaveBeenCalledOnce();
     expect(result.metrics).toMatchObject({
       profile: "quality",
+      routeEvidence: "structural_cold_start",
+      routeAdjustment: "none",
       startedAt: "2026-08-28T00:00:00.000Z",
       planningMs: 17,
       usageByStage: {

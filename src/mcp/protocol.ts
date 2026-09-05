@@ -16,12 +16,17 @@ import type {
 } from "../core/contracts.js";
 import type { AgentTrioService } from "../core/service.js";
 import type { MonitorDataQuery, MonitorDataUpdate } from "../monitor/data.js";
+import {
+  compactDisplayMonitorEvent,
+  projectMonitorEvents,
+  type MonitorDisplayEvent,
+} from "../monitor/display.js";
 import { PlanValidationError } from "../core/plan-validation.js";
 import { hostSemanticPlanJsonSchemaForRoute, parseHostSemanticPlan } from "../core/planner.js";
 import { fanoutMinTaskSeconds } from "../core/policy.js";
 import { AGENT_TRIO_MONITOR_RESOURCE_URI, MCP_APP_MIME_TYPE, MCP_MONITOR_HTML } from "./app.js";
 
-const MAX_RESULT_BYTES = 64 * 1024;
+const MAX_DELIVERY_RESPONSE_BYTES = 48 * 1024;
 const MAX_MONITOR_STRUCTURED_BYTES = 48 * 1024;
 const ROOTS_TIMEOUT_MS = 5_000;
 const DOMAIN_VALUES: readonly TaskDomain[] = [
@@ -49,14 +54,30 @@ export const AGENT_TRIO_TOOL_SCHEMA = {
   properties: {
     action: { type: "string", enum: ["run", "submit", "status", "resume", "cancel"] },
     runId: { type: "string", minLength: 1, maxLength: 128 },
-    monitorFirst: { type: "boolean" },
+    monitorFirst: {
+      type: "boolean",
+      description:
+        "Mount the Monitor before a detached submit. A true value on synchronous action=run is accepted and ignored for compatibility.",
+    },
     wait: { type: "boolean" },
     monitorCursor: { type: "integer", minimum: 0 },
     monitorRevision: { type: "string", maxLength: 128 },
     monitorWaitMs: { type: "integer", minimum: 0, maximum: 20_000 },
     input: { type: "string", maxLength: 4_096 },
-    objective: { type: "string", minLength: 1, maxLength: 200_000 },
-    cwd: { type: "string", minLength: 1, maxLength: 4_096 },
+    objective: {
+      type: "string",
+      minLength: 1,
+      maxLength: 200_000,
+      description:
+        "REQUIRED for run and submit. Repeat the complete user objective at this top level even when semanticPlan is present.",
+    },
+    cwd: {
+      type: "string",
+      minLength: 1,
+      maxLength: 4_096,
+      description:
+        "REQUIRED for run and submit. Use the absolute current workspace path; never omit it as implicit context.",
+    },
     hostAccess: {
       type: "string",
       enum: ["readOnly", "workspaceWrite", "fullAccess"],
@@ -140,7 +161,10 @@ export const AGENT_TRIO_TOOL_SCHEMA = {
     },
     {
       if: { required: ["monitorFirst"] },
-      then: { properties: { action: { const: "submit" } }, required: ["action"] },
+      then: {
+        properties: { action: { enum: ["run", "submit"] } },
+        required: ["action"],
+      },
     },
     {
       if: { required: ["wait"] },
@@ -166,7 +190,7 @@ export const AGENT_TRIO_TOOL_SCHEMA = {
   ],
 } as const;
 
-export const AGENT_TRIO_TOOL_DESCRIPTION = `Run or monitor Agent Trio. Pass flat top-level fields; never wrap them in request, input, or arguments. Foreground UI calls submit once with monitorFirst=true, then status once with only action, runId, and wait=true, and only after submit succeeds with the same runId. profile defaults to balanced; quality preserves V3.3 routing. strategy=direct delegates one worker and must set directTier to exactly luna or terra, never top-level floor. Luna handles bounded mechanical work; Terra handles recovery/stateful work, coupled debugging, review/synthesis, or office artifacts. Direct omits semanticPlan and all plan-only fields. strategy=fanout requires semanticPlan with 2+ independent tasks; use Luna by default, disjoint writer paths, valid dependencies, and at most one Sol leaf. Put merge and risk only inside semanticPlan. Balanced normally uses 2 tasks; use 3 only for three substantial streams, >30s each, >=90s serial work, and >=20% critical-path gain over the best 2-task grouping. Quality allows 2-5 tasks and >15s each. domain is exactly one of coding, algorithm, research, paper, office, autoResearch, or general. Canonicalize hostAccess and hostApproval using their schema descriptions. capabilities is an object array, not selectedCapabilities. Do not send mode; action and monitorFirst define foreground or durable behavior. Put maxConcurrent, maxLeaves, maxWaves, maxSolLeaves, maxReplans, deadlineMs, and maxCostUsd inside limits. Use strategy=auto only when semantic boundaries are unavailable. Runtime enforces permissions, DAG, ownership, explicit budget, concurrency, and positive time saving; 40% cost and 70% latency are telemetry, not per-run vetoes. Inside semanticPlan, tasks contain only goal, paths, after indexes, floor, and expectedSeconds; merge is deterministic or terra, and risk is low, medium, or high. status/resume/cancel require runId.`;
+export const AGENT_TRIO_TOOL_DESCRIPTION = `Run or monitor Agent Trio. For run/submit, objective and absolute cwd are mandatory top-level arguments; pass all fields flat, never wrapped in request, input, or arguments. Foreground UI submits once with monitorFirst=true, then calls status once with only action, runId, and wait=true, and only after submit succeeds with that runId. profile defaults to balanced; quality preserves V3.3 routing. strategy=direct delegates one worker and sets directTier to luna or terra; omit semanticPlan. Luna handles bounded work. Terra handles recovery/stateful work and genuinely coupled debugging, synthesis, or artifact writing. strategy=fanout requires semanticPlan with 2+ independent tasks, disjoint writer paths, valid dependencies, Luna defaults, and at most one Sol leaf. With merge=terra, keep read-only repository/framework evidence leaves on Luna. Put merge and risk only inside semanticPlan; put access there as readOnly or workspaceWrite. Balanced normally uses 2 tasks. Three need three independent streams, >30s each, >=120s total, and >=20% critical-path gain over the best 2-task grouping. Quality allows 2-5 tasks and >15s each. Use strategy=auto only when semantic boundaries are unavailable. Runtime enforces permissions, DAG, ownership, limits, concurrency, and at least two structurally concurrent useful leaves. Balanced history admission needs 3 matching samples and hard limits of 0.40x cost and 0.70x latency; structural cold starts need 0.30x cost and 0.55x latency. Missing prices or structural evidence downgrade fanout to one worker. Quality is exempt from these Balanced economic vetoes unless maxCostUsd is explicit. Inside semanticPlan, tasks contain only goal, paths, after indexes, floor, and expectedSeconds. domain is coding, algorithm, research, paper, office, autoResearch, or general. Canonicalize hostAccess and hostApproval. capabilities is an object array, not selectedCapabilities. Do not send mode. Put execution limits inside limits. status/resume/cancel require runId.`;
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -365,7 +389,7 @@ export class AgentTrioMcpProtocol {
               {
                 name: "agent_trio",
                 title: "Run Agent Trio",
-                description: AGENT_TRIO_TOOL_DESCRIPTION,
+                description: `${AGENT_TRIO_TOOL_DESCRIPTION} A completed terminal call returns the final response directly as text content. When structuredContent.finalResponseComplete=true, output that text verbatim; never fetch Monitor data or call status again to verify or recover it.`,
                 inputSchema: AGENT_TRIO_TOOL_SCHEMA,
                 // Codex converts this extension into ResponsesApiTool.defer_loading so direct
                 // turns do not pay the schema/reasoning cost unless orchestration is relevant.
@@ -428,16 +452,23 @@ export class AgentTrioMcpProtocol {
       this.#writeError(request.id, -32602, "Unknown tool");
       return;
     }
-    const parsed = parseAgentTrioRequest(params["arguments"]);
+    const normalizedArguments = normalizeAgentTrioArguments(params["arguments"]);
+    const startsRun =
+      normalizedArguments["action"] === "run" || normalizedArguments["action"] === "submit";
+    const rootsAreAuthoritative =
+      startsRun && (this.#workspaceRoots !== null || this.#clientSupportsRoots);
+    const roots = startsRun
+      ? (this.#workspaceRoots ??
+        (this.#clientSupportsRoots ? (this.#roots ?? (await this.#rootsPromise)) : []))
+      : [];
+    const parsed = parseAgentTrioRequest(normalizedArguments, {
+      cwd: roots.length === 1 ? (roots.at(0) ?? process.cwd()) : process.cwd(),
+    });
     const dispatched =
       (parsed.action === "run" || parsed.action === "submit") && parsed.runId === undefined
         ? { ...parsed, runId: this.#createRunId() }
         : parsed;
     if (parsed.action === "run" || parsed.action === "submit") {
-      const rootsAreAuthoritative = this.#workspaceRoots !== null || this.#clientSupportsRoots;
-      const roots =
-        this.#workspaceRoots ??
-        (this.#clientSupportsRoots ? (this.#roots ?? (await this.#rootsPromise)) : []);
       assertWorkspaceRoot(parsed.cwd, roots, rootsAreAuthoritative);
     }
     try {
@@ -462,7 +493,12 @@ export class AgentTrioMcpProtocol {
         handled.monitorUrl === undefined && monitorUrl !== undefined
           ? { ...handled, monitorUrl }
           : handled;
-      const result = compactResult(withMonitorLink(monitored));
+      const linkedResult = withMonitorLink(monitored);
+      const result = compactResult(linkedResult);
+      const finalResponseComplete =
+        result.status === "completed" &&
+        result.finalResponse !== null &&
+        result.finalResponse === linkedResult.finalResponse;
       const monitor =
         parsed.action === "status" &&
         parsed.monitorCursor !== undefined &&
@@ -476,23 +512,33 @@ export class AgentTrioMcpProtocol {
               maxEventBytes: 16 * 1024,
             })
           : undefined;
-      const structuredContent = monitor === undefined ? result : monitorToolResult(result, monitor);
+      const structuredContent =
+        monitor === undefined
+          ? deliveryToolResult(result, finalResponseComplete)
+          : monitorToolResult(result, monitor);
       this.#writeResult(request.id, {
         content: [
           {
             type: "text",
-            text: JSON.stringify({
-              runId: result.runId,
-              status: result.status,
-              monitorUrl: result.monitorUrl ?? monitorUrl ?? null,
-              finalResponse: monitor === undefined ? result.finalResponse : null,
-              needsAction:
-                monitor === undefined
-                  ? (result.needsAction ?? null)
-                  : boundedBytes(result.needsAction, 1_000),
-              error:
-                monitor === undefined ? (result.error ?? null) : boundedBytes(result.error, 1_000),
-            }),
+            text:
+              monitor === undefined &&
+              result.status === "completed" &&
+              result.finalResponse !== null
+                ? result.finalResponse
+                : JSON.stringify({
+                    runId: result.runId,
+                    status: result.status,
+                    monitorUrl: result.monitorUrl ?? monitorUrl ?? null,
+                    finalResponseComplete: false,
+                    needsAction:
+                      monitor === undefined
+                        ? (result.needsAction ?? null)
+                        : boundedBytes(result.needsAction, 1_000),
+                    error:
+                      monitor === undefined
+                        ? (result.error ?? null)
+                        : boundedBytes(result.error, 1_000),
+                  }),
           },
         ],
         structuredContent,
@@ -546,7 +592,14 @@ export type ParsedAgentTrioRequest = AgentTrioRequest & {
   monitorWaitMs?: number;
 };
 
-export function parseAgentTrioRequest(value: unknown): ParsedAgentTrioRequest {
+interface AgentTrioRequestDefaults {
+  cwd?: string;
+}
+
+export function parseAgentTrioRequest(
+  value: unknown,
+  defaults: AgentTrioRequestDefaults = {},
+): ParsedAgentTrioRequest {
   const input = normalizeAgentTrioArguments(value);
   const action = input["action"];
   if (
@@ -626,9 +679,6 @@ export function parseAgentTrioRequest(value: unknown): ParsedAgentTrioRequest {
   ]);
   rejectUnknownArgument(input, allowed);
   if (input["monitorFirst"] !== undefined) {
-    if (action !== "submit") {
-      throw new Error("monitorFirst is only valid when action is submit");
-    }
     if (typeof input["monitorFirst"] !== "boolean") {
       throw new Error("monitorFirst must be boolean");
     }
@@ -710,10 +760,12 @@ export function parseAgentTrioRequest(value: unknown): ParsedAgentTrioRequest {
   if (input["integrate"] !== undefined && typeof input["integrate"] !== "boolean") {
     throw new Error("integrate must be boolean");
   }
+  const objective = recoverFanoutObjective(input["objective"], semanticPlan);
+  const cwd = input["cwd"] === undefined ? defaults.cwd : input["cwd"];
   return {
     action,
-    objective: requiredString(input["objective"], "objective", 200_000),
-    cwd: requiredString(input["cwd"], "cwd", 4_096),
+    objective: requiredString(objective, "objective", 200_000),
+    cwd: requiredString(cwd, "cwd", 4_096),
     profile,
     ...(input["runId"] === undefined
       ? {}
@@ -728,10 +780,29 @@ export function parseAgentTrioRequest(value: unknown): ParsedAgentTrioRequest {
     ...(semanticPlan === undefined ? {} : { semanticPlan }),
     ...(limits === undefined ? {} : { limits }),
     ...(input["integrate"] === undefined ? {} : { integrate: input["integrate"] as boolean }),
-    ...(input["monitorFirst"] === undefined
+    ...(action !== "submit" || input["monitorFirst"] === undefined
       ? {}
       : { monitorFirst: input["monitorFirst"] as boolean }),
   };
+}
+
+function recoverFanoutObjective(
+  value: unknown,
+  semanticPlan: HostSemanticPlan | undefined,
+): unknown {
+  if (value !== undefined || semanticPlan === undefined) {
+    return value;
+  }
+  const goals = semanticPlan.tasks
+    .map((task) => task.goal?.trim())
+    .filter((goal): goal is string => goal !== undefined && goal.length > 0);
+  if (goals.length === 0) {
+    return value;
+  }
+  return [
+    "Complete and integrate every delegated objective below.",
+    ...goals.map((goal, index) => `${String(index + 1)}. ${goal}`),
+  ].join("\n");
 }
 
 function normalizeAgentTrioArguments(value: unknown): Record<string, unknown> {
@@ -969,7 +1040,7 @@ function normalizePlanAliases(input: Record<string, unknown>): void {
     return;
   }
   const planKeys = ["access", "merge", "risk", "tasks"] as const;
-  if (!planKeys.some((key) => key in input)) {
+  if (!planKeys.some((key) => key in input) && input["semanticPlan"] === undefined) {
     return;
   }
   const semanticPlan =
@@ -986,6 +1057,14 @@ function normalizePlanAliases(input: Record<string, unknown>): void {
     }
     semanticPlan[key] = value;
     delete input[key];
+  }
+  if (semanticPlan["access"] === undefined) {
+    // Compatibility calls have omitted this nested field even though the public schema requires
+    // it. Default to the least privilege instead of discarding a valid semantic decomposition and
+    // paying for another Sol planning turn.
+    semanticPlan["access"] = "readOnly";
+  } else {
+    semanticPlan["access"] = canonicalPlanAccess(semanticPlan["access"]);
   }
   input["semanticPlan"] = semanticPlan;
 }
@@ -1100,31 +1179,7 @@ function assertWorkspaceRoot(
 
 function compactResult(result: BatchResult): BatchResult {
   const compact = structuredClone(result);
-  compact.finalResponse = truncate(compact.finalResponse, 24_000);
-  compact.leaves = compact.leaves.map((leaf) => ({
-    ...leaf,
-    summary: truncate(leaf.summary, 4_000) ?? "",
-    findings: leaf.findings.slice(0, 20).map((finding) => ({
-      ...finding,
-      text: truncate(finding.text, 1_000) ?? "",
-    })),
-    citations: leaf.citations.slice(0, 32),
-    messages: [],
-  }));
-  if (Buffer.byteLength(JSON.stringify(compact), "utf8") <= MAX_RESULT_BYTES) {
-    return compact;
-  }
-  compact.finalResponse = truncate(compact.finalResponse, 8_000);
-  compact.leaves = compact.leaves.map((leaf) => ({
-    ...leaf,
-    summary: truncate(leaf.summary, 1_000) ?? "",
-    findings: leaf.findings.slice(0, 5),
-    citations: leaf.citations.slice(0, 8),
-    usage: [],
-  }));
-  if (Buffer.byteLength(JSON.stringify(compact), "utf8") > MAX_RESULT_BYTES) {
-    throw new Error("agent_trio result exceeds the 64 KiB transport limit");
-  }
+  compact.finalResponse = truncate(compact.finalResponse, MAX_DELIVERY_RESPONSE_BYTES);
   return compact;
 }
 
@@ -1132,6 +1187,7 @@ function monitorToolResult(
   result: BatchResult,
   update: MonitorDataUpdate,
 ): Record<string, unknown> {
+  const projectedEvents = projectMonitorEvents(update.events);
   const stored = isRecord(update.snapshot) ? update.snapshot : {};
   const request = isRecord(stored["request"]) ? stored["request"] : {};
   const requestProjection = {
@@ -1156,7 +1212,7 @@ function monitorToolResult(
         remoteTurns: monitorRemoteTurns(stored["remoteTurns"]),
         updatedAt: update.revision,
       },
-      events: update.events.map(compactMonitorEvent),
+      events: projectedEvents.map((event) => compactDisplayMonitorEvent(event)),
       nextCursor: update.nextCursor,
       hasMore: update.hasMore,
       revision: update.revision,
@@ -1166,7 +1222,7 @@ function monitorToolResult(
     return detailed;
   }
 
-  const events = update.events.map((event) => compactMonitorEvent(event, 2_000));
+  const events = projectedEvents.map((event) => compactDisplayMonitorEvent(event, 2_000));
   const compact = {
     ...base,
     monitor: {
@@ -1188,10 +1244,7 @@ function monitorToolResult(
     omitted += 1;
   }
   if (omitted > 0) {
-    events.unshift({
-      type: "monitor",
-      data: { truncated: true, omittedEvents: omitted },
-    });
+    events.unshift(monitorOmissionEvent(omitted));
   }
   if (serializedBytes(compact) <= MAX_MONITOR_STRUCTURED_BYTES) {
     return compact;
@@ -1230,7 +1283,7 @@ function monitorToolResult(
         remoteTurns: [],
         updatedAt: boundedBytes(update.revision, 128) ?? "",
       },
-      events: [{ type: "monitor", data: { truncated: true, omittedEvents: update.events.length } }],
+      events: [monitorOmissionEvent(projectedEvents.length)],
       nextCursor: update.nextCursor,
       hasMore: update.hasMore,
       revision: boundedBytes(update.revision, 128) ?? "",
@@ -1238,20 +1291,31 @@ function monitorToolResult(
   };
 }
 
-function compactMonitorEvent(value: unknown, maxBytes = 12 * 1024): unknown {
-  const serialized = JSON.stringify(value);
-  if (serialized === undefined || Buffer.byteLength(serialized, "utf8") <= maxBytes) {
-    return value;
-  }
-  if (!isRecord(value)) {
-    return { type: "monitor", data: { truncated: true } };
-  }
+function deliveryToolResult(
+  result: BatchResult,
+  finalResponseComplete: boolean,
+): Record<string, unknown> {
+  const monitorProjection = monitorResultProjection(result, true);
   return {
-    ...value,
-    data: {
-      truncated: true,
-      preview: boundedText(serialized, Math.max(0, maxBytes - 512)),
-    },
+    protocolVersion: result.protocolVersion,
+    runId: result.runId,
+    status: result.status,
+    finalResponseComplete,
+    metrics: monitorProjection["metrics"] ?? null,
+    needsAction: boundedText(result.needsAction ?? "", 1_000) || null,
+    error: boundedText(result.error ?? "", 1_000) || null,
+    monitorUrl: result.monitorUrl ?? null,
+  };
+}
+
+function monitorOmissionEvent(omittedEvents: number): MonitorDisplayEvent {
+  return {
+    type: "display",
+    displayKey: `monitor:omitted:${String(omittedEvents)}`,
+    displayKind: "activity",
+    displayLabel: "Monitor",
+    displayText: `${String(omittedEvents)} earlier activity events were omitted from this update.`,
+    displayTruncated: true,
   };
 }
 

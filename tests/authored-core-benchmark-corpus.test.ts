@@ -202,9 +202,12 @@ describe("authored core benchmark corpus", () => {
         "[item:opt-1a-case-01] IDs [B,C]; weight 3+4=7; value 8+10=18; exhaustive check",
         "[item:opt-1a-case-01] IDs=[B,C], total weight=7, total value=18. Exhaustive check: all 32 subsets evaluated.",
         "[item:opt-1a-case-01] Selected IDs B, C; total weight 7; total value 18; feasible subsets checked.",
+        "[item:opt-1a-case-01] IDs: B, C; total weight: 7; total value: 18. Optimal among 15 feasible subsets.",
         "[item:opt-1a-case-01] Selected IDs: B, C. Total weight: 7. Total value: 18. Exhaustive check: all 32 subsets evaluated.",
+        "[item:opt-1a-case-01] Selected IDs: [B, C]. Total weight: 7. Total value: 18. Optimality check: 15 subsets were feasible; [B, C] was the unique maximum-value subset.",
         "[item:opt-1a-case-01] selected [B,C], weight 3+4=7, value 8+10=18; feasible subsets checked",
         '[item:opt-1a-case-01] selected IDs ["B","C"]; total weight 7; total value 18; DP 0..7 = [0,0,5,8,10,13,15,18]',
+        "opt-1a\n- case-01: IDs [B, C]; weight 7; value 18; check: 32/32 subsets, 15 feasible",
       ]) {
         await writeFile(outputPath, output, "utf8");
         await expect(runSealedBenchmarkValidator(validator, { workspace })).resolves.toMatchObject({
@@ -248,6 +251,31 @@ describe("authored core benchmark corpus", () => {
         "[item:live-1c] Beacon, price 100, 88 ms, available, 2026-08-20T12:00:00Z [WEB-LIVE-1C-B]",
       ].join("\n");
       await writeFile(outputPath, validOutput, "utf8");
+      await expect(runSealedBenchmarkValidator(validator, { workspace })).resolves.toMatchObject({
+        score: 100,
+        passedChecks: 3,
+        totalChecks: 3,
+      });
+
+      await writeFile(
+        outputPath,
+        validOutput
+          .replaceAll(/price (\d+)/gu, "price: $1")
+          .replaceAll(/\[item:([^\]]+)\]/gu, "[ item:$1 ]")
+          .replaceAll(/\[(WEB-[^\]]+)\]/gu, "($1)"),
+        "utf8",
+      );
+      await expect(runSealedBenchmarkValidator(validator, { workspace })).resolves.toMatchObject({
+        score: 100,
+        passedChecks: 3,
+        totalChecks: 3,
+      });
+
+      await writeFile(
+        outputPath,
+        validOutput.replaceAll("[WEB-", "【WEB-").replaceAll("-B]", "-B】"),
+        "utf8",
+      );
       await expect(runSealedBenchmarkValidator(validator, { workspace })).resolves.toMatchObject({
         score: 100,
         passedChecks: 3,
@@ -377,6 +405,8 @@ describe("authored core benchmark corpus", () => {
       for (const output of [
         "review-paper-1a-section-01: Issue: Test-set leakage. Severity: Critical. The score is optimistically biased. Required correction: use training/validation data and an untouched test set.",
         "review-paper-1a:\n- section-01: Hyperparameters used the final test set. Severity: major. This creates bias. Tune on training/development data, then use an untouched test set.",
+        "### Packet 1a\n\n### Section 01\nIssue: final test set reuse. Severity: High. This biases the estimate. Select hyperparameters without the final test set, then evaluate on untouched data.",
+        "| review-paper-1a-section-01 | Hyperparameters used the final test set. | Major | The score is not valid as an unbiased estimate. | Use a separate validation procedure and reserve the final test set. |",
       ]) {
         await writeFile(outputPath, output, "utf8");
         await expect(runSealedBenchmarkValidator(validator, { workspace })).resolves.toMatchObject({
@@ -395,6 +425,100 @@ describe("authored core benchmark corpus", () => {
         passedChecks: 0,
         totalChecks: 1,
       });
+
+      for (const [id, output] of [
+        [
+          "review-paper-1a-section-02",
+          "review-paper-1a-section-02 — Major. Pseudoreplication treats repeated observations as independent and understates standard errors. Reanalyze with a participant-clustered method or cluster-robust inference.",
+        ],
+        [
+          "review-paper-1a-section-03",
+          "review-paper-1a-section-03 — Critical. Retrospective evidence cannot establish the causal effect because confounding remains. Restrict the conclusion to the observed association.",
+        ],
+        [
+          "review-paper-1a-section-03",
+          "review-paper-1a-section-03 — High. Retrospective evidence cannot establish causation because confounding remains. Use non-causal association language.",
+        ],
+      ] as const) {
+        const check = fullValidator.commandChecks.find((candidate) => candidate.id === id)!;
+        await writeFile(outputPath, output, "utf8");
+        await expect(
+          runSealedBenchmarkValidator(
+            { ...fullValidator, commandChecks: [check], requiredDeliverables: [] },
+            { workspace },
+          ),
+        ).resolves.toMatchObject({ score: 100, passedChecks: 1, totalChecks: 1 });
+      }
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts equivalent user-visible consequences in code review findings", async () => {
+    const corpus = await createAuthoredCoreRoutingCorpus();
+    const byPath = new Map(corpus.artifacts.map((artifact) => [artifact.path, artifact.bytes]));
+    const instance = corpus.manifest.instances.find(
+      (candidate) => candidate.instanceId === "coding-review-authored-02",
+    )!;
+    const validatorSeal = instance.artifacts.find((artifact) => artifact.role === "validator")!;
+    const fullValidator = parseSealedBenchmarkValidatorV1(
+      JSON.parse(new TextDecoder().decode(byPath.get(validatorSeal.path)!)) as unknown,
+    );
+    const examples = [
+      [
+        "review-2a-case-01",
+        "[item:review-2a-case-01] Math.floor omits a partial final page and makes the last item unreachable; use Math.ceil.",
+      ],
+      [
+        "review-2a-case-03",
+        "[item:review-2a-case-03] count <= limit admits one extra operation at the exclusive boundary; use count < limit.",
+      ],
+    ] as const;
+    const workspace = await mkdtemp(join(tmpdir(), "agent-trio-code-review-format-"));
+    try {
+      const outputPath = join(workspace, ".agent-trio-benchmark", "model-output.txt");
+      await mkdir(dirname(outputPath), { recursive: true });
+      for (const [id, output] of examples) {
+        const check = fullValidator.commandChecks.find((candidate) => candidate.id === id)!;
+        await writeFile(outputPath, output, "utf8");
+        await expect(
+          runSealedBenchmarkValidator(
+            { ...fullValidator, commandChecks: [check], requiredDeliverables: [] },
+            { workspace },
+          ),
+        ).resolves.toMatchObject({ score: 100, passedChecks: 1, totalChecks: 1 });
+      }
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts natural conflict labels while retaining every exact source and value", async () => {
+    const corpus = await createAuthoredCoreRoutingCorpus();
+    const byPath = new Map(corpus.artifacts.map((artifact) => [artifact.path, artifact.bytes]));
+    const instance = corpus.manifest.instances.find(
+      (candidate) => candidate.instanceId === "research-conflict-authored-01",
+    )!;
+    const validatorSeal = instance.artifacts.find((artifact) => artifact.role === "validator")!;
+    const fullValidator = parseSealedBenchmarkValidatorV1(
+      JSON.parse(new TextDecoder().decode(byPath.get(validatorSeal.path)!)) as unknown,
+    );
+    const validator = { ...fullValidator, commandChecks: [fullValidator.commandChecks[0]!] };
+    const workspace = await mkdtemp(join(tmpdir(), "agent-trio-conflict-format-"));
+    try {
+      const outputPath = join(workspace, ".agent-trio-benchmark", "model-output.txt");
+      await mkdir(dirname(outputPath), { recursive: true });
+      for (const output of [
+        "1. `conflict-1a-claim-01`: Supported exact value 72% from the signed final audit `AUDIT-CONFLICT-1A-CLAIM-01`. Rejected 80% from `PRESS-CONFLICT-1A-CLAIM-01` and `BLOG-CONFLICT-1A-CLAIM-01`.",
+        "### conflict-1a\n- **Claim 01:** Supported exact value 72% from the signed final audit [AUDIT-CONFLICT-1A-CLAIM-01]. Rejected 80% from [PRESS-CONFLICT-1A-CLAIM-01] and [BLOG-CONFLICT-1A-CLAIM-01].",
+      ]) {
+        await writeFile(outputPath, output, "utf8");
+        await expect(runSealedBenchmarkValidator(validator, { workspace })).resolves.toMatchObject({
+          score: 100,
+          passedChecks: 1,
+          totalChecks: 1,
+        });
+      }
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -462,6 +586,25 @@ describe("authored core benchmark corpus", () => {
   }, 120_000);
 });
 
+it("reclassifies uncalibrated economic families as direct fast paths", async () => {
+  const corpus = await createAuthoredCoreRoutingCorpus(calibrationFixture(["coding-cross-module"]));
+  const coding = corpus.manifest.instances.filter(
+    (instance) => instance.familyId === "coding-cross-module",
+  );
+  const algorithms = corpus.manifest.instances.filter(
+    (instance) => instance.familyId === "algorithm-exact",
+  );
+
+  expect(coding.every((instance) => instance.evaluationClass === "economic-decomposable")).toBe(
+    true,
+  );
+  expect(coding.every((instance) => instance.eligibility !== undefined)).toBe(true);
+  expect(algorithms.every((instance) => instance.evaluationClass === "direct-fast-path")).toBe(
+    true,
+  );
+  expect(algorithms.every((instance) => instance.eligibility === undefined)).toBe(true);
+});
+
 vitestDescribe("authored core lightweight output contracts", () => {
   it("accepts equivalent numerical notation and natural paper-edit wording", async () => {
     const corpus = await createAuthoredCoreRoutingCorpus();
@@ -474,6 +617,18 @@ vitestDescribe("authored core lightweight output contracts", () => {
         [
           "algorithm-numerical-authored-01",
           "[item:num-1a-case-01] mean 6.000; variance 8.500; trapezoid 18.000; S=2+5+7+10=24",
+        ],
+        [
+          "algorithm-numerical-authored-01",
+          "[item:num-1a-case-01] x=(2,5,7,10); sum=24; mean=24/4=6.000\nSquared deviations: 16+1+1+16=34; population variance=34/4=8.500\nTrapezoid=1*(2/2+5+7+10/2)=18.000",
+        ],
+        [
+          "algorithm-numerical-authored-01",
+          "[item:num-1a-case-01] sum: 24; mean: 6.000; population variance: 8.500; trapezoidal integral: 18.000",
+        ],
+        [
+          "algorithm-numerical-authored-01",
+          "[item:num-1a-case-01] Mean: (2+5+7+10)/4 = 24/4 = 6.000\nPopulation variance: [(2-6)^2+(5-6)^2+(7-6)^2+(10-6)^2]/4 = 34/4 = 8.500\nTrapezoidal integral: 1*(2/2+5+7+10/2) = 18.000",
         ],
         [
           "paper-edit-authored-01",

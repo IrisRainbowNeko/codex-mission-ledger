@@ -791,6 +791,7 @@ describe("AppServerRecoveryAdapter", () => {
               type: "result_conflict",
               taskIds: ["leaf-a"],
               summary: "two implementations disagree on the interface",
+              requiresPlanPatch: true,
             },
           ],
         },
