@@ -709,6 +709,10 @@ function removeIfOwned(path: string, token: string, identity?: FileIdentity): bo
 }
 
 function syncDirectory(path: string): void {
+  if (process.platform === "win32") {
+    // Windows does not support fsync on directory handles. Regular file fsyncs remain strict.
+    return;
+  }
   const descriptor = openSync(path, "r");
   try {
     fsyncSync(descriptor);

@@ -160,25 +160,28 @@ describe("runAppServerValidators", () => {
       signal,
     });
 
-    expect(calls).toEqual([
-      {
-        params: {
-          command: ["npm", "run", "typecheck"],
-          cwd: resolvedBase,
-          timeoutMs: 12_000,
-          sandboxPolicy: { type: "readOnly", networkAccess: false },
+    expect(calls).toHaveLength(2);
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        {
+          params: {
+            command: ["npm", "run", "typecheck"],
+            cwd: resolvedBase,
+            timeoutMs: 12_000,
+            sandboxPolicy: { type: "readOnly", networkAccess: false },
+          },
+          options: { signal, timeoutMs: 0 },
         },
-        options: { signal, timeoutMs: 0 },
-      },
-      {
-        params: {
-          command: ["npx", "vitest", "run", "tests/api test.ts"],
-          cwd: resolvedApi,
-          sandboxPolicy: { type: "readOnly", networkAccess: false },
+        {
+          params: {
+            command: ["npx", "vitest", "run", "tests/api test.ts"],
+            cwd: resolvedApi,
+            sandboxPolicy: { type: "readOnly", networkAccess: false },
+          },
+          options: { signal, timeoutMs: 0 },
         },
-        options: { signal, timeoutMs: 0 },
-      },
-    ]);
+      ]),
+    );
     expect(results).toEqual([
       {
         command: "npm run typecheck",
@@ -232,7 +235,11 @@ describe("runAppServerValidators", () => {
     const outside = join(root, "outside");
     await mkdir(baseCwd);
     await mkdir(outside);
-    await symlink(outside, join(baseCwd, "escape"), "dir");
+    await symlink(
+      outside,
+      join(baseCwd, "escape"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
     const commandExec = vi.fn(async (): Promise<CommandExecResponse> => ({
       exitCode: 0,
       stdout: "",

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
 import type { BenchmarkObservation } from "../src/benchmark.js";
 import { runCli, runDefaultCli, type CliOutput } from "../src/cli.js";
 import type { BatchResult } from "../src/core/contracts.js";
@@ -33,6 +34,10 @@ describe("agent-trio CLI", () => {
   it("builds a run request and writes the shared service result as JSON", async () => {
     const stdout = capture();
     const handle = vi.fn(async () => result());
+    const skillPath =
+      process.platform === "win32"
+        ? "C:\\opt\\codex-skills\\documents\\SKILL.md"
+        : "/opt/codex-skills/documents/SKILL.md";
 
     const exitCode = await runCli(
       [
@@ -52,7 +57,7 @@ describe("agent-trio CLI", () => {
         "--constraint",
         "keep compatibility",
         "--skill",
-        "documents=/opt/codex-skills/documents/SKILL.md",
+        `documents=${skillPath}`,
         "--plugin",
         "browser@openai-bundled",
         "--max-concurrent",
@@ -61,14 +66,14 @@ describe("agent-trio CLI", () => {
         "--no-integrate",
         "--json",
       ],
-      { service: { handle }, stdout: stdout.output, cwd: "/workspace" },
+      { service: { handle }, stdout: stdout.output, cwd: process.cwd() },
     );
 
     expect(exitCode).toBe(0);
     expect(handle).toHaveBeenCalledWith({
       action: "run",
       objective: "implement the feature",
-      cwd: "/workspace/project",
+      cwd: join(process.cwd(), "project"),
       profile: "balanced",
       runId: "run-1",
       hostAccess: "fullAccess",
@@ -79,7 +84,7 @@ describe("agent-trio CLI", () => {
         {
           kind: "skill",
           name: "documents",
-          path: "/opt/codex-skills/documents/SKILL.md",
+          path: skillPath,
         },
         { kind: "plugin", name: "browser@openai-bundled" },
       ],
@@ -96,7 +101,7 @@ describe("agent-trio CLI", () => {
     const exitCode = await runCli(["run", "task", "--host-access", "unrestricted"], {
       service: { handle },
       stderr: stderr.output,
-      cwd: "/workspace",
+      cwd: process.cwd(),
     });
 
     expect(exitCode).toBe(2);
@@ -113,7 +118,7 @@ describe("agent-trio CLI", () => {
     const exitCode = await runCli(["run", "task", "--host-approval", "always"], {
       service: { handle },
       stderr: stderr.output,
-      cwd: "/workspace",
+      cwd: process.cwd(),
     });
 
     expect(exitCode).toBe(2);
@@ -280,9 +285,9 @@ describe("agent-trio CLI", () => {
     const exitCode = await runCli(["benchmark", "observations.json", "--allow-partial", "--json"], {
       service: { handle },
       stdout: stdout.output,
-      cwd: "/workspace",
+      cwd: process.cwd(),
       readTextFile: vi.fn(async (path) => {
-        expect(path).toBe("/workspace/observations.json");
+        expect(path).toBe(join(process.cwd(), "observations.json"));
         return JSON.stringify({ observations });
       }),
     });
@@ -334,7 +339,7 @@ describe("agent-trio CLI", () => {
       createRuntime,
       launchSupervisor,
       stdout: stdout.output,
-      cwd: "/workspace",
+      cwd: process.cwd(),
     });
 
     expect(exitCode).toBe(0);
@@ -343,7 +348,7 @@ describe("agent-trio CLI", () => {
       expect.objectContaining({
         action: "submit",
         objective: "durable task",
-        cwd: "/workspace",
+        cwd: process.cwd(),
         runId: expect.any(String),
       }),
     );

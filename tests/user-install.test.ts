@@ -65,8 +65,12 @@ enabled = true
     expect(merged).not.toContain("[[skills.config]]");
     expect(merged.match(/\[mcp_servers\.agent_trio\]/gu)).toHaveLength(1);
     expect(merged).toContain('command = "/usr/bin/node"');
+    const expectedLauncher =
+      process.platform === "win32"
+        ? String.raw`\opt\agent-trio\dist\mcp\launcher.js`
+        : "/opt/agent-trio/dist/mcp/launcher.js";
     expect(merged).toContain(
-      'args = ["/opt/agent-trio/dist/mcp/launcher.js", "--env-dir", "/home/me/.codex"]',
+      `args = [${JSON.stringify(expectedLauncher)}, "--env-dir", "/home/me/.codex"]`,
     );
     expect(merged).toContain('default_tools_approval_mode = "approve"');
     expect(merged).toContain('AGENT_TRIO_JOB_ROOT = "/var/lib/agent-trio/jobs"');

@@ -924,7 +924,7 @@ describe("AppServerLeafExecutor", () => {
   it("caps a writer validator at read-only when the caller is read-only", async () => {
     const server = new FakeAppServer();
     server.queued.push({ output: leafBody() });
-    const executor = new AppServerLeafExecutor({ appServer: server, cwd: "/tmp" });
+    const executor = new AppServerLeafExecutor({ appServer: server, cwd: process.cwd() });
 
     await executor.runLeaf(
       {
@@ -954,7 +954,7 @@ describe("AppServerLeafExecutor", () => {
     const server = new FakeAppServer();
     const summary = "complete result ".repeat(400);
     server.queued.push({ output: leafBody({ summary }) });
-    const executor = new AppServerLeafExecutor({ appServer: server, cwd: "/tmp" });
+    const executor = new AppServerLeafExecutor({ appServer: server, cwd: process.cwd() });
 
     const result = await executor.runLeaf(
       {
@@ -976,7 +976,7 @@ describe("AppServerLeafExecutor", () => {
     server.queued.push({
       output: leafBody({ error: "none", failureKind: "unknown" }),
     });
-    const executor = new AppServerLeafExecutor({ appServer: server, cwd: "/tmp" });
+    const executor = new AppServerLeafExecutor({ appServer: server, cwd: process.cwd() });
 
     const result = await executor.runLeaf(
       {
@@ -1001,7 +1001,7 @@ describe("AppServerLeafExecutor", () => {
   it("shares narrow validator commands with writers and lets the runtime supply results", async () => {
     const server = new FakeAppServer();
     server.queued.push({ output: leafBody({ validation: undefined }) });
-    const executor = new AppServerLeafExecutor({ appServer: server, cwd: "/tmp" });
+    const executor = new AppServerLeafExecutor({ appServer: server, cwd: process.cwd() });
 
     const result = await executor.runLeaf(
       {
@@ -1731,7 +1731,7 @@ describe("AppServerLeafExecutor", () => {
       stdout: "",
       stderr: "test failed",
     });
-    const executor = new AppServerLeafExecutor({ appServer: server, cwd: "/tmp" });
+    const executor = new AppServerLeafExecutor({ appServer: server, cwd: process.cwd() });
 
     const result = await executor.runLeaf(
       {
@@ -1750,7 +1750,7 @@ describe("AppServerLeafExecutor", () => {
       expect.objectContaining({ command: "npm test", status: "failed" }),
     ]);
     expect(server.commandExec).toHaveBeenCalledWith(
-      expect.objectContaining({ command: ["npm", "test"], cwd: "/tmp" }),
+      expect.objectContaining({ command: ["npm", "test"], cwd: process.cwd() }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
@@ -1763,7 +1763,7 @@ describe("AppServerLeafExecutor", () => {
       stdout: "",
       stderr: "bwrap: Can't create file /workspace/.agents: Read-only file system",
     });
-    const executor = new AppServerLeafExecutor({ appServer: server, cwd: "/tmp" });
+    const executor = new AppServerLeafExecutor({ appServer: server, cwd: process.cwd() });
 
     const result = await executor.runLeaf(
       {

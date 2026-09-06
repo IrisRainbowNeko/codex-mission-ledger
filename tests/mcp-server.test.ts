@@ -31,7 +31,7 @@ function writeWorkspaceHandshake(input: PassThrough): void {
     JSON.stringify({
       jsonrpc: "2.0",
       id: "agent-trio-roots-1",
-      result: { roots: [{ uri: pathToFileURL("/tmp").href }] },
+      result: { roots: [{ uri: pathToFileURL(process.cwd()).href }] },
     }) + "\n",
   );
 }
@@ -47,7 +47,7 @@ function writeSubmit(input: PassThrough, id: number, runId?: string): void {
         arguments: {
           action: "submit",
           objective: "durable task",
-          cwd: "/tmp",
+          cwd: process.cwd(),
           ...(runId === undefined ? {} : { runId }),
         },
       },
@@ -186,7 +186,7 @@ describe("V3 MCP server", () => {
     expect(launchSupervisor).toHaveBeenCalledWith({
       action: "submit",
       objective: "durable task",
-      cwd: "/tmp",
+      cwd: process.cwd(),
       runId: "generated-run",
       profile: "balanced",
       constraints: ["agent-trio:root-dispatch"],
@@ -245,7 +245,7 @@ describe("V3 MCP server", () => {
           arguments: {
             action: "submit",
             objective: "visible foreground task",
-            cwd: "/tmp",
+            cwd: process.cwd(),
             strategy: "auto",
             monitorFirst: true,
           },
@@ -270,7 +270,7 @@ describe("V3 MCP server", () => {
     expect(launchSupervisor).toHaveBeenCalledWith({
       action: "run",
       objective: "visible foreground task",
-      cwd: "/tmp",
+      cwd: process.cwd(),
       strategy: "auto",
       runId: "visible-run",
       profile: "balanced",

@@ -4,6 +4,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import type { ChildProcess } from "node:child_process";
@@ -252,8 +253,13 @@ describe("codex app-server process transport", () => {
     const call = spawnProcess.mock.calls[0];
     const projectedHome = call?.[2].env?.["CODEX_HOME"];
     expect(projectedHome).toBe(factory.isolatedCodexHome);
-    expect(readlinkSync(join(projectedHome!, "auth.json"))).toBe(authPath);
-    expect(readlinkSync(join(projectedHome!, "config.toml"))).toBe(configPath);
+    if (process.platform === "win32") {
+      expect(statSync(join(projectedHome!, "auth.json")).ino).toBe(statSync(authPath).ino);
+      expect(statSync(join(projectedHome!, "config.toml")).ino).toBe(statSync(configPath).ino);
+    } else {
+      expect(readlinkSync(join(projectedHome!, "auth.json"))).toBe(authPath);
+      expect(readlinkSync(join(projectedHome!, "config.toml"))).toBe(configPath);
+    }
     expect(call?.[2].env).toMatchObject({ CUSTOM_AUTH_ENV: "present" });
     expect(call?.[1]).toContain("project_doc_max_bytes=0");
     expect(call?.[1]).toContain("agents.enabled=false");
@@ -308,7 +314,11 @@ describe("codex app-server process transport", () => {
     const connection = await factory();
     const projectedHome = factory.isolatedCodexHome;
     expect(projectedHome).toBeDefined();
-    expect(readlinkSync(join(projectedHome!, "auth.json"))).toBe(authPath);
+    if (process.platform === "win32") {
+      expect(statSync(join(projectedHome!, "auth.json")).ino).toBe(statSync(authPath).ino);
+    } else {
+      expect(readlinkSync(join(projectedHome!, "auth.json"))).toBe(authPath);
+    }
     await connection.close();
     await factory.dispose();
   });
