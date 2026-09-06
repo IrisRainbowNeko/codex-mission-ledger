@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { mkdtemp, mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -374,9 +374,14 @@ class CodexHomeProjection {
           `projected CODEX_HOME source '${source}' is not a regular file`,
         );
       }
-      // A symlink keeps credentials in the caller-owned home; this process never reads or copies
-      // the file contents. The explicit projected mode is the caller's authorization boundary.
-      await symlink(source, join(targetHome, file), "file");
+      // A link keeps credentials in the caller-owned home; this process never reads or copies the
+      // file contents. Windows may deny file symlinks without Developer Mode, so use a hard link
+      // there. The explicit projected mode remains the caller's authorization boundary.
+      if (process.platform === "win32") {
+        await link(source, join(targetHome, file));
+      } else {
+        await symlink(source, join(targetHome, file), "file");
+      }
     }
   }
 }

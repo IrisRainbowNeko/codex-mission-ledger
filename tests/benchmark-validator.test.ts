@@ -258,7 +258,11 @@ describe("runSealedBenchmarkValidator", () => {
     const workspace = await temporaryWorkspace();
     const outside = await temporaryWorkspace();
     await writeFile(join(outside, "report.txt"), "outside", "utf8");
-    await symlink(outside, join(workspace, "escape"), "dir");
+    await symlink(
+      outside,
+      join(workspace, "escape"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
 
     await expect(
       runSealedBenchmarkValidator(
@@ -281,7 +285,11 @@ describe("runSealedBenchmarkValidator", () => {
   it("rejects missing deliverables beneath an escaping symlink", async () => {
     const workspace = await temporaryWorkspace();
     const outside = await temporaryWorkspace();
-    await symlink(outside, join(workspace, "escape"), "dir");
+    await symlink(
+      outside,
+      join(workspace, "escape"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
 
     await expect(
       runSealedBenchmarkValidator(

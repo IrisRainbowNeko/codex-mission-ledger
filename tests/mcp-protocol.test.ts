@@ -984,7 +984,7 @@ describe("AgentTrioMcpProtocol", () => {
       `${JSON.stringify({
         jsonrpc: "2.0",
         id: "agent-trio-roots-1",
-        result: { roots: [{ uri: pathToFileURL("/tmp").href }] },
+        result: { roots: [{ uri: pathToFileURL(process.cwd()).href }] },
       })}\n`,
     );
     input.write(
@@ -1048,7 +1048,7 @@ describe("AgentTrioMcpProtocol", () => {
         method: "tools/call",
         params: {
           name: "agent_trio",
-          arguments: { action: "run", objective: "test", cwd: "/tmp", strategy: "auto" },
+          arguments: { action: "run", objective: "test", cwd: process.cwd(), strategy: "auto" },
         },
       })}\n`,
     );
@@ -1059,7 +1059,7 @@ describe("AgentTrioMcpProtocol", () => {
     expect(handle).toHaveBeenCalledWith({
       action: "run",
       objective: "test",
-      cwd: "/tmp",
+      cwd: process.cwd(),
       profile: "balanced",
       strategy: "auto",
       runId: expect.any(String),
@@ -1101,7 +1101,7 @@ describe("AgentTrioMcpProtocol", () => {
           arguments: {
             action: "run",
             objective: "inspect",
-            cwd: "/tmp",
+            cwd: process.cwd(),
             strategy: "auto",
           },
           _meta: { progressToken: "progress-1" },

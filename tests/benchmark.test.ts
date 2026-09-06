@@ -872,17 +872,22 @@ describe("paired benchmark harness", () => {
   it("rejects corpus artifacts that escape through a symbolic link", async () => {
     const temporary = await mkdtemp(join(tmpdir(), "agent-trio-benchmark-"));
     const corpus = join(temporary, "corpus");
-    const outside = join(temporary, "outside.txt");
+    const outside = join(temporary, "outside");
     try {
       await mkdir(corpus);
-      await writeFile(outside, "outside");
-      await symlink(outside, join(corpus, "escape.txt"), "file");
+      await mkdir(outside);
+      await writeFile(join(outside, "escape.txt"), "outside");
+      await symlink(
+        outside,
+        join(corpus, "escape"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
       const reader = createFileBenchmarkArtifactReader(corpus);
 
       await expect(
         reader(
           {
-            path: "escape.txt",
+            path: "escape/escape.txt",
             role: "input",
             sha256: hashBenchmarkBytes("outside"),
             sizeBytes: 7,

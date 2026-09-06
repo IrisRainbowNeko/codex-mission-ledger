@@ -23,11 +23,12 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import {
   BENCHMARK_FAMILIES,
   assertBenchmarkManifestCoverage,
@@ -1105,6 +1106,9 @@ async function processGroupMembers(
   processGroupId: number,
   serverPid: number,
 ): Promise<RecoveryProcessMember[]> {
+  if (process.platform === "win32") {
+    return windowsProcessTreeMembers(processGroupId, serverPid);
+  }
   const entries = await readdir("/proc", { withFileTypes: true });
   const members: RecoveryProcessMember[] = [];
   for (const entry of entries) {
@@ -1131,10 +1135,79 @@ async function processGroupMembers(
   return members.sort((left, right) => left.pid - right.pid);
 }
 
+const execFileAsync = promisify(execFile);
+
+async function windowsProcessTreeMembers(
+  workerPid: number,
+  serverPid: number,
+): Promise<RecoveryProcessMember[]> {
+  const { stdout } = await execFileAsync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress",
+    ],
+    { windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+  );
+  const parsed = JSON.parse(stdout) as
+    | { ProcessId?: number; ParentProcessId?: number }
+    | Array<{ ProcessId?: number; ParentProcessId?: number }>;
+  const rows = Array.isArray(parsed) ? parsed : [parsed];
+  const children = new Map<number, number[]>();
+  for (const row of rows) {
+    if (!Number.isInteger(row.ProcessId) || !Number.isInteger(row.ParentProcessId)) continue;
+    const pid = row.ProcessId as number;
+    const parentPid = row.ParentProcessId as number;
+    const childList = children.get(parentPid) ?? [];
+    childList.push(pid);
+    children.set(parentPid, childList);
+  }
+  const members: RecoveryProcessMember[] = [];
+  const pending = [workerPid];
+  const seen = new Set<number>();
+  while (pending.length > 0) {
+    const pid = pending.shift()!;
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    const parentPid = pid === workerPid ? 0 : (findParent(children, pid) ?? 0);
+    members.push({
+      pid,
+      parentPid,
+      role: pid === workerPid ? "worker" : pid === serverPid ? "app_server" : "child",
+    });
+    pending.push(...(children.get(pid) ?? []));
+  }
+  return members.sort((left, right) => left.pid - right.pid);
+}
+
+function findParent(children: Map<number, number[]>, pid: number): number | undefined {
+  for (const [parent, descendants] of children) {
+    if (descendants.includes(pid)) return parent;
+  }
+  return undefined;
+}
+
 async function killRecoveryProcessGroup(
   worker: Readonly<SpawnedRecoveryWorker>,
   signal: "SIGKILL" | "SIGTERM",
 ): Promise<void> {
+  if (process.platform === "win32") {
+    await execFileAsync("taskkill.exe", ["/PID", String(worker.pid), "/T", "/F"], {
+      windowsHide: true,
+    }).catch((error: unknown) => {
+      if (!isMissingProcessError(error)) throw error;
+    });
+    await Promise.race([
+      new Promise<void>((resolveExit) => {
+        if (worker.child.exitCode !== null || worker.child.signalCode !== null) resolveExit();
+        else worker.child.once("exit", () => resolveExit());
+      }),
+      delay(5_000),
+    ]);
+    return;
+  }
   try {
     process.kill(-worker.pid, signal);
   } catch (error) {

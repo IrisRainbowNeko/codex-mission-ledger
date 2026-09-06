@@ -3454,6 +3454,10 @@ function clearCancellationRequest(store: JobStore, runId: string): void {
 }
 
 function syncControlDirectory(directory: string): void {
+  if (process.platform === "win32") {
+    // Windows does not support fsync on directory handles. The control file fsync remains strict.
+    return;
+  }
   const descriptor = openSync(directory, "r");
   try {
     fsyncSync(descriptor);

@@ -72,9 +72,9 @@ describe("MCP launcher environment", () => {
 
   it("uses the installed Codex home argument ahead of inherited environment", () => {
     expect(
-      envDirectoryFromArguments(["--env-dir", "/configured/codex"], {
+      envDirectoryFromArguments(["--env-dir", process.cwd()], {
         CODEX_HOME: "/inherited/codex",
       }),
-    ).toBe("/configured/codex");
+    ).toBe(process.cwd());
   });
 });

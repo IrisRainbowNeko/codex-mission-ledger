@@ -163,6 +163,16 @@ describe("JobStore", () => {
     expect(readdirSync(store.jobDirectory("run-1"))).toEqual(["job.json"]);
   });
 
+  it("persists snapshots on Windows where directory fsync is unsupported", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-trio-store-"));
+    roots.push(root);
+    const store = new JobStore(root);
+
+    store.save(snapshot());
+
+    expect(store.load("run-1")).toEqual(snapshot());
+  });
+
   it("loads legacy snapshots without optional checkpoints and restores old defaults", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-trio-store-"));
     roots.push(root);
