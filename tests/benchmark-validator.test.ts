@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -236,6 +236,7 @@ describe("runSealedBenchmarkValidator", () => {
 
   it("runs commands through the runner-owned isolation wrapper", async () => {
     const workspace = await temporaryWorkspace();
+    const resolvedWorkspace = await realpath(workspace);
     const commandWrapper = vi.fn((argv: readonly string[], cwd: string) => ({
       argv: [process.execPath, "-e", "require('node:fs').writeSync(1, 'wrapped\\n')"],
       cwd,
@@ -250,7 +251,7 @@ describe("runSealedBenchmarkValidator", () => {
     const result = await runSealedBenchmarkValidator(config, { workspace, commandWrapper });
 
     expect(result.score).toBe(100);
-    expect(commandWrapper).toHaveBeenCalledWith(["sealed-command", "argument"], workspace);
+    expect(commandWrapper).toHaveBeenCalledWith(["sealed-command", "argument"], resolvedWorkspace);
     expect(result.evidence[0]).toMatchObject({ argv: ["sealed-command", "argument"] });
   });
 
